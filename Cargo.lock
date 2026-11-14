@@ -429,6 +429,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "pinyin"
+version = "0.11.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e225f595052d9c46045755be4b8d7950b6d9f3c33e0c0b74ba58f11bbfa8c64b"
+
+[[package]]
 name = "pkg-config"
 version = "0.3.34"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -801,82 +807,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "wechat-voice"
-version = "0.2.3"
-dependencies = [
- "wechat-voice-audio",
- "wechat-voice-backend",
- "wechat-voice-protocol",
-]
-
-[[package]]
-name = "wechat-voice-audio"
-version = "0.2.3"
-dependencies = [
- "opus",
- "webrtc-vad",
- "windows",
-]
-
-[[package]]
-name = "wechat-voice-backend"
-version = "0.2.3"
-dependencies = [
- "aes",
- "bytes",
- "crypto-bigint",
- "getrandom 0.4.3",
- "md-5",
- "rustls",
- "serde",
- "serde_json",
- "sha2 0.11.1",
- "subtle",
- "tungstenite",
- "wechat-voice-audio",
- "wechat-voice-protocol",
- "windows-sys 0.61.2",
-]
-
-[[package]]
-name = "wechat-voice-protocol"
-version = "0.2.3"
-
-[[package]]
-name = "wechat-winh"
-version = "0.2.3"
-dependencies = [
- "serde",
- "serde_json",
- "sha2 0.11.1",
- "unicode-segmentation",
- "wechat-voice-backend",
- "wechat-winh-bridge",
- "windows-sys 0.61.2",
-]
-
-[[package]]
-name = "wechat-winh-bridge"
-version = "0.2.3"
-dependencies = [
- "serde",
- "serde_json",
- "sha2 0.10.9",
- "windows-sys 0.61.2",
-]
-
-[[package]]
-name = "wechat-winh-gui"
-version = "0.2.3"
-dependencies = [
- "serde",
- "serde_json",
- "wechat-voice-audio",
- "wechat-voice-backend",
- "windows-sys 0.61.2",
-]
-
-[[package]]
 name = "windows"
 version = "0.62.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1067,6 +997,89 @@ name = "windows_x86_64_msvc"
 version = "0.52.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "589f6da84c646204747d1270a2a5661ea66ed1cced2631d546fdfb155959f9ec"
+
+[[package]]
+name = "xueer-ear"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "windows-sys 0.61.2",
+ "xueer-ear-audio",
+ "xueer-ear-backend",
+]
+
+[[package]]
+name = "xueer-ear-audio"
+version = "0.1.0"
+dependencies = [
+ "opus",
+ "webrtc-vad",
+ "windows",
+]
+
+[[package]]
+name = "xueer-ear-backend"
+version = "0.1.0"
+dependencies = [
+ "aes",
+ "bytes",
+ "crypto-bigint",
+ "getrandom 0.4.3",
+ "md-5",
+ "rustls",
+ "serde",
+ "serde_json",
+ "sha2 0.11.1",
+ "subtle",
+ "tungstenite",
+ "windows-sys 0.61.2",
+ "xueer-ear-audio",
+ "xueer-ear-protocol",
+]
+
+[[package]]
+name = "xueer-ear-bridge"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "xueer-ear-cli"
+version = "0.1.0"
+dependencies = [
+ "xueer-ear-audio",
+ "xueer-ear-backend",
+ "xueer-ear-protocol",
+]
+
+[[package]]
+name = "xueer-ear-host"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "sha2 0.11.1",
+ "unicode-segmentation",
+ "windows-sys 0.61.2",
+ "xueer-ear-backend",
+ "xueer-ear-bridge",
+]
+
+[[package]]
+name = "xueer-ear-protocol"
+version = "0.1.0"
+
+[[package]]
+name = "xueer-ear-textflow"
+version = "0.1.0"
+dependencies = [
+ "pinyin",
+]
 
 [[package]]
 name = "zeroize"
