@@ -6,3 +6,7 @@ mod fillers;
 pub use fillers::strip_fillers;
 mod numbers;
 pub use numbers::normalize_numbers;
+mod punct;
+pub use punct::{apply_punctuation, PunctOptions};
+mod commands;
+pub use commands::{parse_command, CommandOptions, VoiceCommand};
