@@ -1,12 +1,12 @@
 [package]
-name = "wechat-voice-backend"
+name = "xueer-ear-backend"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 
 [dependencies]
-wechat-voice-protocol = { path = "../protocol" }
-wechat-voice-audio = { path = "../audio" }
+xueer-ear-protocol = { path = "../protocol" }
+xueer-ear-audio = { path = "../audio" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 bytes = "1"

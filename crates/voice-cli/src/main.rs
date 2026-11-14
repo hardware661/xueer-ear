@@ -1,9 +1,9 @@
 use std::{error::Error, fs, path::Path};
-use wechat_voice_protocol::{asr, wire};
+use xueer_ear_protocol::{asr, wire};
 
 fn assemble(root: &Path) -> Result<(), Box<dyn Error + Send + Sync>> {
     use std::collections::BTreeMap;
-    use wechat_voice_protocol::{receiver::Receiver, wire::Value};
+    use xueer_ear_protocol::{receiver::Receiver, wire::Value};
     let mut paths = fs::read_dir(root)?
         .filter_map(Result::ok)
         .map(|e| e.path())
@@ -32,7 +32,7 @@ fn assemble(root: &Path) -> Result<(), Box<dyn Error + Send + Sync>> {
             continue;
         };
         let mut first_sequence = None;
-        wechat_voice_protocol::stream::visit_downstream(&frame, |sequence| {
+        xueer_ear_protocol::stream::visit_downstream(&frame, |sequence| {
             first_sequence = Some(first_sequence.map_or(sequence, |old: u32| old.min(sequence)));
         })?;
         let receiver = receivers
@@ -110,7 +110,7 @@ fn run() -> Result<(), Box<dyn Error + Send + Sync>> {
     match (args.next(), args.next(), args.next()) {
         #[cfg(windows)]
         (Some(command), Some(pid), Some(seconds)) if command == "recognize-microphone" => {
-            use wechat_voice_backend::engine::{self, Event, Source};
+            use xueer_ear_backend::engine::{self, Event, Source};
             let seconds: u64 = seconds.to_string_lossy().parse()?;
             if !(1..=15).contains(&seconds) { return Err("diagnostic duration must be 1..15 seconds".into()); }
             let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -135,7 +135,7 @@ fn run() -> Result<(), Box<dyn Error + Send + Sync>> {
         }
         #[cfg(windows)]
         (Some(command), None, None) if command == "microphone-info" => {
-            for (role, device) in wechat_voice_audio::microphone::devices()? {
+            for (role, device) in xueer_ear_audio::microphone::devices()? {
                 println!("role={role} name={} muted={:?} volume={:?} id={}", device.name, device.muted, device.volume, device.id);
             }
             Ok(())
@@ -144,8 +144,8 @@ fn run() -> Result<(), Box<dyn Error + Send + Sync>> {
         (Some(command), Some(pid), Some(path)) if command == "recognize-wave" => {
             let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
             let mut finals = 0;
-            let text = wechat_voice_backend::engine::run(pid.to_string_lossy().parse()?, wechat_voice_backend::engine::Source::Wave(path.into()), stop, |event| {
-                if let wechat_voice_backend::engine::Event::Speech(event) = event { finals += usize::from(event.final_result); }
+            let text = xueer_ear_backend::engine::run(pid.to_string_lossy().parse()?, xueer_ear_backend::engine::Source::Wave(path.into()), stop, |event| {
+                if let xueer_ear_backend::engine::Event::Speech(event) = event { finals += usize::from(event.final_result); }
                 Ok(())
             })?;
             println!("recognition=accepted chars={} finals={finals}", text.chars().count());
@@ -155,7 +155,7 @@ fn run() -> Result<(), Box<dyn Error + Send + Sync>> {
         }
         #[cfg(windows)]
         (Some(command), Some(pid), Some(path)) if command == "replay-audio-fresh-key" => {
-            let session = wechat_voice_backend::check::replay_audio_key(pid.to_string_lossy().parse()?, Path::new(&path), true)?;
+            let session = xueer_ear_backend::check::replay_audio_key(pid.to_string_lossy().parse()?, Path::new(&path), true)?;
             println!("opaque_key=accepted updates={} chars={}", session.recognition.updates, session.recognition.text.chars().count());
             Ok(())
         }
@@ -163,9 +163,9 @@ fn run() -> Result<(), Box<dyn Error + Send + Sync>> {
         (Some(command), device, None) if command == "record-check" => {
             use std::time::{Instant, Duration};
             let device = device.as_ref().map(|s| s.to_string_lossy());
-            let mut microphone = wechat_voice_audio::microphone::Microphone::open(device.as_deref())?;
+            let mut microphone = xueer_ear_audio::microphone::Microphone::open(device.as_deref())?;
             println!("device={} muted={:?} volume={:?}", microphone.device.name, microphone.device.muted, microphone.device.volume);
-            let mut encoder = wechat_voice_audio::encoder::OpusStream::new()?;
+            let mut encoder = xueer_ear_audio::encoder::OpusStream::new()?;
             let mut pending = Vec::new();
             let (mut samples, mut bytes) = (0, 0);
             let (mut peak, mut square) = (0_u16, 0_f64);
@@ -175,7 +175,7 @@ fn run() -> Result<(), Box<dyn Error + Send + Sync>> {
                     samples += chunk.len();
                     for &sample in chunk { peak = peak.max(sample.unsigned_abs()); square += f64::from(sample).powi(2); }
                     pending.extend_from_slice(chunk);
-                    while pending.len() >= wechat_voice_audio::encoder::CHUNK_SAMPLES {
+                    while pending.len() >= xueer_ear_audio::encoder::CHUNK_SAMPLES {
                         bytes += encoder.encode(&pending[..1920])?.len();
                         pending.drain(..1920);
                     }
@@ -188,30 +188,30 @@ fn run() -> Result<(), Box<dyn Error + Send + Sync>> {
         }
         #[cfg(windows)]
         (Some(command), Some(pid), Some(path)) if command == "replay-audio" => {
-            let session = wechat_voice_backend::check::replay_audio(pid.to_string_lossy().parse()?, Path::new(&path))?;
+            let session = xueer_ear_backend::check::replay_audio(pid.to_string_lossy().parse()?, Path::new(&path))?;
             println!("audio_replay=accepted sent={} received={} updates={} chars={}", session.sent, session.received, session.recognition.updates, session.recognition.text.chars().count());
             Ok(())
         }
         #[cfg(windows)]
         (Some(command), Some(pid), None) if command == "auth-init-check" => {
             let pid = pid.to_string_lossy().parse()?;
-            let bytes = wechat_voice_backend::check::init(pid)?;
+            let bytes = xueer_ear_backend::check::init(pid)?;
             println!("init=accepted reply_bytes={bytes}");
             Ok(())
         }
         #[cfg(windows)]
         (Some(command), Some(pid), None) if command == "runtime-account-status" => {
             let pid: u32 = pid.to_string_lossy().parse()?;
-            let account = wechat_voice_backend::runtime_account::read(pid)?;
+            let account = xueer_ear_backend::runtime_account::read(pid)?;
             println!("runtime=available token_bytes={} device_bytes={} app_id_bytes={} context_type={} remote_auth=unverified", account.wss_token.len(), account.device_id.len(), account.app_id.len(), account.context_type);
             Ok(())
         }
         (Some(command), path, None) if command == "account-status" => {
             let path = match path {
                 Some(path) => path.into(),
-                None => wechat_voice_backend::account::CloudAccount::default_path()?,
+                None => xueer_ear_backend::account::CloudAccount::default_path()?,
             };
-            let account = wechat_voice_backend::account::CloudAccount::read(&path)?;
+            let account = xueer_ear_backend::account::CloudAccount::read(&path)?;
             println!("account=available session_bytes={} device_bytes={} remote_auth=unverified", account.session.len(), account.device_id.len());
             Ok(())
         }
@@ -220,16 +220,16 @@ fn run() -> Result<(), Box<dyn Error + Send + Sync>> {
         }
         (Some(command), Some(path), None) if command == "assemble-capture" => assemble(Path::new(&path)),
         (Some(command), Some(path), None) if command == "connect-check" => {
-            let config = wechat_voice_backend::Connection::load(
+            let config = xueer_ear_backend::Connection::load(
                 &Path::new(&path).join("private-connection.json"),
             )?;
-            let mut session = wechat_voice_backend::Session::connect(&config)?;
+            let mut session = xueer_ear_backend::Session::connect(&config)?;
             session.close()?;
             println!("websocket=connected protocol=wxws_pb auth=unverified");
             Ok(())
         }
         (Some(command), Some(path), None) if command == "replay-capture" => {
-            let session = wechat_voice_backend::replay(Path::new(&path))?;
+            let session = xueer_ear_backend::replay(Path::new(&path))?;
             println!(
                 "sent={} received={} updates={} changes={} chars={}",
                 session.sent,
@@ -243,7 +243,7 @@ fn run() -> Result<(), Box<dyn Error + Send + Sync>> {
             }
             Ok(())
         }
-        _ => Err("usage: wechat-voice <inspect-capture|replay-capture|connect-check> DIRECTORY | account-status [FILE]".into()),
+        _ => Err("usage: xueer-ear-cli <inspect-capture|replay-capture|connect-check> DIRECTORY | account-status [FILE]".into()),
     }
 }
 

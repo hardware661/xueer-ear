@@ -15,9 +15,9 @@ use windows_sys::Win32::{
     },
 };
 
-const STOP: &str = "Local\\WeChatWinH.Stop";
-const READY: &str = "Local\\WeChatWinH.Ready";
-const DONE: &str = "Local\\WeChatWinH.Restored";
+const STOP: &str = "Local\\XueerEar.Stop";
+const READY: &str = "Local\\XueerEar.Ready";
+const DONE: &str = "Local\\XueerEar.Restored";
 fn wide(value: &str) -> Vec<u16> {
     value.encode_utf16().chain(Some(0)).collect()
 }
@@ -136,7 +136,7 @@ pub fn command() -> Result<bool> {
             let root = std::path::PathBuf::from(
                 std::env::var_os("LOCALAPPDATA").ok_or("LOCALAPPDATA不可用")?,
             )
-            .join("WeChatWinH");
+            .join("XueerEar");
             fs::create_dir_all(&root)?;
             let log = File::options()
                 .create(true)
@@ -163,7 +163,7 @@ pub fn command() -> Result<bool> {
                     WaitForSingleObject(event.0, 0) == WAIT_OBJECT_0
                 }) {
                     println!(
-                        "已启用；Win+H 使用{}。退出：wechat-winh.exe stop",
+                        "已启用；Win+H 使用{}。退出：xueer-ear-host.exe stop",
                         crate::status::active_backend_label()
                     );
                     return Ok(true);

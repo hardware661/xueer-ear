@@ -208,7 +208,7 @@ impl Monitor {
             // testing in that same space, including on scaled monitors.
             SetThreadDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
             let module = GetModuleHandleW(ptr::null());
-            let name: Vec<u16> = "WeChatWinH.TerminalGuard"
+            let name: Vec<u16> = "XueerEar.TerminalGuard"
                 .encode_utf16()
                 .chain(Some(0))
                 .collect();

@@ -8,7 +8,7 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-pub const REPOSITORY_URL: &str = "https://github.com/Elnyxn/weiwin";
+pub const REPOSITORY_URL: &str = "https://github.com/hardware661/xueer-ear";
 const MAX_BODY: usize = 256 * 1024;
 const MAX_PREFERENCES: usize = 4 * 1024;
 static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
@@ -109,7 +109,7 @@ fn preferences_path() -> Result<PathBuf, String> {
     let root = std::env::var_os("LOCALAPPDATA")
         .filter(|value| !value.is_empty())
         .ok_or("LOCALAPPDATA 不可用")?;
-    Ok(PathBuf::from(root).join("WeChatWinH/update-preferences.json"))
+    Ok(PathBuf::from(root).join("XueerEar/update-preferences.json"))
 }
 
 fn version(value: &str) -> Option<[u64; 3]> {
@@ -166,8 +166,8 @@ pub fn parse(body: &[u8], current: &str) -> Result<Option<Release>, String> {
         return Ok(None);
     }
     let text = version_text(available);
-    let portable = format!("weiwin-{text}-windows-x64-portable.zip");
-    let setup = format!("weiwin-{text}-windows-x64-setup.exe");
+    let portable = format!("xueer-ear-{text}-windows-x64-portable.zip");
+    let setup = format!("xueer-ear-{text}-windows-x64-setup.exe");
     if !release.assets.iter().any(|asset| asset.name == portable)
         || !release.assets.iter().any(|asset| asset.name == setup)
     {
@@ -246,7 +246,7 @@ mod native {
     pub(super) fn fetch(version: &str) -> Result<Option<Vec<u8>>, String> {
         unsafe {
             let session = Handle::checked(WinHttpOpen(
-                wide(&format!("weiwin/{version}")).as_ptr(),
+                wide(&format!("xueer-ear/{version}")).as_ptr(),
                 WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY,
                 ptr::null(),
                 ptr::null(),
@@ -264,7 +264,7 @@ mod native {
             let request = Handle::checked(WinHttpOpenRequest(
                 connection.0,
                 wide("GET").as_ptr(),
-                wide("/repos/Elnyxn/weiwin/releases/latest").as_ptr(),
+                wide("/repos/hardware661/xueer-ear/releases/latest").as_ptr(),
                 ptr::null(),
                 ptr::null(),
                 ptr::null(),
@@ -348,8 +348,8 @@ mod tests {
             "tag_name": tag, "draft": false, "prerelease": false,
             "html_url": "https://example.invalid/redirect",
             "assets": [
-                {"name": format!("weiwin-{normalized}-windows-x64-portable.zip"), "browser_download_url":"https://example.invalid/zip"},
-                {"name": format!("weiwin-{normalized}-windows-x64-setup.exe"), "browser_download_url":"https://example.invalid/exe"}
+                {"name": format!("xueer-ear-{normalized}-windows-x64-portable.zip"), "browser_download_url":"https://example.invalid/zip"},
+                {"name": format!("xueer-ear-{normalized}-windows-x64-setup.exe"), "browser_download_url":"https://example.invalid/exe"}
             ]
         })
     }
@@ -365,7 +365,7 @@ mod tests {
         assert_eq!(release.version, "0.1.10");
         assert_eq!(
             release.url,
-            "https://github.com/Elnyxn/weiwin/releases/tag/v0.1.10"
+            "https://github.com/hardware661/xueer-ear/releases/tag/v0.1.10"
         );
         assert!(
             parse(&encoded(&fixture("0.1.9")), "v0.1.10")
@@ -387,7 +387,7 @@ mod tests {
                 .unwrap()
                 .unwrap()
                 .url,
-            "https://github.com/Elnyxn/weiwin/releases/tag/0.1.10"
+            "https://github.com/hardware661/xueer-ear/releases/tag/0.1.10"
         );
     }
 
@@ -404,7 +404,7 @@ mod tests {
             assert!(parse(&encoded(&value), "1.2.2").unwrap().is_none());
         }
         let mut value = fixture("v1.2.3");
-        value["assets"][0]["name"] = "weiwin-1.2.2-windows-x64-portable.zip".into();
+        value["assets"][0]["name"] = "xueer-ear-1.2.2-windows-x64-portable.zip".into();
         assert!(parse(&encoded(&value), "1.2.2").unwrap().is_none());
     }
 
@@ -448,7 +448,7 @@ mod tests {
                 .unwrap()
                 .as_nanos();
             let root = std::env::temp_dir().join(format!(
-                "weiwin-update-test-{}-{time}-{}",
+                "xueer-ear-update-test-{}-{time}-{}",
                 std::process::id(),
                 TEMP_SEQUENCE.fetch_add(1, Ordering::Relaxed)
             ));

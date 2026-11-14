@@ -28,7 +28,7 @@ pub struct Status(Arc<Mutex<Store>>);
 impl Status {
     pub fn new(backend: &'static str) -> Result<Self> {
         let folder = PathBuf::from(std::env::var_os("LOCALAPPDATA").ok_or("LOCALAPPDATA不可用")?)
-            .join("WeChatWinH");
+            .join("XueerEar");
         std::fs::create_dir_all(&folder)?;
         let status = Self(Arc::new(Mutex::new(Store {
             path: folder.join("status.json"),
@@ -113,7 +113,7 @@ pub fn active_backend_label() -> &'static str {
     let Some(root) = std::env::var_os("LOCALAPPDATA") else {
         return "识别";
     };
-    let path = PathBuf::from(root).join("WeChatWinH/status.json");
+    let path = PathBuf::from(root).join("XueerEar/status.json");
     let Ok(file) = std::fs::File::open(path) else {
         return "识别";
     };
@@ -137,7 +137,7 @@ pub fn startup_error(message: &str) {
     let Some(root) = std::env::var_os("LOCALAPPDATA") else {
         return;
     };
-    let path = PathBuf::from(root).join("WeChatWinH/status.json");
+    let path = PathBuf::from(root).join("XueerEar/status.json");
     let Ok(bytes) = std::fs::read(&path) else {
         return;
     };

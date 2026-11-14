@@ -8,7 +8,7 @@ use std::{
     path::{Path, PathBuf},
     ptr,
 };
-use wechat_winh_bridge::{INSTALL_MAGIC, InstallArgs};
+use xueer_ear_bridge::{INSTALL_MAGIC, InstallArgs};
 use windows_sys::Win32::{
     Foundation::{
         CloseHandle, DUPLICATE_SAME_ACCESS, DuplicateHandle, FreeLibrary, HANDLE,
@@ -230,7 +230,13 @@ fn duplicate_to(process: HANDLE, handle: HANDLE) -> Result<usize> {
     Ok(remote as usize)
 }
 
-fn verify_file(path: &Path, expected: &str) -> Result<()> {
+/// Verified TextInputHost builds: upstream baseline, then 25H2 build 26200.9974.
+const HOST_HASHES: &[&str] = &[
+    "ab4c670a7f05ff99ae7615eec97de78e2b520427bc30f420b7d90a7a85bcee44",
+    "f8ce4468a30531a911e6d9529c80215f76ced417ca6fbe68f13de199ed3f692e",
+];
+
+fn verify_file(path: &Path, expected: &[&str]) -> Result<()> {
     if std::fs::metadata(path)?.len() > 32 * 1024 * 1024 {
         return Err("系统模块超过预期大小".into());
     }
@@ -239,7 +245,7 @@ fn verify_file(path: &Path, expected: &str) -> Result<()> {
         use std::fmt::Write;
         write!(&mut actual, "{byte:02x}")?;
     }
-    if actual != expected {
+    if !expected.contains(&actual.as_str()) {
         return Err("当前系统版本不在已验证范围内".into());
     }
     Ok(())
@@ -309,27 +315,24 @@ impl Adapter {
         ) {
             return Err("TextInputHost 路径与受支持系统不符".into());
         }
-        verify_file(
-            Path::new(&image),
-            "ab4c670a7f05ff99ae7615eec97de78e2b520427bc30f420b7d90a7a85bcee44",
-        )?;
+        verify_file(Path::new(&image), HOST_HASHES)?;
         // Initialize the known system boundary before first Win+H activation. This
         // loads existing signed OS modules, without starting recognition or UI.
         let system_modules = [
             (
                 "MSVCP140_CODECVT_IDS_APP.dll",
                 r"C:\Windows\SystemApps\MicrosoftWindows.Client.CoreAI_cw5n1h2txyewy\MSVCP140_CODECVT_IDS_APP.dll",
-                "b9a43374c780b58f56575b4af88eac241089b32df2a8d9458d12ac2f1a68b9e2",
+                &["b9a43374c780b58f56575b4af88eac241089b32df2a8d9458d12ac2f1a68b9e2"][..],
             ),
             (
                 "Microsoft.CognitiveServices.Speech.core.dll",
                 r"C:\Windows\SystemApps\SxS\MicrosoftWindows.61869836.InpApp_cw5n1h2txyewy\TextInput\Microsoft.CognitiveServices.Speech.core.dll",
-                "00b8c930a414ab37148beb359adbcecf828ef7e9dd4452dc1dde378a6a5fd3bd",
+                &["00b8c930a414ab37148beb359adbcecf828ef7e9dd4452dc1dde378a6a5fd3bd"][..],
             ),
             (
                 "TextInput.CarbonDictation.dll",
                 r"C:\Windows\SystemApps\SxS\MicrosoftWindows.61869836.InpApp_cw5n1h2txyewy\TextInput.CarbonDictation.dll",
-                "b6188de140529f87f7fb8c38e6f43c44ed778f310d069d02332371e2c446433b",
+                xueer_ear_bridge::CARBON_HASHES,
             ),
         ];
         for (_, path, hash) in &system_modules {

@@ -1,5 +1,5 @@
 [package]
-name = "wechat-voice-protocol"
+name = "xueer-ear-protocol"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

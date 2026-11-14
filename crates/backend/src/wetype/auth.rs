@@ -7,7 +7,7 @@ use std::{
     collections::BTreeMap,
     time::{Duration, Instant},
 };
-use wechat_voice_protocol::wire;
+use xueer_ear_protocol::wire;
 
 const BOOTSTRAP: &[u8; 32] = include_bytes!("../../../../assets/wetype-bootstrap.bin");
 const SIGN_SALT: &[u8; 16] = include_bytes!("../../../../assets/wetype-sign-salt.bin");
@@ -73,7 +73,7 @@ impl Device {
         Ok(std::path::PathBuf::from(
             std::env::var_os("LOCALAPPDATA").ok_or("LOCALAPPDATA unavailable")?,
         )
-        .join("WeChatWinH/wetype-device.json"))
+        .join("XueerEar/wetype-device.json"))
     }
 
     pub fn load_default() -> Result<Self> {

@@ -1,3 +1,3 @@
 @echo off
-"%~dp0wechat-winh.exe" stop
+"%~dp0xueer-ear-host.exe" stop
 if errorlevel 1 pause

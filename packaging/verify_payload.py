@@ -8,7 +8,7 @@ import zipfile
 
 
 def payload_names(version):
-    return {"微win.exe", "wechat-winh.exe", f"wechat_winh_bridge-{version}.dll",
+    return {"xueer-ear.exe", "xueer-ear-host.exe", f"xueer_ear_bridge-{version}.dll",
             "README.md", "LICENSE", "Start.cmd", "Stop.cmd", "OCTICONS-LICENSE.txt"}
 
 
@@ -86,13 +86,13 @@ def check_stage(path, version, static_crt=True):
     for name in expected:
         entry = path / name
         assert entry.is_file() and not entry.is_symlink() and entry.stat().st_size > 0, name
-    for name in ("微win.exe", "wechat-winh.exe", f"wechat_winh_bridge-{version}.dll"):
+    for name in ("xueer-ear.exe", "xueer-ear-host.exe", f"xueer_ear_bridge-{version}.dll"):
         pe = PE(path / name)
         if static_crt:
             forbidden = [dll for dll in pe.imports() if re.match(
                 r"^(?:vcruntime|msvcp|msvcr|concrt|ucrtbase|api-ms-win-crt|libgcc|libstdc\+\+|libwinpthread|opus\.)", dll)]
             assert not forbidden, f"{name}: unexpected dynamic runtime {forbidden}"
-        if name == "微win.exe":
+        if name == "xueer-ear.exe":
             assert pe.resource(14, 100) and pe.resource(14, 101), "both GUI icons required"
             manifest = pe.resource(24, 1).decode("utf-8-sig")
             assert 'level="highestAvailable"' in manifest and "PerMonitorV2" in manifest

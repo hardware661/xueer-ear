@@ -1,7 +1,7 @@
 //! Register a fresh anonymous device or reuse a persisted one, then save it.
 //! No installed application, account, or user session is read.
 use std::{fs, path::PathBuf};
-use wechat_voice_backend::wetype::{Client, Device};
+use xueer_ear_backend::wetype::{Client, Device};
 
 fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let path = std::env::args_os()

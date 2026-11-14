@@ -6,23 +6,23 @@
 #endif
 
 [Setup]
-AppId={{5E0A49D9-2132-488E-B1ED-7B5CF144AE44}
-AppName=微win
+AppId={{660FE38B-9856-4B3B-A919-7D9DBD5A80F3}
+AppName=雪耳
 AppVersion={#AppVersion}
-AppPublisher=Elnyxn
-AppPublisherURL=https://github.com/Elnyxn/weiwin
-AppSupportURL=https://github.com/Elnyxn/weiwin/issues
-AppUpdatesURL=https://github.com/Elnyxn/weiwin/releases/latest
-DefaultDirName={localappdata}\Programs\微win
-DefaultGroupName=微win
+AppPublisher=hardware661
+AppPublisherURL=https://github.com/hardware661/xueer-ear
+AppSupportURL=https://github.com/hardware661/xueer-ear/issues
+AppUpdatesURL=https://github.com/hardware661/xueer-ear/releases/latest
+DefaultDirName={localappdata}\Programs\xueer-ear
+DefaultGroupName=雪耳
 DisableProgramGroupPage=yes
 PrivilegesRequired=lowest
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 MinVersion=10.0.22000
-OutputBaseFilename=weiwin-{#AppVersion}-windows-x64-setup
+OutputBaseFilename=xueer-ear-{#AppVersion}-windows-x64-setup
 SetupIconFile=..\assets\app-icon.ico
-UninstallDisplayIcon={app}\微win.exe
+UninstallDisplayIcon={app}\xueer-ear.exe
 Compression=lzma2
 SolidCompression=yes
 WizardStyle=modern
@@ -42,25 +42,25 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 Name: "desktopicon"; Description: "创建桌面快捷方式"; GroupDescription: "快捷方式"; Flags: unchecked
 
 [Files]
-Source: "{#StageDir}\微win.exe"; DestDir: "{app}"; Flags: ignoreversion
-Source: "{#StageDir}\wechat-winh.exe"; DestDir: "{app}"; Flags: ignoreversion
+Source: "{#StageDir}\xueer-ear.exe"; DestDir: "{app}"; Flags: ignoreversion
+Source: "{#StageDir}\xueer-ear-host.exe"; DestDir: "{app}"; Flags: ignoreversion
 ; Versioned bridge can remain mapped by Windows after cooperative Disable.
 ; Never overwrite it during same-version reinstall or force-stop its host.
-Source: "{#StageDir}\wechat_winh_bridge-{#AppVersion}.dll"; DestDir: "{app}"; Flags: onlyifdoesntexist uninsrestartdelete
+Source: "{#StageDir}\xueer_ear_bridge-{#AppVersion}.dll"; DestDir: "{app}"; Flags: onlyifdoesntexist uninsrestartdelete
 Source: "{#StageDir}\README.md"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#StageDir}\LICENSE"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#StageDir}\Start.cmd"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#StageDir}\Stop.cmd"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#StageDir}\OCTICONS-LICENSE.txt"; DestDir: "{app}"; Flags: ignoreversion
 ; Only the new GUI implements the current cooperative-shutdown contract.
-Source: "{#StageDir}\微win.exe"; DestName: "weiwin-shutdown.exe"; Flags: dontcopy
+Source: "{#StageDir}\xueer-ear.exe"; DestName: "xueer-ear-shutdown.exe"; Flags: dontcopy
 
 [Icons]
-Name: "{autoprograms}\微win"; Filename: "{app}\微win.exe"; WorkingDir: "{app}"
-Name: "{autodesktop}\微win"; Filename: "{app}\微win.exe"; WorkingDir: "{app}"; Tasks: desktopicon
+Name: "{autoprograms}\雪耳"; Filename: "{app}\xueer-ear.exe"; WorkingDir: "{app}"
+Name: "{autodesktop}\雪耳"; Filename: "{app}\xueer-ear.exe"; WorkingDir: "{app}"; Tasks: desktopicon
 
 [Run]
-Filename: "{app}\微win.exe"; Description: "打开微win"; Flags: nowait postinstall skipifsilent shellexec runasoriginaluser
+Filename: "{app}\xueer-ear.exe"; Description: "打开雪耳"; Flags: nowait postinstall skipifsilent shellexec runasoriginaluser
 
 [Code]
 var
@@ -80,11 +80,11 @@ begin
   Result := '';
   if ShutdownComplete then
     Exit;
-  ExtractTemporaryFile('weiwin-shutdown.exe');
-  ExtractTemporaryFile('wechat-winh.exe');
-  if not CooperativeShutdown(ExpandConstant('{tmp}\weiwin-shutdown.exe'), ExpandConstant('{tmp}')) then
+  ExtractTemporaryFile('xueer-ear-shutdown.exe');
+  ExtractTemporaryFile('xueer-ear-host.exe');
+  if not CooperativeShutdown(ExpandConstant('{tmp}\xueer-ear-shutdown.exe'), ExpandConstant('{tmp}')) then
   begin
-    Result := '微win 尚未完成退出与恢复，请先退出微win后重试。';
+    Result := '雪耳 尚未完成退出与恢复，请先退出雪耳后重试。';
     Exit;
   end;
   ShutdownComplete := True;
@@ -92,15 +92,15 @@ end;
 
 function InitializeUninstall: Boolean;
 begin
-  if not FileExists(ExpandConstant('{app}\微win.exe')) then
+  if not FileExists(ExpandConstant('{app}\xueer-ear.exe')) then
   begin
-    MsgBox('找不到微win退出程序。请先恢复安装，再执行卸载。', mbError, MB_OK);
+    MsgBox('找不到雪耳退出程序。请先恢复安装，再执行卸载。', mbError, MB_OK);
     Result := False;
     Exit;
   end;
-  Result := CooperativeShutdown(ExpandConstant('{app}\微win.exe'), ExpandConstant('{app}'));
+  Result := CooperativeShutdown(ExpandConstant('{app}\xueer-ear.exe'), ExpandConstant('{app}'));
   if not Result then
-    MsgBox('微win 尚未完成退出与恢复，卸载已中止。', mbError, MB_OK);
+    MsgBox('雪耳 尚未完成退出与恢复，卸载已中止。', mbError, MB_OK);
 end;
 
-// No [UninstallDelete] for LOCALAPPDATA\WeChatWinH: user identity/settings/logs stay intact.
+// No [UninstallDelete] for LOCALAPPDATA\XueerEar: user identity/settings/logs stay intact.

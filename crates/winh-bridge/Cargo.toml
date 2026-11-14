@@ -1,5 +1,5 @@
 [package]
-name = "wechat-winh-bridge"
+name = "xueer-ear-bridge"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

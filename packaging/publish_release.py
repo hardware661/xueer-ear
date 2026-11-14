@@ -15,8 +15,8 @@ def gh(*args, check=True):
 def publish(directory, version, tag, repository):
     if not re.fullmatch(r"\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?", version) or tag != "v" + version:
         raise ValueError("tag and Cargo version differ")
-    names = {f"weiwin-{version}-windows-x64-portable.zip",
-             f"weiwin-{version}-windows-x64-setup.exe", "SHA256SUMS.txt"}
+    names = {f"xueer-ear-{version}-windows-x64-portable.zip",
+             f"xueer-ear-{version}-windows-x64-setup.exe", "SHA256SUMS.txt"}
     actual = {path.name for path in directory.iterdir()}
     if actual != names:
         raise ValueError("release directory must contain exactly ZIP, installer and SHA256SUMS")
@@ -53,7 +53,7 @@ def publish(directory, version, tag, repository):
         return
     if release is None:
         arguments = ["release", "create", tag, "--repo", repository, "--verify-tag", "--draft",
-                     "--title", f"微win {version}", "--generate-notes"]
+                     "--title", f"雪耳 {version}", "--generate-notes"]
         if "-" in version:
             arguments.append("--prerelease")
         gh(*arguments)

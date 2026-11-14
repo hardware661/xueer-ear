@@ -5,6 +5,7 @@ pub mod abi;
 mod hooks;
 pub mod ipc;
 mod pe;
+pub use pe::CARBON_HASHES;
 #[cfg(windows)]
 mod recover;
 mod state;

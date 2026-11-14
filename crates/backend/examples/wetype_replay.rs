@@ -5,8 +5,8 @@ use std::{
     path::PathBuf,
     time::{Duration, Instant},
 };
-use wechat_voice_backend::wetype::{Client, Device};
-use wechat_voice_protocol::{wetype, wire};
+use xueer_ear_backend::wetype::{Client, Device};
+use xueer_ear_protocol::{wetype, wire};
 
 fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let args: Vec<_> = std::env::args_os().skip(1).collect();

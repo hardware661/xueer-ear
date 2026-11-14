@@ -33,17 +33,17 @@ try {
     $metadataText = & cargo metadata --locked --no-deps --format-version 1
     if ($LASTEXITCODE -ne 0) { throw 'cargo metadata failed' }
     $metadata = ($metadataText -join "`n") | ConvertFrom-Json
-    $version = @($metadata.packages | Where-Object name -eq 'wechat-winh')[0].version
+    $version = @($metadata.packages | Where-Object name -eq 'xueer-ear-host')[0].version
     if ($version -notmatch '^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$') { throw 'Invalid Cargo version.' }
     if ($ExpectedTag -and $ExpectedTag -ne "v$version") { throw "Tag $ExpectedTag does not match Cargo v$version" }
     if (-not $SkipTests) {
         Invoke-Tool 'cargo' @('test', '--locked', '--workspace', '--lib', '--bins', '--target', $target)
     }
     Invoke-Tool 'cargo' @('build', '--locked', '--release', '--target', $target,
-        '-p', 'wechat-winh', '-p', 'wechat-winh-bridge', '-p', 'wechat-winh-gui')
+        '-p', 'xueer-ear-host', '-p', 'xueer-ear-bridge', '-p', 'xueer-ear')
 
-    $portableName = "weiwin-$version-windows-x64-portable.zip"
-    $installerName = "weiwin-$version-windows-x64-setup.exe"
+    $portableName = "xueer-ear-$version-windows-x64-portable.zip"
+    $installerName = "xueer-ear-$version-windows-x64-setup.exe"
     $releaseNames = @($portableName, $installerName, 'SHA256SUMS.txt')
     $unexpected = @(Get-ChildItem -LiteralPath $releaseDirectory | Where-Object { $_.Name -notin $releaseNames })
     if ($unexpected.Count) { throw 'Output release directory contains unrelated files; choose a fresh output directory.' }
@@ -51,9 +51,9 @@ try {
     New-Item -ItemType Directory -Path $stage | Out-Null
     $binaries = Join-Path $projectRoot "target\$target\release"
     # Explicit files only. Never recursively copy a build, repository, or profile directory.
-    Copy-Item -LiteralPath (Join-Path $binaries '微win.exe') -Destination $stage
-    Copy-Item -LiteralPath (Join-Path $binaries 'wechat-winh.exe') -Destination $stage
-    Copy-Item -LiteralPath (Join-Path $binaries 'wechat_winh_bridge.dll') -Destination (Join-Path $stage "wechat_winh_bridge-$version.dll")
+    Copy-Item -LiteralPath (Join-Path $binaries 'xueer-ear.exe') -Destination $stage
+    Copy-Item -LiteralPath (Join-Path $binaries 'xueer-ear-host.exe') -Destination $stage
+    Copy-Item -LiteralPath (Join-Path $binaries 'xueer_ear_bridge.dll') -Destination (Join-Path $stage "xueer_ear_bridge-$version.dll")
     Copy-Item -LiteralPath (Join-Path $projectRoot 'README.md') -Destination $stage
     Copy-Item -LiteralPath (Join-Path $projectRoot 'LICENSE') -Destination $stage
     foreach ($name in @('Start.cmd', 'Stop.cmd')) {
@@ -72,7 +72,7 @@ try {
     )
     $inno = @($innoCandidates | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1)
     if (-not $inno.Count) { throw 'Inno Setup 6 is absent. No system tools were installed automatically.' }
-    Invoke-Tool $inno[0] @('/Qp', "/DAppVersion=$version", "/DStageDir=$stage", "/O$releaseDirectory", (Join-Path $PSScriptRoot 'weiwin.iss'))
+    Invoke-Tool $inno[0] @('/Qp', "/DAppVersion=$version", "/DStageDir=$stage", "/O$releaseDirectory", (Join-Path $PSScriptRoot 'xueer-ear.iss'))
     $installer = Join-Path $releaseDirectory $installerName
     if (-not (Test-Path -LiteralPath $installer)) { throw 'Installer output is missing.' }
     $sumLines = foreach ($file in @($portable, $installer)) {

@@ -3,8 +3,8 @@ use std::{
     collections::BTreeMap,
     time::{Duration, Instant},
 };
-use wechat_voice_backend::wetype::{Transport, request};
-use wechat_voice_protocol::wire;
+use xueer_ear_backend::wetype::{Transport, request};
+use xueer_ear_protocol::wire;
 
 fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let mut socket = Transport::connect()?;

@@ -3,10 +3,10 @@ members = ["crates/protocol", "crates/backend", "crates/audio", "crates/winh-bri
 resolver = "3"
 
 [workspace.package]
-version = "0.2.3"
+version = "0.1.0"
 edition = "2024"
 license = "MIT"
-homepage = "https://github.com/Elnyxn/weiwin"
+homepage = "https://github.com/hardware661/xueer-ear"
 
 [profile.release]
 opt-level = 3

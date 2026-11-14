@@ -18,7 +18,7 @@ use std::{
     time::{Duration, Instant},
 };
 use tungstenite::{Message, WebSocket, client::IntoClientRequest, http, stream::MaybeTlsStream};
-use wechat_voice_protocol::{receiver::Receiver, wire};
+use xueer_ear_protocol::{receiver::Receiver, wire};
 
 type Result<T> = std::result::Result<T, Box<dyn Error + Send + Sync>>;
 

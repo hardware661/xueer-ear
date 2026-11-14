@@ -3,8 +3,14 @@
 use crate::hooks;
 use std::collections::HashSet;
 
-pub(crate) const CARBON_HASH: &str =
-    "b6188de140529f87f7fb8c38e6f43c44ed778f310d069d02332371e2c446433b";
+/// Verified CarbonDictation builds. The IAT is resolved by import name, so each
+/// entry only needs the import contract below to hold (see the local-image test).
+pub const CARBON_HASHES: &[&str] = &[
+    // Windows 11 24H2/25H2, upstream baseline
+    "b6188de140529f87f7fb8c38e6f43c44ed778f310d069d02332371e2c446433b",
+    // Windows 11 25H2 build 26200.9974, CarbonDictation 2609.28000
+    "1822a1e351ee5e9c7037a46a4cb2595478bcdcc77f7ea507b4b5428a2c4a193e",
+];
 pub(crate) const CORE_HASH: &str =
     "00b8c930a414ab37148beb359adbcecf828ef7e9dd4452dc1dde378a6a5fd3bd";
 pub(crate) const CORE_NAME: &str = "Microsoft.CognitiveServices.Speech.core.dll";
@@ -266,17 +272,13 @@ mod tests {
             return;
         };
         let bytes = std::fs::read(path).unwrap();
-        assert_eq!(format!("{:x}", Sha256::digest(&bytes)), CARBON_HASH);
+        let hash = format!("{:x}", Sha256::digest(&bytes));
+        assert!(CARBON_HASHES.contains(&hash.as_str()), "unverified CarbonDictation {hash}");
+        // imports() already rejects images that miss a required or add an unknown start/stop.
         let image = imports(&bytes).unwrap();
         assert!(image.imports.iter().all(|i| i.delay_stub_rva.is_some()));
-        assert!(
-            image
-                .imports
-                .iter()
-                .any(|i| i.name == "result_get_text" && i.iat_rva == 0xe0120)
-        );
-        assert!(image.imports.iter().any(|i| i.name
-            == "recognizer_start_continuous_recognition_async"
-            && i.iat_rva == 0xe0230));
+        for name in ["result_get_text", "recognizer_start_continuous_recognition_async"] {
+            assert!(image.imports.iter().any(|i| i.name == name));
+        }
     }
 }

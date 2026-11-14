@@ -12,8 +12,8 @@ use std::{
     thread::{self, JoinHandle},
     time::{Duration, Instant},
 };
-use wechat_voice_backend::engine::{self, Event, Source};
-use wechat_winh_bridge::ipc::{BridgeError, BridgeEvent, BridgeRequest};
+use xueer_ear_backend::engine::{self, Event, Source};
+use xueer_ear_bridge::ipc::{BridgeError, BridgeEvent, BridgeRequest};
 use windows_sys::Win32::System::Console::SetConsoleCtrlHandler;
 
 static EXIT: AtomicBool = AtomicBool::new(false);
@@ -48,10 +48,10 @@ impl Backend {
 
     fn preflight(self, cancelled: &dyn Fn() -> bool) -> Result<()> {
         match self {
-            Self::WeType => wechat_voice_backend::wetype::preflight_cancellable(cancelled),
+            Self::WeType => xueer_ear_backend::wetype::preflight_cancellable(cancelled),
             Self::WeChat => {
                 let pid = install::wechat_pid()?;
-                wechat_voice_backend::runtime_account::read(pid)?;
+                xueer_ear_backend::runtime_account::read(pid)?;
                 Ok(())
             }
         }
@@ -95,7 +95,7 @@ fn verification_target() -> bool {
         let mut class = [0_u16; 256];
         let count = GetClassNameW(window, class.as_mut_ptr(), class.len() as i32);
         let class = String::from_utf16_lossy(&class[..count.max(0) as usize]);
-        if class == "WeChatWinHNativeVerification" {
+        if class == "XueerEarNativeVerification" {
             return true;
         }
         if class != "CASCADIA_HOSTING_WINDOW_CLASS" && !class.contains("wpf_native_smoke") {
@@ -141,7 +141,7 @@ fn start(
         let result = (|| {
             let source = match source {
                 Source::Microphone(native) => Source::Microphone(
-                    wechat_voice_backend::settings::Settings::load_default()?
+                    xueer_ear_backend::settings::Settings::load_default()?
                         .microphone
                         .or(native),
                 ),
@@ -270,7 +270,7 @@ pub fn run() -> Result<()> {
     let command = arguments.next();
     if command.as_deref().is_some_and(|s| s != "run") {
         return Err(
-            "用法：wechat-winh.exe run [--backend wetype|wechat] [--verify-wave FILE]".into(),
+            "用法：xueer-ear-host.exe run [--backend wetype|wechat] [--verify-wave FILE]".into(),
         );
     }
     let mut verification_file = None;
@@ -291,14 +291,14 @@ pub fn run() -> Result<()> {
             backend = Backend::parse(&arguments.next().ok_or("缺少识别后端")?)?;
         } else {
             return Err(
-                "用法：wechat-winh.exe run [--backend wetype|wechat] [--verify-wave FILE] [--once]"
+                "用法：xueer-ear-host.exe run [--backend wetype|wechat] [--verify-wave FILE] [--once]"
                     .into(),
             );
         }
     }
     let status = Status::new(backend.name())?;
     if let Some(path) = &verification_file {
-        wechat_voice_backend::engine::validate_wave(path)?;
+        xueer_ear_backend::engine::validate_wave(path)?;
     }
     // Provider initialization must succeed before touching the Windows adapter.
     unsafe {
@@ -316,7 +316,7 @@ pub fn run() -> Result<()> {
         return Err(error);
     }
     let dll = bridge_file.unwrap_or(std::env::current_exe()?.with_file_name(concat!(
-        "wechat_winh_bridge-",
+        "xueer_ear_bridge-",
         env!("CARGO_PKG_VERSION"),
         ".dll"
     )));

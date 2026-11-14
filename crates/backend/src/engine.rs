@@ -12,12 +12,12 @@ use std::{
     thread::{self, JoinHandle},
     time::{Duration, Instant},
 };
-use wechat_voice_audio::{
+use xueer_ear_audio::{
     activity::{Activity, ActivityEvent},
     encoder::{CHUNK_SAMPLES, FRAME_SAMPLES, OpusStream},
     microphone::Microphone,
 };
-use wechat_voice_protocol::{
+use xueer_ear_protocol::{
     receiver::Receiver as SpeechReceiver, rpc, stream, transcript::SpeechEvent, voice::Profile,
 };
 pub use wetype::run as run_wetype;
@@ -28,7 +28,7 @@ pub enum Source {
     WaveHold(PathBuf),
 }
 pub fn validate_wave(path: &std::path::Path) -> Result<()> {
-    wechat_voice_audio::wave::read(path).map(|_| ())
+    xueer_ear_audio::wave::read(path).map(|_| ())
 }
 pub enum Event {
     Started,
@@ -50,7 +50,7 @@ pub enum Event {
     },
 }
 enum Audio {
-    Ready(Option<wechat_voice_audio::microphone::Device>),
+    Ready(Option<xueer_ear_audio::microphone::Device>),
     Start,
     Chunk(Vec<u8>),
     End,
@@ -149,7 +149,7 @@ fn produce(
             }
         }
         Source::Wave(path) | Source::WaveHold(path) => {
-            let mut samples = wechat_voice_audio::wave::read(&path)?;
+            let mut samples = xueer_ear_audio::wave::read(&path)?;
             if hold_wave {
                 samples.splice(..0, std::iter::repeat_n(0, 16_000));
             }
@@ -192,7 +192,7 @@ fn produce(
 
 fn turns_ready(
     sender: &SyncSender<Audio>,
-    device: Option<wechat_voice_audio::microphone::Device>,
+    device: Option<xueer_ear_audio::microphone::Device>,
 ) -> Result<()> {
     sender
         .try_send(Audio::Ready(device))
@@ -562,8 +562,8 @@ pub fn run(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use wechat_voice_audio::{activity::SILENCE_SAMPLES, encoder::HEADER};
-    use wechat_voice_protocol::wire;
+    use xueer_ear_audio::{activity::SILENCE_SAMPLES, encoder::HEADER};
+    use xueer_ear_protocol::wire;
 
     fn voice() -> Vec<i16> {
         let mut phase = 0.0_f64;

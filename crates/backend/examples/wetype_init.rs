@@ -1,4 +1,4 @@
-use wechat_voice_backend::wetype::{Client, Device};
+use xueer_ear_backend::wetype::{Client, Device};
 fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let started = std::time::Instant::now();
     let device = if let Some(path) = std::env::args_os().nth(1) {

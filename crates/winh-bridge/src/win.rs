@@ -70,7 +70,7 @@ fn wide(value: &str) -> Vec<u16> {
     value.encode_utf16().chain(Some(0)).collect()
 }
 
-unsafe fn checked_module(name: &str, expected_hash: &str) -> Result<(HMODULE, Vec<u8>), u32> {
+unsafe fn checked_module(name: &str, expected_hashes: &[&str]) -> Result<(HMODULE, Vec<u8>), u32> {
     let name = wide(name);
     let module = unsafe { GetModuleHandleW(name.as_ptr()) };
     if module.is_null() {
@@ -88,7 +88,7 @@ unsafe fn checked_module(name: &str, expected_hash: &str) -> Result<(HMODULE, Ve
         return Err(IDENTITY_MISMATCH);
     }
     let bytes = std::fs::read(path).map_err(|_| IDENTITY_MISMATCH)?;
-    if format!("{:x}", Sha256::digest(&bytes)) != expected_hash {
+    if !expected_hashes.contains(&format!("{:x}", Sha256::digest(&bytes)).as_str()) {
         return Err(IDENTITY_MISMATCH);
     }
     Ok((module, bytes))
@@ -367,8 +367,8 @@ pub(crate) unsafe fn install(args: InstallArgs) -> u32 {
     }
     let result = (|| -> Result<(), u32> {
         let (carbon, carbon_bytes) =
-            unsafe { checked_module("TextInput.CarbonDictation.dll", pe::CARBON_HASH) }?;
-        let (core, _) = unsafe { checked_module(pe::CORE_NAME, pe::CORE_HASH) }?;
+            unsafe { checked_module("TextInput.CarbonDictation.dll", pe::CARBON_HASHES) }?;
+        let (core, _) = unsafe { checked_module(pe::CORE_NAME, &[pe::CORE_HASH]) }?;
         let (patches, originals) = unsafe { plan(carbon, core, &carbon_bytes) }?;
         // Hooks and worker entrypoints must survive even if the loader's client
         // drops its reference. Disable restores imports but never unloads this DLL.

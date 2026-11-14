@@ -1,5 +1,5 @@
 [package]
-name = "wechat-voice-audio"
+name = "xueer-ear-audio"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

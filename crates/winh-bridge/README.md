@@ -39,7 +39,7 @@ Disable 只允许引擎空闲、回调排空且 fake handles 全部释放。host
 
 ## IPC 与生命周期
 
-host 可复用 `wechat_winh_bridge::ipc::{BridgeRequest, BridgeEvent, BridgeError}`。请求为 `cmd` tagged enum，Start/Stop 都含 `reco:u64,generation:u64,language:String,device:String`。事件为 `event` tagged enum：
+host 可复用 `xueer_ear_bridge::ipc::{BridgeRequest, BridgeEvent, BridgeError}`。请求为 `cmd` tagged enum，Start/Stop 都含 `reco:u64,generation:u64,language:String,device:String`。事件为 `event` tagged enum：
 
 - started：身份与 `session:String`。
 - partial/final：身份与 `text:String,offset:u64,duration:u64`。
@@ -87,8 +87,8 @@ https://raw.githubusercontent.com/microsoft/cognitive-services-speech-sdk-go/mas
 离线测试覆盖 C UTF-8 缓冲区状态、fake 句柄失效隔离、真实 Carbon delay-import fixture、未知入口拒绝、跨轮隔离、每句 result_id、final 排空、无锁回调重入和有界队列失败。读取实际 Carbon fixture 时显式设置：
 
 ```sh
-WXB_BRIDGE_TEST_CARBON_PATH=/mnt/c/Windows/SystemApps/SxS/MicrosoftWindows.61869836.InpApp_cw5n1h2txyewy/TextInput.CarbonDictation.dll cargo test -p wechat-winh-bridge --lib
-cargo check -p wechat-winh-bridge --target x86_64-pc-windows-gnu
+WXB_BRIDGE_TEST_CARBON_PATH=/mnt/c/Windows/SystemApps/SxS/MicrosoftWindows.61869836.InpApp_cw5n1h2txyewy/TextInput.CarbonDictation.dll cargo test -p xueer-ear-bridge --lib
+cargo check -p xueer-ear-bridge --target x86_64-pc-windows-gnu
 ```
 
 隔离宿主已用真实SDK预注册callbacks，通过真实Carbon IAT验证启动、partial/final/canceled、真propertybag、stop与Disable恢复。主程序另在原生Win+H+标准EDIT窗口完成云端WAV识别文字提交，进程PID保持不变。麦克风采集另测；未宣称额外实时口述或原生音量波形验收。

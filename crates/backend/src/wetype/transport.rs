@@ -6,7 +6,7 @@ use std::{
     time::Duration,
 };
 use tungstenite::{Message, WebSocket, client::IntoClientRequest, http, stream::MaybeTlsStream};
-use wechat_voice_protocol::wire::{self, Value};
+use xueer_ear_protocol::wire::{self, Value};
 
 const HOST: &str = "wetype.weixin.qq.com";
 pub struct Transport {

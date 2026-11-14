@@ -10,7 +10,7 @@ use std::{
     thread,
     time::{Duration, Instant},
 };
-use wechat_voice_protocol::{transcript::SpeechEvent, wetype};
+use xueer_ear_protocol::{transcript::SpeechEvent, wetype};
 
 struct Turn {
     client: Client,

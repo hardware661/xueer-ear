@@ -32,8 +32,8 @@ use windows_sys::Win32::{
     },
 };
 
-const CLASS: &str = "WeChatWinH.ControlPanel";
-const APP_NAME: &str = "微win";
+const CLASS: &str = "XueerEar.ControlPanel";
+const APP_NAME: &str = "雪耳";
 const TRAY: u32 = WM_APP + 1;
 const DONE: u32 = WM_APP + 2;
 const UPDATE_READY: u32 = WM_APP + 3;
@@ -191,18 +191,18 @@ fn backend_command(action: Action) -> Result<(), String> {
         .map_err(|e| e.to_string())?
         .parent()
         .ok_or("无法定位程序目录")?
-        .join("wechat-winh.exe");
+        .join("xueer-ear-host.exe");
     // An uninstalled GUI may still exit when no broker owns the restoration event.
     if matches!(action, Action::Exit)
         && !executable.is_file()
-        && !event("Local\\WeChatWinH.Stop", false)
+        && !event("Local\\XueerEar.Stop", false)
     {
         return Ok(());
     }
     // A detached descendant can retain a redirected pipe on Windows. Wait for
     // the command process itself and read a bounded file after it exits.
     let folder = std::env::var_os("LOCALAPPDATA")
-        .map(|root| PathBuf::from(root).join("WeChatWinH"))
+        .map(|root| PathBuf::from(root).join("XueerEar"))
         .ok_or("无法定位应用数据目录")?;
     std::fs::create_dir_all(&folder).map_err(|e| e.to_string())?;
     let path = folder.join(format!("gui-command-{}.log", std::process::id()));
@@ -257,7 +257,7 @@ struct App {
     tray_tip: String,
     _renderer: Option<view::Renderer>,
     animate: bool,
-    settings: wechat_voice_backend::settings::Settings,
+    settings: xueer_ear_backend::settings::Settings,
     microphones: Vec<(String, String)>,
     update_sender: mpsc::Sender<(bool, Result<Option<crate::update::Release>, String>)>,
     update_receiver: mpsc::Receiver<(bool, Result<Option<crate::update::Release>, String>)>,
@@ -278,7 +278,7 @@ impl App {
             Err(error) => (Default::default(), error),
         };
         let (settings, settings_error) =
-            match wechat_voice_backend::settings::Settings::load_default() {
+            match xueer_ear_backend::settings::Settings::load_default() {
                 Ok(value) => (value, String::new()),
                 Err(error) => (Default::default(), format!("无法读取设置：{error}")),
             };
@@ -299,7 +299,7 @@ impl App {
             github_icon: LoadIconW(module, 101_usize as *const u16),
             taskbar_created: RegisterWindowMessageW(wide("TaskbarCreated").as_ptr()),
             path: std::env::var_os("LOCALAPPDATA")
-                .map(|p| PathBuf::from(p).join("WeChatWinH/status.json")),
+                .map(|p| PathBuf::from(p).join("XueerEar/status.json")),
             status: None,
             ready: false,
             installed: false,
@@ -384,7 +384,7 @@ impl App {
             (TOGGLE, "开启后台服务", BS_OWNERDRAW),
             (MINIMIZE, "最小化", BS_OWNERDRAW),
             (CLOSE, "关闭窗口", BS_OWNERDRAW),
-            (GITHUB, "GitHub · Elnyxn", BS_OWNERDRAW),
+            (GITHUB, "GitHub · hardware661", BS_OWNERDRAW),
             (LABEL_MIC_VALUE, "系统默认", BS_OWNERDRAW),
             (LABEL_SILENCE_VALUE, "3 秒", BS_OWNERDRAW),
             (UPDATE_DOWNLOAD, "下载更新", BS_OWNERDRAW),
@@ -526,7 +526,7 @@ impl App {
         data.uCallbackMessage = TRAY;
         data.hIcon = self.icon;
         let tip = format!(
-            "微win · {} · {}",
+            "雪耳 · {} · {}",
             self.status
                 .as_ref()
                 .map_or("语音输入", Status::backend_label),
@@ -558,8 +558,8 @@ impl App {
 
     unsafe fn refresh(&mut self) {
         let previous = (self.ready, self.installed, self.animate);
-        self.ready = event("Local\\WeChatWinH.Ready", true);
-        self.installed = event("Local\\WeChatWinH.Stop", false);
+        self.ready = event("Local\\XueerEar.Ready", true);
+        self.installed = event("Local\\XueerEar.Stop", false);
         let read = self
             .path
             .as_deref()
@@ -758,7 +758,7 @@ impl App {
                         self.set_text(UPDATE_TITLE, "当前已是最新版本");
                         self.set_text(
                             UPDATE_BODY,
-                            &format!("微win v{}", env!("CARGO_PKG_VERSION")),
+                            &format!("雪耳 v{}", env!("CARGO_PKG_VERSION")),
                         );
                         self.update_bubble(true);
                     } else {
@@ -780,7 +780,7 @@ impl App {
                 if self.update_release.is_some() {
                     "GitHub · 有可用更新"
                 } else {
-                    "GitHub · Elnyxn/weiwin"
+                    "GitHub · hardware661/xueer-ear"
                 },
             );
             InvalidateRect(self.control(GITHUB), ptr::null(), 0);
@@ -954,7 +954,7 @@ impl App {
 
     fn read_microphones(&mut self) -> Result<(), String> {
         let devices =
-            thread::spawn(|| wechat_voice_audio::microphone::devices().map_err(|e| e.to_string()))
+            thread::spawn(|| xueer_ear_audio::microphone::devices().map_err(|e| e.to_string()))
                 .join()
                 .map_err(|_| "无法读取麦克风".to_owned())??;
         self.microphones.clear();
@@ -1520,19 +1520,19 @@ pub fn quit() -> Result<(), String> {
             GetWindowThreadProcessId(window, &mut pid);
             let process = Handle(OpenProcess(SYNCHRONIZATION_SYNCHRONIZE, 0, pid));
             if process.0.is_null() {
-                return Err("无法等待微win退出".to_owned());
+                return Err("无法等待雪耳退出".to_owned());
             }
             if PostMessageW(window, WM_COMMAND, EXIT, 0) == 0 {
-                return Err("无法请求微win退出".to_owned());
+                return Err("无法请求雪耳退出".to_owned());
             }
             if WaitForSingleObject(process.0, 30_000) != WAIT_OBJECT_0 {
-                return Err("微win尚未退出，安装已暂停".to_owned());
+                return Err("雪耳尚未退出，安装已暂停".to_owned());
             }
         }
         let stop = Handle(OpenEventW(
             EVENT_MODIFY_STATE | SYNCHRONIZATION_SYNCHRONIZE,
             0,
-            wide("Local\\WeChatWinH.Stop").as_ptr(),
+            wide("Local\\XueerEar.Stop").as_ptr(),
         ));
         if stop.0.is_null() {
             return Ok(());
@@ -1540,7 +1540,7 @@ pub fn quit() -> Result<(), String> {
         let restored = Handle(OpenEventW(
             SYNCHRONIZATION_SYNCHRONIZE,
             0,
-            wide("Local\\WeChatWinH.Restored").as_ptr(),
+            wide("Local\\XueerEar.Restored").as_ptr(),
         ));
         if restored.0.is_null() || SetEvent(stop.0) == 0 {
             return Err("无法请求后台恢复Windows原生识别".to_owned());
@@ -1558,7 +1558,7 @@ pub fn run() {
         let mutex = Handle(CreateMutexW(
             ptr::null(),
             0,
-            wide("Local\\WeChatWinH.ControlPanel").as_ptr(),
+            wide("Local\\XueerEar.ControlPanel").as_ptr(),
         ));
         if !mutex.0.is_null() && GetLastError() == ERROR_ALREADY_EXISTS {
             let hwnd = FindWindowW(wide(CLASS).as_ptr(), ptr::null());

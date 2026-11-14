@@ -53,7 +53,7 @@ impl Settings {
         let local = std::env::var_os("LOCALAPPDATA")
             .filter(|value| !value.is_empty())
             .ok_or("LOCALAPPDATA 不可用")?;
-        Ok(PathBuf::from(local).join("WeChatWinH/settings.json"))
+        Ok(PathBuf::from(local).join("XueerEar/settings.json"))
     }
 
     fn load(path: &Path) -> Result<Self> {

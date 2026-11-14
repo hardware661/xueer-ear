@@ -1,12 +1,12 @@
 [package]
-name = "wechat-winh"
+name = "xueer-ear-host"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 
 [dependencies]
-wechat-winh-bridge = { path = "../winh-bridge" }
-wechat-voice-backend = { path = "../backend" }
+xueer-ear-bridge = { path = "../winh-bridge" }
+xueer-ear-backend = { path = "../backend" }
 serde_json = "1"
 serde = { version = "1", features = ["derive"] }
 unicode-segmentation = "1"

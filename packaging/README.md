@@ -16,21 +16,21 @@ GitHub runner 使用 `windows-2022`，原生 x64 MSVC、Rust stable 和 `-C targ
 
 `dist/release/` 仅输出：
 
-- `weiwin-<Cargo版本>-windows-x64-portable.zip`
-- `weiwin-<Cargo版本>-windows-x64-setup.exe`
+- `xueer-ear-<Cargo版本>-windows-x64-portable.zip`
+- `xueer-ear-<Cargo版本>-windows-x64-setup.exe`
 - `SHA256SUMS.txt`：上述两包的 SHA256。
 
-便携包根目录和安装 payload 使用同一白名单：`微win.exe`、`wechat-winh.exe`、`wechat_winh_bridge-<版本>.dll`、`README.md`、`LICENSE`、`Start.cmd`、`Stop.cmd`、`OCTICONS-LICENSE.txt`。不递归复制仓库或 target 目录；不会包含 private、research、设备身份、配置、录音或日志。
+便携包根目录和安装 payload 使用同一白名单：`xueer-ear.exe`、`xueer-ear-host.exe`、`xueer_ear_bridge-<版本>.dll`、`README.md`、`LICENSE`、`Start.cmd`、`Stop.cmd`、`OCTICONS-LICENSE.txt`。不递归复制仓库或 target 目录；不会包含 private、research、设备身份、配置、录音或日志。
 
 ## 安装与卸载契约
 
-用户级默认目录为 `%LOCALAPPDATA%\Programs\微win`，开始菜单名称为“微win”，桌面快捷方式可选。升级安装前提取新 GUI 和 broker 到临时目录，调用新 GUI `--quit`；卸载前调用安装目录 GUI `--quit`。两者都等待进程退出码 0，失败中止。ShellExec 允许 GUI 自身 highestAvailable 清单在需要时提示 UAC，拒绝授权不会继续覆盖文件。
+用户级默认目录为 `%LOCALAPPDATA%\Programs\雪耳`，开始菜单名称为“雪耳”，桌面快捷方式可选。升级安装前提取新 GUI 和 broker 到临时目录，调用新 GUI `--quit`；卸载前调用安装目录 GUI `--quit`。两者都等待进程退出码 0，失败中止。ShellExec 允许 GUI 自身 highestAvailable 清单在需要时提示 UAC，拒绝授权不会继续覆盖文件。
 
 编译器目录存在 `Languages\ChineseSimplified.isl` 时提供简体中文向导，否则使用内置英文向导；两种情况下应用名称、目录和快捷方式均为中文，不依赖下载社区译本。
 
-GUI 的 `--quit` 必须先让本产品旧 GUI 退出、让 broker 完成 Windows 原生恢复，并在确认后返回 0；失败返回非 0。临时 GUI 被命名为 `weiwin-shutdown.exe`，其同目录有 `wechat-winh.exe`，该退出逻辑不应依赖 GUI 文件名。
+GUI 的 `--quit` 必须先让本产品旧 GUI 退出、让 broker 完成 Windows 原生恢复，并在确认后返回 0；失败返回非 0。临时 GUI 被命名为 `xueer-ear-shutdown.exe`，其同目录有 `xueer-ear-host.exe`，该退出逻辑不应依赖 GUI 文件名。
 
-安装脚本关闭 Inno Restart Manager 的自动关闭/重启功能，不结束微信、输入法或 TextInputHost。版本化 bridge 不覆盖同版本已有文件；卸载时若 Windows 仍映射 DLL，只安排重启后删除，不强制退出其宿主。安装器不删除 `%LOCALAPPDATA%\WeChatWinH` 用户数据，不增加开机启动。
+安装脚本关闭 Inno Restart Manager 的自动关闭/重启功能，不结束微信、输入法或 TextInputHost。版本化 bridge 不覆盖同版本已有文件；卸载时若 Windows 仍映射 DLL，只安排重启后删除，不强制退出其宿主。安装器不删除 `%LOCALAPPDATA%\XueerEar` 用户数据，不增加开机启动。
 
 ## Release 一致性
 

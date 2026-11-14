@@ -1,5 +1,5 @@
 [package]
-name = "wechat-winh-gui"
+name = "xueer-ear"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -7,14 +7,14 @@ homepage.workspace = true
 build = "build.rs"
 
 [[bin]]
-name = "微win"
+name = "xueer-ear"
 path = "src/main.rs"
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-wechat-voice-backend = { path = "../backend" }
-wechat-voice-audio = { path = "../audio" }
+xueer-ear-backend = { path = "../backend" }
+xueer-ear-audio = { path = "../audio" }
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_System_Threading", "Win32_System_SystemServices", "Win32_System_LibraryLoader", "Win32_Networking_WinHttp", "Win32_Graphics_Gdi", "Win32_Graphics_GdiPlus", "Win32_Graphics_Dwm", "Win32_UI_WindowsAndMessaging", "Win32_UI_Controls", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_HiDpi", "Win32_UI_Shell"] }

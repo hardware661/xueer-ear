@@ -29,7 +29,7 @@ class PackagingTests(unittest.TestCase):
     def test_publishing_keeps_draft_until_both_uploads_are_visible(self):
         with tempfile.TemporaryDirectory() as root:
             directory = Path(root)
-            files = ["weiwin-1.2.3-windows-x64-portable.zip", "weiwin-1.2.3-windows-x64-setup.exe"]
+            files = ["xueer-ear-1.2.3-windows-x64-portable.zip", "xueer-ear-1.2.3-windows-x64-setup.exe"]
             sums = []
             for name in files:
                 data = ("synthetic " + name).encode()
@@ -58,8 +58,8 @@ class PackagingTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as root:
             directory = Path(root)
             for suffix in ["portable.zip", "setup.exe"]:
-                (directory / ("weiwin-1.2.3-windows-x64-" + suffix)).write_bytes(b"changed")
-            (directory / "SHA256SUMS.txt").write_text("0" * 64 + "  weiwin-1.2.3-windows-x64-portable.zip\n")
+                (directory / ("xueer-ear-1.2.3-windows-x64-" + suffix)).write_bytes(b"changed")
+            (directory / "SHA256SUMS.txt").write_text("0" * 64 + "  xueer-ear-1.2.3-windows-x64-portable.zip\n")
             with patch.object(publish_release, "gh") as command:
                 with self.assertRaises(ValueError):
                     publish_release.publish(directory, "1.2.3", "v1.2.3", "owner/repo")
@@ -70,7 +70,7 @@ class PackagingTests(unittest.TestCase):
             directory = Path(root)
             sums = []
             for suffix in ["portable.zip", "setup.exe"]:
-                name = "weiwin-1.2.3-windows-x64-" + suffix
+                name = "xueer-ear-1.2.3-windows-x64-" + suffix
                 (directory / name).write_bytes(b"synthetic")
                 sums.append(hashlib.sha256(b"synthetic").hexdigest() + "  " + name)
             (directory / "SHA256SUMS.txt").write_text("\n".join(sums) + "\n")

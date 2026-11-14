@@ -55,8 +55,8 @@ fn main() {
     let manifest = out.join("gui.manifest");
     fs::write(&manifest, r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <assembly xmlns="urn:schemas-microsoft-com:asm.v1" manifestVersion="1.0">
-<assemblyIdentity version="1.0.0.0" processorArchitecture="*" name="WeChatWinH.ControlPanel" type="win32"/>
-<description>微win</description>
+<assemblyIdentity version="1.0.0.0" processorArchitecture="*" name="XueerEar.ControlPanel" type="win32"/>
+<description>雪耳</description>
 <dependency><dependentAssembly><assemblyIdentity type="win32" name="Microsoft.Windows.Common-Controls" version="6.0.0.0" processorArchitecture="*" publicKeyToken="6595b64144ccf1df" language="*"/></dependentAssembly></dependency>
 <trustInfo xmlns="urn:schemas-microsoft-com:asm.v3"><security><requestedPrivileges><requestedExecutionLevel level="highestAvailable" uiAccess="false"/></requestedPrivileges></security></trustInfo>
 <application xmlns="urn:schemas-microsoft-com:asm.v3"><windowsSettings><dpiAwareness xmlns="http://schemas.microsoft.com/SMI/2016/WindowsSettings">PerMonitorV2</dpiAwareness><longPathAware xmlns="http://schemas.microsoft.com/SMI/2016/WindowsSettings">true</longPathAware></windowsSettings></application>
@@ -81,9 +81,9 @@ fn main() {
             .status()
             .expect("run Windows SDK rc.exe (set RC to its path)");
         assert!(status.success(), "GUI MSVC resource compilation failed");
-        println!("cargo:rustc-link-arg-bin=微win={}", object.display());
+        println!("cargo:rustc-link-arg-bin=xueer-ear={}", object.display());
         // Resource #1 contains the requested privileges and PerMonitorV2 manifest.
-        println!("cargo:rustc-link-arg-bin=微win=/MANIFEST:NO");
+        println!("cargo:rustc-link-arg-bin=xueer-ear=/MANIFEST:NO");
         return;
     }
     let object = out.join("gui-resources.o");
@@ -102,5 +102,5 @@ fn main() {
         .status()
         .expect("run windres (set RC to its path)");
     assert!(status.success(), "GUI resource compilation failed");
-    println!("cargo:rustc-link-arg-bin=微win={}", object.display());
+    println!("cargo:rustc-link-arg-bin=xueer-ear={}", object.display());
 }

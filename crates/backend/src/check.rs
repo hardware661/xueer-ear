@@ -5,7 +5,7 @@ use std::{
     path::PathBuf,
     time::{Duration, Instant},
 };
-use wechat_voice_protocol::{rpc, stream, wire};
+use xueer_ear_protocol::{rpc, stream, wire};
 
 pub(crate) fn new_id() -> Result<String> {
     let mut bytes = [0_u8; 16];
@@ -44,7 +44,7 @@ pub fn init(pid: u32) -> Result<usize> {
     let mut session = Session::connect(&Connection::official())?;
     let trace =
         PathBuf::from(std::env::var_os("LOCALAPPDATA").ok_or("LOCALAPPDATA is unavailable")?)
-            .join("WeChatWinH/dev");
+            .join("XueerEar/dev");
     fs::create_dir_all(&trace)?;
     session.trace_to(trace.join("last-init-response.bin"));
     session.send(frame)?;
@@ -55,7 +55,7 @@ pub fn init(pid: u32) -> Result<usize> {
             let root = PathBuf::from(
                 std::env::var_os("LOCALAPPDATA").ok_or("LOCALAPPDATA is unavailable")?,
             )
-            .join("WeChatWinH/dev");
+            .join("XueerEar/dev");
             fs::create_dir_all(&root)?;
             fs::write(root.join("init-response.bin"), &session.last_frame)?;
         }
@@ -156,7 +156,7 @@ pub fn replay_audio_key(pid: u32, root: &std::path::Path, opaque_key: bool) -> R
     let mut session = Session::connect(&Connection::official())?;
     let trace =
         PathBuf::from(std::env::var_os("LOCALAPPDATA").ok_or("LOCALAPPDATA is unavailable")?)
-            .join("WeChatWinH/dev");
+            .join("XueerEar/dev");
     fs::create_dir_all(&trace)?;
     session.trace_to(trace.join("last-replay-response.bin"));
     let body = stream::init(
@@ -225,7 +225,7 @@ pub fn replay_audio_key(pid: u32, root: &std::path::Path, opaque_key: bool) -> R
     }
     let root =
         PathBuf::from(std::env::var_os("LOCALAPPDATA").ok_or("LOCALAPPDATA is unavailable")?)
-            .join("WeChatWinH/dev");
+            .join("XueerEar/dev");
     fs::create_dir_all(&root)?;
     fs::write(root.join("replay-response.bin"), &session.last_frame)?;
     let _ = session.close();
