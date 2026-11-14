@@ -43,10 +43,17 @@ impl Hotwords {
             if word.is_empty() || entries.iter().any(|e| e.word == word) {
                 continue;
             }
-            let units: Vec<Unit> =
-                units_of(word).into_iter().map(|(u, _)| u).filter(|u| *u != SPACE).collect();
+            let units: Vec<Unit> = units_of(word)
+                .into_iter()
+                .map(|(u, _)| u)
+                .filter(|u| *u != SPACE)
+                .collect();
             let han_count = units.iter().filter(|u| matches!(u, Unit::Han(..))).count();
-            entries.push(Entry { word: word.to_string(), units, han_count });
+            entries.push(Entry {
+                word: word.to_string(),
+                units,
+                han_count,
+            });
         }
         Self { entries }
     }
@@ -92,8 +99,10 @@ impl Hotwords {
     fn best_match(&self, text: &str, units: &[(Unit, Span)], i: usize) -> Option<(&Entry, usize)> {
         let mut best: Option<(&Entry, usize, bool)> = None;
         for entry in &self.entries {
-            let Some(end) = match_at(entry, units, i) else { continue };
-            let exact = &text[units[i].1.start..units[end - 1].1.end] == entry.word;
+            let Some(end) = match_at(entry, units, i) else {
+                continue;
+            };
+            let exact = text[units[i].1.start..units[end - 1].1.end] == entry.word;
             let better = match best {
                 None => true,
                 Some((b, _, b_exact)) => {
@@ -119,7 +128,8 @@ const SPACE: Unit = Unit::Other(' ');
 
 fn match_at(entry: &Entry, units: &[(Unit, Span)], i: usize) -> Option<usize> {
     let first_latin = matches!(entry.units.first(), Some(Unit::Latin(_)));
-    if first_latin && i > 0 && prev_non_space(units, i).is_some_and(|u| matches!(u, Unit::Latin(_))) {
+    if first_latin && i > 0 && prev_non_space(units, i).is_some_and(|u| matches!(u, Unit::Latin(_)))
+    {
         return None;
     }
     let mut j = i;
@@ -143,20 +153,31 @@ fn match_at(entry: &Entry, units: &[(Unit, Span)], i: usize) -> Option<usize> {
         j += 1;
     }
     let last_latin = matches!(entry.units.last(), Some(Unit::Latin(_)));
-    if last_latin && units.get(j).is_some_and(|(u, _)| matches!(u, Unit::Latin(_))) {
+    if last_latin
+        && units
+            .get(j)
+            .is_some_and(|(u, _)| matches!(u, Unit::Latin(_)))
+    {
         return None;
     }
     Some(j)
 }
 
 fn prev_non_space(units: &[(Unit, Span)], i: usize) -> Option<&Unit> {
-    units[..i].iter().rev().map(|(u, _)| u).find(|u| **u != SPACE)
+    units[..i]
+        .iter()
+        .rev()
+        .map(|(u, _)| u)
+        .find(|u| **u != SPACE)
 }
 
 fn units_of(s: &str) -> Vec<(Unit, Span)> {
     let mut v = Vec::new();
     for (start, c) in s.char_indices() {
-        let span = Span { start, end: start + c.len_utf8() };
+        let span = Span {
+            start,
+            end: start + c.len_utf8(),
+        };
         let unit = if c.is_ascii_alphanumeric() {
             Unit::Latin(c.to_ascii_lowercase())
         } else if c.is_whitespace() {

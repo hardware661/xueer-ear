@@ -18,10 +18,10 @@ pub fn apply_punctuation(text: &str, options: &PunctOptions) -> String {
     if options.cjk_latin_space {
         s = space_cjk_latin(&s);
     }
-    if options.drop_final_period {
-        if let Some(stripped) = s.strip_suffix('。').or_else(|| s.strip_suffix('.')) {
-            s = stripped.to_string();
-        }
+    if options.drop_final_period
+        && let Some(stripped) = s.strip_suffix('。').or_else(|| s.strip_suffix('.'))
+    {
+        s = stripped.to_string();
     }
     s
 }
@@ -38,10 +38,10 @@ fn space_cjk_latin(s: &str) -> String {
     let mut out = String::with_capacity(s.len() + 8);
     let mut prev: Option<char> = None;
     for c in s.chars() {
-        if let Some(p) = prev {
-            if (is_cjk(p) && is_latin(c)) || (is_latin(p) && is_cjk(c)) {
-                out.push(' ');
-            }
+        if let Some(p) = prev
+            && ((is_cjk(p) && is_latin(c)) || (is_latin(p) && is_cjk(c)))
+        {
+            out.push(' ');
         }
         out.push(c);
         prev = Some(c);
@@ -63,8 +63,8 @@ fn fullwidth_near_cjk(s: &str) -> String {
                 ';' => '；',
                 _ => return c,
             };
-            let near_cjk = (i > 0 && is_cjk(chars[i - 1]))
-                || chars.get(i + 1).is_some_and(|n| is_cjk(*n));
+            let near_cjk =
+                (i > 0 && is_cjk(chars[i - 1])) || chars.get(i + 1).is_some_and(|n| is_cjk(*n));
             if near_cjk { full } else { c }
         })
         .collect()

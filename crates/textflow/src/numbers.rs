@@ -6,8 +6,18 @@
 //! 以位开头的词（千万别、万一）、两位约数和叠词（五六个、一一）。
 
 const DIGITS: &[(char, u64)] = &[
-    ('零', 0), ('〇', 0), ('一', 1), ('二', 2), ('两', 2), ('三', 3), ('四', 4),
-    ('五', 5), ('六', 6), ('七', 7), ('八', 8), ('九', 9),
+    ('零', 0),
+    ('〇', 0),
+    ('一', 1),
+    ('二', 2),
+    ('两', 2),
+    ('三', 3),
+    ('四', 4),
+    ('五', 5),
+    ('六', 6),
+    ('七', 7),
+    ('八', 8),
+    ('九', 9),
 ];
 const SMALL_UNITS: &[(char, u64)] = &[('十', 10), ('百', 100), ('千', 1000)];
 const BIG_UNITS: &[(char, u64)] = &[('万', 10_000), ('亿', 100_000_000)];
@@ -31,20 +41,21 @@ pub fn normalize_numbers(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
     let mut i = 0;
     while i < chars.len() {
-        if starts_with(&chars[i..], "百分之") {
-            if let Some((num, used)) = read_number(&chars[i + 3..], true) {
-                out.push_str(&num);
-                out.push('%');
-                i += 3 + used;
-                continue;
-            }
+        if starts_with(&chars[i..], "百分之")
+            && let Some((num, used)) = read_number(&chars[i + 3..], true)
+        {
+            out.push_str(&num);
+            out.push('%');
+            i += 3 + used;
+            continue;
         }
-        if is_num_char(chars[i]) && (i == 0 || !is_num_char(chars[i - 1])) {
-            if let Some((num, used)) = read_number(&chars[i..], false) {
-                out.push_str(&num);
-                i += used;
-                continue;
-            }
+        if is_num_char(chars[i])
+            && (i == 0 || !is_num_char(chars[i - 1]))
+            && let Some((num, used)) = read_number(&chars[i..], false)
+        {
+            out.push_str(&num);
+            i += used;
+            continue;
         }
         out.push(chars[i]);
         i += 1;
@@ -91,14 +102,19 @@ fn read_number(chars: &[char], force: bool) -> Option<(String, usize)> {
 }
 
 fn integer_text(int: &[char]) -> Option<String> {
-    let has_unit = int.iter().any(|c| small_unit(*c).is_some() || big_unit(*c).is_some());
+    let has_unit = int
+        .iter()
+        .any(|c| small_unit(*c).is_some() || big_unit(*c).is_some());
     if !has_unit {
         // 逐位念：二零二六 → 2026；「两」不按逐位念（两两、两三个都不是数）
         // 少于三位的（五六个、一一检查）多半是约数或叠词，不改
         if int.len() < 3 || int.contains(&'两') {
             return None;
         }
-        return int.iter().map(|c| digit(*c).map(|d| char::from(b'0' + d as u8))).collect();
+        return int
+            .iter()
+            .map(|c| digit(*c).map(|d| char::from(b'0' + d as u8)))
+            .collect();
     }
     // 必须以数字或「十」开头：千万别、万一、百万 这些是词不是数
     if digit(int[0]).is_none() && int[0] != '十' {

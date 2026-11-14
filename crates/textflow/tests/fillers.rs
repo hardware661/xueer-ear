@@ -9,7 +9,10 @@ fn removes_leading_fillers() {
 
 #[test]
 fn removes_fillers_at_each_sentence_start() {
-    assert_eq!(strip_fillers("先跑测试。嗯，然后提交。"), "先跑测试。然后提交。");
+    assert_eq!(
+        strip_fillers("先跑测试。嗯，然后提交。"),
+        "先跑测试。然后提交。"
+    );
 }
 
 #[test]

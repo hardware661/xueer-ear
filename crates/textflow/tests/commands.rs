@@ -1,11 +1,14 @@
-use xueer_ear_textflow::{parse_command, CommandOptions, VoiceCommand};
+use xueer_ear_textflow::{CommandOptions, VoiceCommand, parse_command};
 
 #[test]
 fn whole_utterance_commands() {
     let o = CommandOptions::default();
     assert_eq!(parse_command("换行", &o), Some(VoiceCommand::NewLine));
     assert_eq!(parse_command("换行。", &o), Some(VoiceCommand::NewLine));
-    assert_eq!(parse_command("删掉上一句", &o), Some(VoiceCommand::DeleteLastSentence));
+    assert_eq!(
+        parse_command("删掉上一句", &o),
+        Some(VoiceCommand::DeleteLastSentence)
+    );
     assert_eq!(parse_command("撤销！", &o), Some(VoiceCommand::Undo));
 }
 
