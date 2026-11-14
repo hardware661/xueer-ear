@@ -141,6 +141,19 @@ fn run() -> Result<(), Box<dyn Error + Send + Sync>> {
             Ok(())
         }
         #[cfg(windows)]
+        (Some(command), Some(path), None) if command == "recognize-wave-wetype" => {
+            let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let mut finals = 0;
+            let text = xueer_ear_backend::engine::run_wetype(xueer_ear_backend::engine::Source::Wave(path.into()), stop, |event| {
+                if let xueer_ear_backend::engine::Event::Speech(event) = event { finals += usize::from(event.final_result); }
+                Ok(())
+            })?;
+            println!("recognition=accepted chars={} finals={finals}", text.chars().count());
+            println!("{text}");
+            if text.is_empty() { return Err("service returned no speech text".into()); }
+            Ok(())
+        }
+        #[cfg(windows)]
         (Some(command), Some(pid), Some(path)) if command == "recognize-wave" => {
             let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
             let mut finals = 0;
@@ -243,7 +256,7 @@ fn run() -> Result<(), Box<dyn Error + Send + Sync>> {
             }
             Ok(())
         }
-        _ => Err("usage: xueer-ear-cli <inspect-capture|replay-capture|connect-check> DIRECTORY | account-status [FILE]".into()),
+        _ => Err("usage: xueer-ear-cli recognize-wave-wetype FILE.wav | <inspect-capture|replay-capture|connect-check> DIRECTORY | account-status [FILE]".into()),
     }
 }
 
