@@ -1,0 +1,13 @@
+[package]
+name = "xueer-ear-history"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "本地听写历史：jsonl 追加写、按天数清理、读最近记录。不上传。"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[dev-dependencies]
+tempfile = "3"

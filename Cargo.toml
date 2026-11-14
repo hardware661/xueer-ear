@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/protocol", "crates/backend", "crates/audio", "crates/winh-bridge", "crates/winh-host", "crates/voice-cli", "crates/gui", "crates/textflow"]
+members = ["crates/protocol", "crates/backend", "crates/audio", "crates/winh-bridge", "crates/winh-host", "crates/voice-cli", "crates/gui", "crates/textflow", "crates/history"]
 resolver = "3"
 
 [workspace.package]

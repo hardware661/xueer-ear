@@ -1058,6 +1058,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "xueer-ear-history"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "tempfile",
+]
+
+[[package]]
 name = "xueer-ear-host"
 version = "0.1.0"
 dependencies = [
