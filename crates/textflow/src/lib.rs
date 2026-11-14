@@ -10,3 +10,5 @@ mod punct;
 pub use punct::{apply_punctuation, PunctOptions};
 mod commands;
 pub use commands::{parse_command, CommandOptions, VoiceCommand};
+mod hotwords;
+pub use hotwords::Hotwords;
