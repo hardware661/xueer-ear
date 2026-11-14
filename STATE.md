@@ -20,8 +20,18 @@
 ### 进度（每步做完更新）
 
 - [x] 1 AGENTS.md / STATE.md
-- [ ] 2 textflow crate + 测试
-- [ ] 3 history crate + 测试
-- [ ] 4 登记 README / 记忆
+- [x] 2 textflow crate + 测试（32 个测试，clippy 0 警告）
+- [x] 3 history crate + 测试（6 个测试，clippy 0 警告）
+- [x] 4 登记 `~/projects/README.md`、共用记忆 `projects/xueer-ear.md`
+
+### 本轮结果
+
+- **现状**：两个新 crate 写完、测完、本地提交；**还没接进程序**，雪耳装到主人电脑上的行为和以前一样（其实也还没装）。没推送。
+- **改了什么**：`90eb1c5` 口癖+数字、`3ce9ec5` 标点+语音指令、`d9d2c46` 拼音热词、`4db1a97` 统一入口 `textflow::process` + 终端拼接 `join_for_terminal`、`24d1c72` history。
+- **验证**：WSL `cargo test -p xueer-ear-textflow -p xueer-ear-history` 38 个全过；Windows 工具链 `tools/win.sh cargo test -p 两个 crate` 38 个全过；clippy 0 警告。
+- **怎么接（给下一个做接管部分的人）**：识别出一句定稿文字后调 `textflow::process(text, &options)`，得到 `Output::Text` 就上屏、`Output::Command` 就按对应键（`Send` 默认不会出现）；终端里连续几句用 `join_for_terminal`。热词文件用 `Hotwords::parse(fs::read_to_string(...))`。上屏后 `History::append`，启动时 `History::prune(now)`。
+- **注意**：边说边改的中间结果（partial）建议不过 textflow 或只过热词，定稿（final）再全量处理，否则数字/口癖可能在中途跳变（推测，要真机看）。
+- **环境坑**：WSL 里 cargo 全局配置的 linux 链接器指向 `~/tools/dev/zig-cc-host.sh`（不存在，实际在 `~/tools/dev/bin/`）。本轮用环境变量 `CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER=$HOME/tools/dev/bin/zig-cc-host.sh` 绕过，没改全局配置。
+- **回滚**：`git revert 24d1c72 4db1a97 d9d2c46 3ce9ec5 90eb1c5`，或从 workspace members 去掉两个 crate。
 
 **已有提交（上一会话）**：`095d4e7` 改名 + 接受 26200.9974 指纹；`deab5ea` recognize-wave-wetype 命令。都只在本地，没推送、没在真机验证。
