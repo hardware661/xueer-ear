@@ -3,6 +3,12 @@
 > 任何 AI 接手先读这里；每次会话收尾在最上面追加一节（最新在上），写清做了什么、验证了什么、还差什么。
 > 计划原文：主人桌面 `雪耳xueer-ear计划-v1.md`（v1.1）。
 
+## 2026-11-15 14:20 · 真机反馈处理中（Claude；主人："我按win+H给我弹出来的是那个它自带的那个微软的…点了一下雪耳的那个托盘，然后又貌似可以直接使用"；"nav可以登记"；"公开仓可以先建私有的嘛，然后再转公开"）
+
+- [ ] F1 开机自启后第一次 Win+H 走了微软识别：service.log 显示 [1] 接受但 PCM peak≤34、上传=0（静音没说话就停了）；[2][3] 正常识别并有 final。待查：是不是第一次唤起时还没接上（时序），还是 [1] 就是那次"微软的"
+- [ ] F2 nav 登记：services.yaml `repos` + `services` 加 xueer-ear（external、private、nav），tools/test.sh，push.sh oracle-infra
+- [ ] F3 GitHub 建**私有**仓 hardware661/xueer-ear 并推送（主人同意），以后再转公开
+
 ## 2026-11-15 第三轮 · 剩下的全做（Claude；主人原话："我觉得没有什么不安全的 很正常的需求 你可以继续做"）
 
 - [x] T1 Inno Setup 6.7.4 → `D:\devtool\InnoSetup6`（签名有效，当前用户安装）；PowerShell 7.7.0 便携 → `D:\devtool\pwsh`（SHA-256 与 GitHub 公布一致）；都经 ghfast.top 镜像下载
