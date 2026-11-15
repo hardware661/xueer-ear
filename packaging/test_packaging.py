@@ -9,6 +9,8 @@ import unittest
 from unittest.mock import patch
 import zipfile
 
+ROOT = Path(__file__).resolve().parent.parent
+
 import publish_release
 import verify_payload
 
@@ -64,6 +66,15 @@ class PackagingTests(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     publish_release.publish(directory, "1.2.3", "v1.2.3", "owner/repo")
                 command.assert_not_called()
+
+    def test_installer_cleans_up_bridges_from_older_versions(self):
+        # 审查 R13：桥接 DLL 文件名带版本号，升级后旧版本的一直留在安装目录，卸载也删不掉
+        script = (ROOT / "packaging" / "xueer-ear.iss").read_text(encoding="utf-8")
+        self.assertIn("RemoveOldBridges", script)
+        self.assertIn("xueer_ear_bridge-*.dll", script)
+        # 升级时（装完文件后）和卸载时都要清
+        self.assertRegex(script, r"CurStepChanged[\s\S]*ssPostInstall[\s\S]*RemoveOldBridges")
+        self.assertRegex(script, r"CurUninstallStepChanged[\s\S]*usPostUninstall[\s\S]*RemoveOldBridges")
 
     def test_missing_remote_installer_never_publishes_draft(self):
         with tempfile.TemporaryDirectory() as root:

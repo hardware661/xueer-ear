@@ -105,4 +105,39 @@ begin
     MsgBox('雪耳 尚未完成退出与恢复，卸载已中止。', mbError, MB_OK);
 end;
 
+// 桥接 DLL 文件名带版本号，升级后旧版本的会留在安装目录（审查 R13）。
+// Keep = 要留下的文件名（升级时是这一版的，卸载时为空 = 全删）。
+// 删不掉（还被系统加载着）的标记成重启后删除，不影响安装和卸载。
+procedure RemoveOldBridges(const Keep: String);
+var
+  Found: TFindRec;
+  Path: String;
+begin
+  if FindFirst(ExpandConstant('{app}\xueer_ear_bridge-*.dll'), Found) then
+  try
+    repeat
+      if CompareText(Found.Name, Keep) <> 0 then
+      begin
+        Path := ExpandConstant('{app}\') + Found.Name;
+        if not DeleteFile(Path) then
+          RestartReplace(Path, '');
+      end;
+    until not FindNext(Found);
+  finally
+    FindClose(Found);
+  end;
+end;
+
+procedure CurStepChanged(CurStep: TSetupStep);
+begin
+  if CurStep = ssPostInstall then
+    RemoveOldBridges('xueer_ear_bridge-{#AppVersion}.dll');
+end;
+
+procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
+begin
+  if CurUninstallStep = usPostUninstall then
+    RemoveOldBridges('');
+end;
+
 // No [UninstallDelete] for LOCALAPPDATA\XueerEar: user identity/settings/logs stay intact.
