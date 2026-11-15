@@ -13,4 +13,4 @@ pub use commands::{CommandOptions, VoiceCommand, parse_command};
 mod hotwords;
 pub use hotwords::{Hotwords, add_hotword_line};
 mod pipeline;
-pub use pipeline::{Options, Output, join_for_terminal, process};
+pub use pipeline::{Options, Output, join_for_terminal, process, terminal_append};

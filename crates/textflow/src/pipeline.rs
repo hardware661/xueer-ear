@@ -79,24 +79,33 @@ fn split_trailing_command<'a>(
 pub fn join_for_terminal(parts: &[&str]) -> String {
     let mut out = String::new();
     for part in parts {
-        let part = part.replace(['\r', '\n'], " ");
-        let part = part.trim();
-        if part.is_empty() {
-            continue;
-        }
-        if let Some(last) = out.chars().last() {
-            let first = part.chars().next().unwrap_or(' ');
-            if "。！？；，、.!?;,".contains(last) {
-                if last.is_ascii() {
-                    out.push(' ');
-                }
-            } else if last.is_ascii_alphanumeric() && first.is_ascii_alphanumeric() {
-                out.push(' ');
-            } else {
-                out.push('，');
-            }
-        }
-        out.push_str(part);
+        let piece = terminal_append(&out, part);
+        out.push_str(&piece);
     }
+    out
+}
+
+/// 终端里接在 `previous`（已经上屏的文字）后面要打的那一段：分隔符 + 整理过的这一句。
+/// 只看 `previous` 的最后一个字决定分隔符，不去改动已经上屏的部分。
+pub fn terminal_append(previous: &str, part: &str) -> String {
+    let part = part.replace(['\r', '\n'], " ");
+    let part = part.trim();
+    if part.is_empty() {
+        return String::new();
+    }
+    let mut out = String::new();
+    if let Some(last) = previous.trim_end().chars().last() {
+        let first = part.chars().next().unwrap_or(' ');
+        if "。！？；，、.!?;,".contains(last) {
+            if last.is_ascii() {
+                out.push(' ');
+            }
+        } else if last.is_ascii_alphanumeric() && first.is_ascii_alphanumeric() {
+            out.push(' ');
+        } else {
+            out.push('，');
+        }
+    }
+    out.push_str(part);
     out
 }

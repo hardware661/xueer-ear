@@ -1,4 +1,6 @@
-use xueer_ear_textflow::{Hotwords, Options, Output, VoiceCommand, join_for_terminal, process};
+use xueer_ear_textflow::{
+    Hotwords, Options, Output, VoiceCommand, join_for_terminal, process, terminal_append,
+};
 
 #[test]
 fn full_pipeline_in_order() {
@@ -77,5 +79,30 @@ fn trailing_command_after_text_is_split_out() {
     assert_eq!(
         process("撤销这次提交", &o),
         Output::Text("撤销这次提交".into())
+    );
+}
+
+#[test]
+fn terminal_append_gives_only_the_new_piece_with_its_separator() {
+    // 上一句是已经上屏的那段（可能带前导分隔符），返回值只是接在它后面要打的部分
+    assert_eq!(terminal_append("", "先读文档"), "先读文档");
+    assert_eq!(terminal_append("先读文档", "再跑测试"), "，再跑测试");
+    assert_eq!(terminal_append("OK.", "好的。"), " 好的。");
+    assert_eq!(terminal_append(" 好的。", "继续"), "继续");
+    assert_eq!(terminal_append("Run tests.", "ok"), " ok");
+    assert_eq!(terminal_append(" ok", "done"), " done");
+    assert_eq!(terminal_append("好", "换行\n测试"), "，换行 测试");
+    assert_eq!(terminal_append("好", "  "), "");
+    // 和整段拼接结果一致
+    let mut shown = String::new();
+    let mut previous = String::new();
+    for part in ["OK.", "好的。", "继续", "run", "tests"] {
+        let piece = terminal_append(&previous, part);
+        shown.push_str(&piece);
+        previous = piece;
+    }
+    assert_eq!(
+        shown,
+        join_for_terminal(&["OK.", "好的。", "继续", "run", "tests"])
     );
 }

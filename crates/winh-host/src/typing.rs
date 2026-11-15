@@ -53,9 +53,7 @@ impl Typist {
     /// 上屏一句定稿文字。终端里：换行换成空格，和上一句之间用 `join_for_terminal` 的规则补分隔。
     pub fn text(&mut self, text: &str, terminal: bool) -> Vec<Key> {
         let typed = if terminal {
-            let previous = self.previous();
-            let joined = xueer_ear_textflow::join_for_terminal(&[previous, text]);
-            joined[previous.len()..].to_string()
+            xueer_ear_textflow::terminal_append(self.previous(), text)
         } else {
             text.to_string()
         };
@@ -360,9 +358,7 @@ impl Live {
         if !self.terminal || text.is_empty() {
             return text.to_string();
         }
-        let previous = self.typist.previous();
-        let joined = xueer_ear_textflow::join_for_terminal(&[previous, text]);
-        joined[previous.len()..].to_string()
+        xueer_ear_textflow::terminal_append(self.typist.previous(), text)
     }
 }
 
@@ -413,6 +409,27 @@ mod tests {
         assert_eq!(t.text("先读文档", true), [Key::Text("先读文档".into())]);
         assert_eq!(t.text("再跑测试", true), [Key::Text("，再跑测试".into())]);
         assert_eq!(t.text("ok", true), [Key::Text("，ok".into())]);
+    }
+
+    #[test]
+    fn terminal_joins_after_ascii_punctuation_without_crashing() {
+        // 审查 R1：上一句以英文标点结尾，再说两句，按上一句长度切拼接结果切到汉字中间，进程崩溃
+        let mut t = Typist::default();
+        let mut doc = String::new();
+        for sentence in ["OK.", "好的。", "继续"] {
+            type_into(&mut doc, &t.text(sentence, true));
+        }
+        assert_eq!(doc, "OK. 好的。继续");
+        // 英文接英文：中间的空格不能被吃掉
+        let mut t = Typist::default();
+        let mut doc = String::new();
+        for sentence in ["Run tests.", "ok", "done"] {
+            type_into(&mut doc, &t.text(sentence, true));
+        }
+        assert_eq!(doc, "Run tests. ok done");
+        // 删上一句只删这一句自己打出去的字（含它前面补的分隔）
+        type_into(&mut doc, &t.command(VoiceCommand::DeleteLastSentence, true));
+        assert_eq!(doc, "Run tests. ok");
     }
 
     #[test]
