@@ -1722,7 +1722,12 @@ pub fn run() {
             (&rounded as *const u32).cast(),
             4,
         );
-        ShowWindow(hwnd, SW_SHOW);
+        // 开机自启：不弹窗，只在托盘，并自动开启后台服务
+        if std::env::args_os().any(|arg| arg == "--autostart") {
+            PostMessageW(hwnd, WM_COMMAND, START, 0);
+        } else {
+            ShowWindow(hwnd, SW_SHOW);
+        }
         let mut message: MSG = mem::zeroed();
         while GetMessageW(&mut message, ptr::null_mut(), 0, 0) > 0 {
             if IsDialogMessageW(hwnd, &message) == 0 {

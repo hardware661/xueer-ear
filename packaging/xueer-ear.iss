@@ -40,6 +40,7 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 
 [Tasks]
 Name: "desktopicon"; Description: "创建桌面快捷方式"; GroupDescription: "快捷方式"; Flags: unchecked
+Name: "autostart"; Description: "登录 Windows 时自动启动并开启后台服务"; GroupDescription: "启动"
 
 [Files]
 Source: "{#StageDir}\xueer-ear.exe"; DestDir: "{app}"; Flags: ignoreversion
@@ -58,6 +59,7 @@ Source: "{#StageDir}\xueer-ear.exe"; DestName: "xueer-ear-shutdown.exe"; Flags: 
 [Icons]
 Name: "{autoprograms}\雪耳"; Filename: "{app}\xueer-ear.exe"; WorkingDir: "{app}"
 Name: "{autodesktop}\雪耳"; Filename: "{app}\xueer-ear.exe"; WorkingDir: "{app}"; Tasks: desktopicon
+Name: "{userstartup}\雪耳"; Filename: "{app}\xueer-ear.exe"; Parameters: "--autostart"; WorkingDir: "{app}"; Tasks: autostart
 
 [Run]
 Filename: "{app}\xueer-ear.exe"; Description: "打开雪耳"; Flags: nowait postinstall skipifsilent shellexec runasoriginaluser
