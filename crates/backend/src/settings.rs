@@ -21,8 +21,10 @@ pub struct Settings {
     pub text: TextSettings,
     pub history_enabled: bool,
     pub history_keep_days: u32,
-    /// 快捷键模式：按住说话、松开上屏，不经过 Win+H
+    /// 快捷键听写：雪耳自己的面板，不经过 Win+H
     pub hotkey_enabled: bool,
+    /// 是否接管 Win+H（把识别换成雪耳）。默认不接管：Win+H 还是微软的（主人 2026-11-15 定）
+    pub winh_enabled: bool,
     /// Windows 虚拟键码，默认右 Alt（0xA5）
     pub hotkey_vk: u32,
     /// 晓晓提示音（没听清、系统更新后退回），本地播放
@@ -38,6 +40,7 @@ impl Default for Settings {
             history_enabled: true,
             history_keep_days: 7,
             hotkey_enabled: true,
+            winh_enabled: false,
             hotkey_vk: HOTKEY_RIGHT_ALT,
             sounds_enabled: true,
         }
@@ -242,6 +245,7 @@ mod tests {
         }
         settings.history_keep_days = 7;
         assert!(settings.hotkey_enabled);
+        assert!(!settings.winh_enabled);
         assert_eq!(settings.hotkey_vk, HOTKEY_RIGHT_ALT);
         for vk in [0x41, 0x0D, 0x20] {
             settings.hotkey_vk = vk;

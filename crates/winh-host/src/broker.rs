@@ -295,14 +295,24 @@ fn start(
     }
 }
 
-/// 指纹对不上时：不接管 Win+H，只开快捷键模式，直到被要求退出。
-fn hotkey_only(control: &crate::control::Control, status: &Status, reason: &str) -> Result<()> {
-    eprintln!("{reason}");
+/// 不接管 Win+H，只开快捷键听写，直到被要求退出。
+/// `fallback` 有值表示本想接管但系统组件对不上（提示一次）；None 表示设置里本来就不接管。
+fn hotkey_only(
+    control: &crate::control::Control,
+    status: &Status,
+    fallback: Option<&str>,
+) -> Result<()> {
     let mut settings = Settings::load_default().unwrap_or_default();
     settings.hotkey_enabled = true;
     let hotkey = crate::hotkey::Hotkey::start(&settings);
-    crate::sound::play(crate::sound::Cue::Fallback, settings.sounds_enabled);
-    status.error(reason.to_string());
+    match fallback {
+        Some(reason) => {
+            eprintln!("{reason}");
+            crate::sound::play(crate::sound::Cue::Fallback, settings.sounds_enabled);
+            status.error(reason.to_string());
+        }
+        None => status.phase("ready"),
+    }
     control.ready();
     let mut heartbeat = Instant::now();
     while !EXIT.load(Ordering::Acquire) && !control.should_stop() {
@@ -375,10 +385,14 @@ pub fn run() -> Result<()> {
         env!("CARGO_PKG_VERSION"),
         ".dll"
     )));
+    if !Settings::load_default().unwrap_or_default().winh_enabled && verification_file.is_none() {
+        println!("不接管 Win+H（设置里没开），只开快捷键听写。");
+        return hotkey_only(&control, &status, None);
+    }
     let mut adapter = match Adapter::install(&dll) {
         Ok(adapter) => adapter,
         Err(error) if error.is::<crate::install::Unsupported>() => {
-            return hotkey_only(&control, &status, &error.to_string());
+            return hotkey_only(&control, &status, Some(&error.to_string()));
         }
         Err(error) => return Err(error),
     };
