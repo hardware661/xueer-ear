@@ -25,9 +25,9 @@ use std::{
 use windows_sys::Win32::UI::{
     Input::KeyboardAndMouse::{
         GetAsyncKeyState, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYEVENTF_KEYUP,
-        KEYEVENTF_UNICODE, SendInput, VK_BACK, VK_CONTROL, VK_ESCAPE, VK_LCONTROL, VK_LMENU,
-        VK_LSHIFT, VK_LWIN, VK_MENU, VK_RCONTROL, VK_RETURN, VK_RMENU, VK_RSHIFT, VK_RWIN,
-        VK_SHIFT,
+        KEYEVENTF_UNICODE, SendInput, VK_BACK, VK_CAPITAL, VK_CONTROL, VK_ESCAPE, VK_LCONTROL,
+        VK_LMENU, VK_LSHIFT, VK_LWIN, VK_MENU, VK_RCONTROL, VK_RETURN, VK_RMENU, VK_RSHIFT,
+        VK_RWIN, VK_SHIFT,
     },
     WindowsAndMessaging::{GetClassNameW, GetForegroundWindow},
 };
@@ -146,6 +146,10 @@ fn poll_loop(vk: u32, stop: &AtomicBool, status: &Status) {
             });
         } else if !held && was_held {
             inputs.push(Input::KeyUp);
+            // CapsLock 当热键：系统已经因为这一下切换了大小写锁定，再按一下把它切回去（审查 R15）
+            if vk == i32::from(VK_CAPITAL) {
+                undo_caps_toggle();
+            }
         }
         was_held = held;
         // 主人自己动了键盘或鼠标（不是热键、Esc，也不是点雪耳面板）：通知这轮听写别再往回改字
@@ -538,6 +542,20 @@ impl Drop for EscapeKey {
 
 fn is_alt(vk: i32) -> bool {
     matches!(vk, 0x12 | 0xA4 | 0xA5)
+}
+
+/// 补按一下 CapsLock，把热键带来的大小写锁定切换抵消掉。补的这一下不会被当成热键：
+/// 轮询线程这一轮已经记下「松开」，补的按下和抬起在同一次 SendInput 里，下一轮看到的还是松开。
+fn undo_caps_toggle() {
+    let inputs = tap(VK_CAPITAL);
+    unsafe {
+        SendInput(
+            inputs.len() as u32,
+            inputs.as_ptr(),
+            size_of::<INPUT>() as i32,
+        );
+    }
+    remember_own_input();
 }
 
 /// 热键是 Alt 时，趁 Alt 还按着补发一个没人用的键（vkE8，和 AutoHotkey 的 MenuMaskKey 一样），
