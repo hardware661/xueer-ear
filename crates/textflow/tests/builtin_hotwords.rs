@@ -9,10 +9,18 @@ fn builtin() -> Hotwords {
 fn the_builtin_list_only_contains_rules() {
     // 按读音猜的词会把同音的正常说法改掉（试过：「雪儿」被改成「雪耳」），自带表一律写明错法
     let h = builtin();
-    assert!(h.words().is_empty(), "自带表里有按读音匹配的词：{:?}", h.words());
+    assert!(
+        h.words().is_empty(),
+        "自带表里有按读音匹配的词：{:?}",
+        h.words()
+    );
     assert!(h.rules().len() >= 10, "规则太少：{}", h.rules().len());
     for (wrong, right) in h.rules() {
-        assert_ne!(wrong.to_lowercase(), right.to_lowercase(), "{wrong}={right} 只改大小写");
+        assert_ne!(
+            wrong.to_lowercase(),
+            right.to_lowercase(),
+            "{wrong}={right} 只改大小写"
+        );
     }
 }
 

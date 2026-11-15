@@ -24,7 +24,7 @@ impl Postprocess {
     pub fn new(settings: &Settings, dir: &Path) -> Self {
         let text = &settings.text;
         let options = Options {
-            hotwords: read_hotwords(&dir.join("hotwords.txt")),
+            hotwords: hotwords(&dir.join("hotwords.txt"), text.builtin_hotwords),
             punct: PunctOptions {
                 drop_final_period: text.drop_final_period,
                 cjk_latin_space: text.cjk_latin_space,
@@ -122,21 +122,32 @@ impl Postprocess {
     }
 }
 
+/// 主人的热词表在前、自带表在后：同一个错法两边都写了用主人的（解析时同一个错法只认第一条）。
+fn hotwords(path: &Path, builtin: bool) -> Hotwords {
+    if !builtin {
+        return read_hotwords(path);
+    }
+    let own = read_hotwords_text(path);
+    Hotwords::parse(&format!("{own}\n{}", xueer_ear_textflow::BUILTIN_HOTWORDS))
+}
+
 fn read_hotwords(path: &Path) -> Hotwords {
+    Hotwords::parse(&read_hotwords_text(path))
+}
+
+/// 主人热词表的内容；没有、太大或读不了都当空表（打日志），不影响上屏。
+fn read_hotwords_text(path: &Path) -> String {
     let Ok(meta) = std::fs::metadata(path) else {
-        return Hotwords::default();
+        return String::new();
     };
     if meta.len() > MAX_HOTWORDS_BYTES {
         eprintln!("热词文件超过 256 KiB，已忽略");
-        return Hotwords::default();
+        return String::new();
     }
-    match std::fs::read_to_string(path) {
-        Ok(text) => Hotwords::parse(&text),
-        Err(error) => {
-            eprintln!("热词文件读取失败：{error}");
-            Hotwords::default()
-        }
-    }
+    std::fs::read_to_string(path).unwrap_or_else(|error| {
+        eprintln!("热词文件读取失败：{error}");
+        String::new()
+    })
 }
 
 #[cfg(test)]
@@ -278,5 +289,36 @@ mod tests {
         // 「发送」开关关着时不算
         let (_dir, off) = setup(&Settings::default());
         assert_eq!(off.trailing_command("今天吃什么，发送"), None);
+    }
+
+    #[test]
+    fn builtin_hotwords_apply_with_the_owners_list_and_can_be_switched_off() {
+        // 自带表默认开：主人热词表里没写的常见错法也会改
+        let (_dir, p) = setup(&Settings::default());
+        assert_eq!(
+            p.finalize("用克劳德写代码", 1),
+            Output::Text("用Claude写代码".into())
+        );
+        // 主人的热词表照样生效（setup 里写了「雪耳」）
+        assert_eq!(p.finalize("雪而好用", 1), Output::Text("雪耳好用".into()));
+        // 关掉自带表
+        let mut off = Settings::default();
+        off.text.builtin_hotwords = false;
+        let (_dir, p) = setup(&off);
+        assert_eq!(
+            p.finalize("用克劳德写代码", 1),
+            Output::Text("用克劳德写代码".into())
+        );
+    }
+
+    #[test]
+    fn the_owners_rule_wins_over_a_builtin_one() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("hotwords.txt"), "克劳德=克劳德\n").unwrap();
+        let p = Postprocess::new(&Settings::default(), dir.path());
+        assert_eq!(
+            p.finalize("克劳德你好", 1),
+            Output::Text("克劳德你好".into())
+        );
     }
 }

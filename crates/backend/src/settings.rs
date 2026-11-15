@@ -64,6 +64,8 @@ pub struct TextSettings {
     /// 终端里说「换行」时发 Ctrl+J。Claude Code 里是换行；普通 bash/zsh 里 Ctrl+J 就是回车、会执行命令，
     /// 常在普通命令行里听写的可以关掉（关掉后终端里「换行」什么都不做）。
     pub terminal_newline: bool,
+    /// 用软件自带的通用热词表（AI/编程常听错的词，见 textflow 的 builtin_hotwords.txt）
+    pub builtin_hotwords: bool,
 }
 
 impl Default for TextSettings {
@@ -76,6 +78,7 @@ impl Default for TextSettings {
             fullwidth_punct_in_cjk: false,
             allow_send: false,
             terminal_newline: true,
+            builtin_hotwords: true,
         }
     }
 }
@@ -360,5 +363,7 @@ mod terminal_newline_tests {
         assert!(Settings::default().text.terminal_newline);
         let old: Settings = serde_json::from_str(r#"{"text": {"allow_send": true}}"#).unwrap();
         assert!(old.text.terminal_newline);
+        assert!(Settings::default().text.builtin_hotwords);
+        assert!(old.text.builtin_hotwords);
     }
 }

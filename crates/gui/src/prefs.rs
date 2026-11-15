@@ -8,6 +8,7 @@ pub const NOTHING: usize = 1099;
 pub const OPEN_HISTORY: usize = 1100;
 pub const OPEN_HOTWORDS: usize = 1101;
 pub const ADD_HOTWORD: usize = 1102;
+pub const BUILTIN_HOTWORDS: usize = 1103;
 const BASE: usize = 1110;
 const KEY_BASE: usize = 1200;
 const HISTORY_BASE: usize = 1300;
@@ -156,6 +157,20 @@ pub fn hotword_line(word: &str, heard: &str) -> Result<String, &'static str> {
     } else {
         Ok(format!("{heard}={word}"))
     }
+}
+
+/// 「热词」菜单：添加、打开热词表、自带词表开关
+pub fn hotword_choices(s: &Settings) -> Vec<Choice> {
+    vec![
+        (ADD_HOTWORD, "添加热词…".to_owned(), false),
+        (OPEN_HOTWORDS, "打开热词表".to_owned(), false),
+        separator(),
+        (
+            BUILTIN_HOTWORDS,
+            "使用自带热词（AI、编程常听错的词）".to_owned(),
+            s.text.builtin_hotwords,
+        ),
+    ]
 }
 
 /// 「热词」那一行显示：有几个词（含替换规则），一个都没有就显示「添加」
@@ -385,6 +400,15 @@ mod tests {
         let empty = history_choices(&[]);
         assert_eq!(empty, [(NOTHING, "还没有记录".to_owned(), false)]);
         assert_eq!(history_pick(&[], NOTHING), None);
+    }
+
+    #[test]
+    fn hotword_menu_has_the_builtin_switch() {
+        let s = Settings::default();
+        let c = hotword_choices(&s);
+        assert!(find(&c, "使用自带热词（AI、编程常听错的词）").1);
+        assert!(c.iter().any(|(id, _, _)| *id == ADD_HOTWORD));
+        assert!(c.iter().any(|(id, _, _)| *id == OPEN_HOTWORDS));
     }
 
     #[test]

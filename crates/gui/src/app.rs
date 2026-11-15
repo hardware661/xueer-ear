@@ -1242,13 +1242,15 @@ impl App {
         }
     }
 
-    /// 热词：弹小对话框加一个，或者用记事本打开整张表。
+    /// 热词：弹小对话框加一个、用记事本打开整张表，或者开关自带词表。
     unsafe fn hotwords_menu(&mut self) {
-        let choices = [
-            (crate::prefs::ADD_HOTWORD, "添加热词…".to_owned(), false),
-            (crate::prefs::OPEN_HOTWORDS, "打开热词表".to_owned(), false),
-        ];
+        let choices = crate::prefs::hotword_choices(&self.settings);
         match self.popup_under(LABEL_HOTWORDS_VALUE, &choices) {
+            crate::prefs::BUILTIN_HOTWORDS => {
+                let mut candidate = self.settings.clone();
+                candidate.text.builtin_hotwords = !candidate.text.builtin_hotwords;
+                self.apply(candidate);
+            }
             crate::prefs::ADD_HOTWORD => {
                 let Some(line) = crate::hotword_dialog::ask(self.hwnd, self.fonts[3], self.dpi)
                 else {
