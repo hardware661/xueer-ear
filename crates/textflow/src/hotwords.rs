@@ -6,12 +6,16 @@
 //! - 同一位置多个热词都能对上时：最长的优先，一样长时原文本来就是的那个优先，再按文件顺序。
 //!
 //! 文件格式一行一个词，兼容雾凇 `custom_phrase.txt`（词<TAB>编码<TAB>权重，`#` 开头是注释）。
+//!
+//! 读音纠不了的固定错法用「错=对」一行写成替换规则（`Cloud Code=Claude Code`、`温加H=Win+H`）：
+//! 英文不分大小写、要求整词（`out=Alt` 不会动 output）；规则先于热词执行，替换出来的字不再被改写。
 
 use pinyin::ToPinyinMulti;
 
 #[derive(Debug, Clone, Default)]
 pub struct Hotwords {
     entries: Vec<Entry>,
+    rules: Vec<(String, String)>,
 }
 
 #[derive(Debug, Clone)]
@@ -34,9 +38,18 @@ enum Unit {
 impl Hotwords {
     pub fn parse(file: &str) -> Self {
         let mut entries: Vec<Entry> = Vec::new();
+        let mut rules: Vec<(String, String)> = Vec::new();
         for line in file.lines() {
             let line = line.trim();
             if line.is_empty() || line.starts_with('#') {
+                continue;
+            }
+            if let Some((wrong, right)) = line.split_once('=') {
+                let (wrong, right) = (wrong.trim(), right.trim());
+                if !wrong.is_empty() && !right.is_empty() && !rules.iter().any(|(w, _)| w == wrong)
+                {
+                    rules.push((wrong.to_string(), right.to_string()));
+                }
                 continue;
             }
             let word = line.split('\t').next().unwrap_or("").trim();
@@ -55,7 +68,20 @@ impl Hotwords {
                 han_count,
             });
         }
-        Self { entries }
+        // 长的规则先试，免得「Cloud」抢在「Cloud Code」前面
+        rules.sort_by_key(|(wrong, _)| std::cmp::Reverse(wrong.chars().count()));
+        Self { entries, rules }
+    }
+
+    /// 替换规则（错, 对）
+    pub fn rules(&self) -> Vec<(&str, &str)> {
+        let mut listed: Vec<_> = self
+            .rules
+            .iter()
+            .map(|(w, r)| (w.as_str(), r.as_str()))
+            .collect();
+        listed.sort();
+        listed
     }
 
     pub fn words(&self) -> Vec<&str> {
@@ -63,10 +89,37 @@ impl Hotwords {
     }
 
     pub fn is_empty(&self) -> bool {
-        self.entries.is_empty()
+        self.entries.is_empty() && self.rules.is_empty()
     }
 
+    /// 先按替换规则切开，规则换出来的片段原样保留，其余片段再做读音热词纠错。
     pub fn apply(&self, text: &str) -> String {
+        if self.rules.is_empty() {
+            return self.apply_words(text);
+        }
+        let mut out = String::with_capacity(text.len());
+        let mut plain_from = 0;
+        let mut i = 0;
+        while i < text.len() {
+            let hit = self
+                .rules
+                .iter()
+                .find_map(|(wrong, right)| rule_match(text, i, wrong).map(|end| (end, right)));
+            match hit {
+                Some((end, right)) => {
+                    out.push_str(&self.apply_words(&text[plain_from..i]));
+                    out.push_str(right);
+                    i = end;
+                    plain_from = end;
+                }
+                None => i += text[i..].chars().next().map_or(1, char::len_utf8),
+            }
+        }
+        out.push_str(&self.apply_words(&text[plain_from..]));
+        out
+    }
+
+    fn apply_words(&self, text: &str) -> String {
         if self.entries.is_empty() {
             return text.to_string();
         }
@@ -116,6 +169,77 @@ impl Hotwords {
         }
         best.map(|(e, end, _)| (e, end))
     }
+}
+
+/// 往热词表里加一行（一个词，或「错=对」），返回新的文件内容；不用改就返回 None。
+/// 已有的词不重复加；同一个「错」已有规则时换成新的「对」；原有的注释和顺序不动。
+pub fn add_hotword_line(file: &str, line: &str) -> Option<String> {
+    let line = line.trim();
+    if line.is_empty() || line.starts_with('#') || line.contains(['\n', '\r', '\t']) {
+        return None;
+    }
+    let normalized = match line.split_once('=') {
+        Some((wrong, right)) => {
+            let (wrong, right) = (wrong.trim(), right.trim());
+            if wrong.is_empty() || right.is_empty() {
+                return None;
+            }
+            format!("{wrong}={right}")
+        }
+        None => line.to_string(),
+    };
+    let key = |l: &str| -> String {
+        let l = l.trim();
+        match l.split_once('=') {
+            Some((wrong, _)) => format!("{}=", wrong.trim()),
+            None => l.split('\t').next().unwrap_or("").trim().to_string(),
+        }
+    };
+    let new_key = key(&normalized);
+    let mut lines: Vec<String> = file.lines().map(str::to_string).collect();
+    let existing = lines
+        .iter()
+        .position(|l| !l.trim_start().starts_with('#') && key(l) == new_key);
+    match existing {
+        Some(i) => {
+            let same = match lines[i].trim().split_once('=') {
+                Some((w, r)) => format!("{}={}", w.trim(), r.trim()) == normalized,
+                None => true,
+            };
+            if same {
+                return None;
+            }
+            lines[i] = normalized;
+        }
+        None => lines.push(normalized),
+    }
+    Some(lines.join("\n") + "\n")
+}
+
+/// text 从字节位置 at 起是不是 wrong（英文不分大小写；wrong 以字母数字开头/结尾的那一侧要求整词）。
+/// 是就返回匹配结束的字节位置。
+fn rule_match(text: &str, at: usize, wrong: &str) -> Option<usize> {
+    let mut rest = text[at..].chars();
+    let mut end = at;
+    for want in wrong.chars() {
+        let got = rest.next()?;
+        if !got.eq_ignore_ascii_case(&want) {
+            return None;
+        }
+        end += got.len_utf8();
+    }
+    let word_char = |c: char| c.is_ascii_alphanumeric();
+    if wrong.chars().next().is_some_and(word_char)
+        && text[..at].chars().next_back().is_some_and(word_char)
+    {
+        return None;
+    }
+    if wrong.chars().next_back().is_some_and(word_char)
+        && text[end..].chars().next().is_some_and(word_char)
+    {
+        return None;
+    }
+    Some(end)
 }
 
 #[derive(Debug, Clone)]

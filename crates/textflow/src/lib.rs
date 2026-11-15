@@ -11,6 +11,6 @@ pub use punct::{PunctOptions, apply_punctuation};
 mod commands;
 pub use commands::{CommandOptions, VoiceCommand, parse_command};
 mod hotwords;
-pub use hotwords::Hotwords;
+pub use hotwords::{Hotwords, add_hotword_line};
 mod pipeline;
 pub use pipeline::{Options, Output, join_for_terminal, process};
