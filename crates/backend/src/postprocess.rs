@@ -122,6 +122,28 @@ impl Postprocess {
     }
 }
 
+/// 防改坏检查：拿本机历史（`dir/history.jsonl`）里的每一句，按现在的热词设置（主人热词表 + 自带表）
+/// 过一遍，返回会被改动的句子（原句, 改后）。只读本机文件，不上传；改热词表之前跑一下，确认没改坏。
+pub fn hotword_check(settings: &Settings, dir: &Path) -> std::io::Result<Vec<(String, String)>> {
+    let words = hotwords(&dir.join("hotwords.txt"), settings.text.builtin_hotwords);
+    let history = History::new(
+        dir.join("history.jsonl"),
+        HistorySettings {
+            enabled: true,
+            keep_days: u32::MAX,
+        },
+    );
+    let mut entries = history.recent(usize::MAX)?;
+    entries.reverse();
+    Ok(entries
+        .into_iter()
+        .filter_map(|entry| {
+            let changed = words.apply(&entry.text);
+            (changed != entry.text).then_some((entry.text, changed))
+        })
+        .collect())
+}
+
 /// 主人的热词表在前、自带表在后：同一个错法两边都写了用主人的（解析时同一个错法只认第一条）。
 fn hotwords(path: &Path, builtin: bool) -> Hotwords {
     if !builtin {
@@ -319,6 +341,28 @@ mod tests {
         assert_eq!(
             p.finalize("克劳德你好", 1),
             Output::Text("克劳德你好".into())
+        );
+    }
+
+    #[test]
+    fn hotword_check_lists_only_sentences_the_lists_would_change() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("hotwords.txt"), "雪耳\n").unwrap();
+        let history = [
+            r#"{"at_ms":1,"text":"雪而好用","app":""}"#,
+            r#"{"at_ms":2,"text":"用克劳德写代码","app":""}"#,
+            r#"{"at_ms":3,"text":"今天天气不错","app":""}"#,
+            "坏的一行",
+        ]
+        .join("\n");
+        fs::write(dir.path().join("history.jsonl"), history).unwrap();
+        let changes = hotword_check(&Settings::default(), dir.path()).unwrap();
+        assert_eq!(
+            changes,
+            [
+                ("雪而好用".to_owned(), "雪耳好用".to_owned()),
+                ("用克劳德写代码".to_owned(), "用Claude写代码".to_owned()),
+            ]
         );
     }
 }

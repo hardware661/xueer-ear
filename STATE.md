@@ -9,7 +9,7 @@
 
 - [x] H1 软件自带通用词表 `assets/hotwords-builtin.txt`：只收「错=对」规则（读音容易听错、写法固定的 AI/编程词），不收按读音猜的词、不收大小写本来就对的词；编进程序（36 条规则；跑主人 293 句只改 2 句，都是改对：温加H→Win+H、Cloud Code→Claude Code）
 - [x] H2 设置 text.builtin_hotwords（默认开，旧设置文件也是开）；主人的热词表在前、自带表在后，同一错法用主人的；开关放在控制面板「热词」菜单里
-- [ ] H3 防改坏检查：工具读本机 history，列出词表会改动的句子（本机跑，不上传）
+- [x] H3 `xueer-ear-cli hotword-check`：按现在的设置（主人热词表 + 自带表）过一遍本机 history，列出会改动的句子；只读本机
 - [ ] H4 主人本机热词表：去掉「雪儿」「雪耳」（同音分不清，两个都不放），加 Resin、Loom、Komari、青龙
 - [ ] H5 README、致谢 CapsWriter；和 1.0.1 一起测试打包装机；推送和发版另外问主人
 

@@ -133,6 +133,17 @@ fn run() -> Result<(), Box<dyn Error + Send + Sync>> {
             println!("mic_session=completed chars={}", text.chars().count());
             Ok(())
         }
+        // 防改坏检查：按现在的热词设置过一遍本机历史，列出会被改动的句子（只读本机，不上传）
+        (Some(command), None, None) if command == "hotword-check" => {
+            let dir = std::path::PathBuf::from(std::env::var_os("LOCALAPPDATA").ok_or("LOCALAPPDATA 不可用")?).join("XueerEar");
+            let settings = xueer_ear_backend::settings::Settings::load_default()?;
+            let changes = xueer_ear_backend::postprocess::hotword_check(&settings, &dir)?;
+            for (before, after) in &changes {
+                println!("- {before}\n+ {after}\n");
+            }
+            println!("共 {} 句会被改动", changes.len());
+            Ok(())
+        }
         #[cfg(windows)]
         (Some(command), None, None) if command == "microphone-info" => {
             for (role, device) in xueer_ear_audio::microphone::devices()? {
@@ -256,7 +267,7 @@ fn run() -> Result<(), Box<dyn Error + Send + Sync>> {
             }
             Ok(())
         }
-        _ => Err("usage: xueer-ear-cli recognize-wave-wetype FILE.wav | <inspect-capture|replay-capture|connect-check> DIRECTORY | account-status [FILE]".into()),
+        _ => Err("usage: xueer-ear-cli hotword-check | recognize-wave-wetype FILE.wav | <inspect-capture|replay-capture|connect-check> DIRECTORY | account-status [FILE]".into()),
     }
 }
 
