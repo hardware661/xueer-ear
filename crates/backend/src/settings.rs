@@ -15,6 +15,10 @@ pub const SILENCE_SECONDS_OPTIONS: &[u32] = &[1, 2, 3, 5, 10];
 pub struct Settings {
     pub microphone: Option<String>,
     pub silence_seconds: u32,
+    /// 定稿文字上屏前的整理（textflow）
+    pub text: TextSettings,
+    pub history_enabled: bool,
+    pub history_keep_days: u32,
 }
 
 impl Default for Settings {
@@ -22,6 +26,35 @@ impl Default for Settings {
         Self {
             microphone: None,
             silence_seconds: 3,
+            text: TextSettings::default(),
+            history_enabled: true,
+            history_keep_days: 7,
+        }
+    }
+}
+
+/// 文字整理开关。热词不在这里：热词表是单独的 hotwords.txt，一行一个词。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct TextSettings {
+    pub strip_fillers: bool,
+    pub normalize_numbers: bool,
+    pub drop_final_period: bool,
+    pub cjk_latin_space: bool,
+    pub fullwidth_punct_in_cjk: bool,
+    /// 整句说「发送」时按回车；默认关，免得在终端里把半截话发出去
+    pub allow_send: bool,
+}
+
+impl Default for TextSettings {
+    fn default() -> Self {
+        Self {
+            strip_fillers: true,
+            normalize_numbers: true,
+            drop_final_period: false,
+            cjk_latin_space: false,
+            fullwidth_punct_in_cjk: false,
+            allow_send: false,
         }
     }
 }
@@ -37,6 +70,9 @@ impl Settings {
             .is_some_and(|id| id.len() > 1024 || id.chars().any(char::is_control))
         {
             return Err("麦克风 ID 无效".into());
+        }
+        if !(1..=365).contains(&self.history_keep_days) {
+            return Err("历史记录保留天数需在 1～365 之间".into());
         }
         Ok(())
     }
@@ -156,9 +192,38 @@ mod tests {
             Settings::load(&fixture.path).unwrap(),
             Settings {
                 microphone: Some("device-a".into()),
-                silence_seconds: 3
+                silence_seconds: 3,
+                ..Settings::default()
             }
         );
+    }
+
+    #[test]
+    fn old_settings_files_get_text_and_history_defaults() {
+        let fixture = Fixture::new();
+        fs::write(&fixture.path, br#"{"microphone":null,"silence_seconds":2}"#).unwrap();
+        let loaded = Settings::load(&fixture.path).unwrap();
+        assert_eq!(loaded.silence_seconds, 2);
+        assert_eq!(loaded.text, TextSettings::default());
+        assert!(loaded.text.strip_fillers && loaded.text.normalize_numbers);
+        assert!(!loaded.text.allow_send);
+        assert!(loaded.history_enabled);
+        assert_eq!(loaded.history_keep_days, 7);
+    }
+
+    #[test]
+    fn text_and_history_settings_round_trip_and_validate() {
+        let fixture = Fixture::new();
+        let mut settings = Settings::default();
+        settings.text.drop_final_period = true;
+        settings.history_keep_days = 30;
+        settings.save(&fixture.path).unwrap();
+        assert_eq!(Settings::load(&fixture.path).unwrap(), settings);
+
+        for days in [0, 366] {
+            settings.history_keep_days = days;
+            assert!(settings.validate().is_err(), "{days}");
+        }
     }
 
     #[test]
@@ -167,12 +232,14 @@ mod tests {
         let first = Settings {
             microphone: Some("device-a".into()),
             silence_seconds: 1,
+            ..Settings::default()
         };
         first.save(&fixture.path).unwrap();
         assert_eq!(Settings::load(&fixture.path).unwrap(), first);
         let second = Settings {
             microphone: None,
             silence_seconds: 10,
+            ..Settings::default()
         };
         second.save(&fixture.path).unwrap();
         assert_eq!(Settings::load(&fixture.path).unwrap(), second);
@@ -204,7 +271,8 @@ mod tests {
             assert!(
                 Settings {
                     microphone: None,
-                    silence_seconds: *seconds
+                    silence_seconds: *seconds,
+                    ..Settings::default()
                 }
                 .validate()
                 .is_ok()
@@ -213,7 +281,8 @@ mod tests {
         assert!(
             Settings {
                 microphone: Some("x".repeat(1024)),
-                silence_seconds: 3
+                silence_seconds: 3,
+                ..Settings::default()
             }
             .validate()
             .is_ok()
@@ -221,7 +290,8 @@ mod tests {
         assert!(
             Settings {
                 microphone: Some("x".repeat(1025)),
-                silence_seconds: 3
+                silence_seconds: 3,
+                ..Settings::default()
             }
             .validate()
             .is_err()

@@ -10,7 +10,7 @@
 - [x] R1 README 重写（中文、不提上游）、assets 说明
 - [x] R2 B6 图标：手画 SVG 兽耳（深灰底、白耳、笑脸弧线），PNG 1024 和 ICO 七帧从 SVG 重新生成，16 像素下看过能认出
 - [x] R3 C12 更新检查：核对过，已经查 `hardware661/xueer-ear` 的 Releases（`crates/gui/src/update.rs`），每 6 小时一次，不用改；「上游有新版」提示没做（要加第二个查询地址，放后面）
-- [ ] R4 设置：textflow / history 的配置文件（%LOCALAPPDATA%\XueerEar）
+- [x] R4 设置：`backend/src/settings.rs` 的 settings.json 加 `text`（TextSettings 六个开关）、`history_enabled`、`history_keep_days`（1～365）；旧文件缺字段自动用默认值；GUI 保存时克隆整份不会丢字段。还没有界面开关，要手改 json
 - [ ] R5 把 textflow 接到定稿文字上屏前、history 接到上屏后（只改出字那一处）
 - [ ] R6 Windows 全量 `cargo test --workspace`
 
