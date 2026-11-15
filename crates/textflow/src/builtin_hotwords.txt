@@ -1,0 +1,41 @@
+# 雪耳自带的通用热词（只放「常被听成=正确写法」）。
+# 收录规则：读音容易听错、写法固定的 AI / 编程 / 系统词；每条都要写明错法。
+# 不收：按读音猜的词（会把同音的正常说法改掉）、大小写本来就对的词（bug、Alt、Enter）、
+#       单独会是正常英文的错法（cloud、out）。
+# 部分对照参考 CapsWriter-Offline 的 hot.txt / hot-rule.txt（MIT，Haujet Zhao）。
+# 改这份表之前，用 tools/hotword-check 拿本机历史跑一遍，确认没有改坏的句子。
+
+# AI 助手
+克劳德=Claude
+克劳得=Claude
+克劳德扣德=Claude Code
+克劳德代码=Claude Code
+Cloud Code=Claude Code
+Cloud Cold=Claude Code
+Claude Cold=Claude Code
+扣代克斯=Codex
+寇代克斯=Codex
+深度求索=DeepSeek
+迪普西克=DeepSeek
+杰米尼=Gemini
+千问=Qwen
+通义千问=Qwen
+
+# 本地模型
+欧拉玛=Ollama
+奥拉玛=Ollama
+拉马点CPP=Llama.cpp
+拉马点 CPP=Llama.cpp
+
+# 编程与工具
+吉特哈布=GitHub
+给他哈布=GitHub
+派托奇=PyTorch
+酷达=CUDA
+VS扣德=VS Code
+维艾斯扣德=VS Code
+
+# 系统
+温加H=Win+H
+温家H=Win+H
+文加H=Win+H

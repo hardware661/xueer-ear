@@ -12,5 +12,8 @@ mod commands;
 pub use commands::{CommandOptions, VoiceCommand, parse_command, parse_trailing_command};
 mod hotwords;
 pub use hotwords::{Hotwords, add_hotword_line};
+
+/// 软件自带的通用热词表（「常被听成=正确写法」），见 `builtin_hotwords.txt` 开头的收录规则。
+pub const BUILTIN_HOTWORDS: &str = include_str!("builtin_hotwords.txt");
 mod pipeline;
 pub use pipeline::{Options, Output, join_for_terminal, process, terminal_append};
