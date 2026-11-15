@@ -15,9 +15,19 @@ pub enum Key {
 }
 
 /// 这次听写里雪耳已经上屏的东西，一条一条记着，用来往回删和在终端里补句间分隔。
-#[derive(Default)]
 pub struct Typist {
     typed: Vec<Typed>,
+    /// 终端里「换行」发不发 Ctrl+J（设置 text.terminal_newline）
+    terminal_newline: bool,
+}
+
+impl Default for Typist {
+    fn default() -> Self {
+        Self {
+            typed: Vec::new(),
+            terminal_newline: true,
+        }
+    }
 }
 
 enum Typed {
@@ -66,6 +76,7 @@ impl Typist {
 
     pub fn command(&mut self, command: VoiceCommand, terminal: bool) -> Vec<Key> {
         match command {
+            VoiceCommand::NewLine if terminal && !self.terminal_newline => vec![],
             VoiceCommand::NewLine => {
                 self.typed.push(Typed::NewLine);
                 // 终端里 Enter 就是发送，用 Ctrl+J 换行（2026-11-15 主人真机：Shift+Enter 被发送出去了）
@@ -131,6 +142,11 @@ impl Live {
             frozen: None,
             early: None,
         }
+    }
+
+    /// 终端里「换行」发不发 Ctrl+J（审查 R4）
+    pub fn set_terminal_newline(&mut self, on: bool) {
+        self.typist.terminal_newline = on;
     }
 
     /// 这句到目前为止只说了一个指令词（调用方用 Postprocess::command_only 判断过），马上执行，
@@ -980,5 +996,33 @@ mod tests {
         let rest = live.unsent("今天天气很好，明天下雨。");
         type_into(&mut doc, &live.finalize(Output::Text(rest)));
         assert_eq!(doc, "明天下雨。");
+    }
+
+    #[test]
+    fn spoken_newline_can_be_switched_off_in_terminals() {
+        // 审查 R4：终端里「换行」发 Ctrl+J；Claude Code 里是换行，普通 bash 里就是回车，会执行命令
+        let mut live = Live::new(true);
+        live.set_terminal_newline(false);
+        let mut doc = String::new();
+        type_into(&mut doc, &live.partial("ls"));
+        type_into(&mut doc, &live.finalize(Output::Text("ls".into())));
+        type_into(
+            &mut doc,
+            &live.finalize(Output::Command(VoiceCommand::NewLine)),
+        );
+        assert_eq!(doc, "ls", "关掉后终端里不发 Ctrl+J");
+        // 不是终端照常换行
+        let mut live = Live::new(false);
+        live.set_terminal_newline(false);
+        assert_eq!(
+            live.finalize(Output::Command(VoiceCommand::NewLine)),
+            [Key::Enter]
+        );
+        // 默认开着
+        let mut live = Live::new(true);
+        assert_eq!(
+            live.finalize(Output::Command(VoiceCommand::NewLine)),
+            [Key::CtrlJ]
+        );
     }
 }

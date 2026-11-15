@@ -29,7 +29,7 @@ type Switch = (&'static str, fn(&mut Settings) -> &mut bool);
 type Choice = (usize, String, bool);
 
 /// 「更多设置」里的开关，顺序就是菜单顺序；`GROUPS` 说明每组几个，组之间画分隔线。
-const SWITCHES: [Switch; 9] = [
+const SWITCHES: [Switch; 10] = [
     ("去掉口头禅", |s| &mut s.text.strip_fillers),
     ("中文数字转阿拉伯数字", |s| {
         &mut s.text.normalize_numbers
@@ -40,12 +40,15 @@ const SWITCHES: [Switch; 9] = [
         &mut s.text.fullwidth_punct_in_cjk
     }),
     ("说「发送」时按回车", |s| &mut s.text.allow_send),
+    ("终端里说「换行」发 Ctrl+J", |s| {
+        &mut s.text.terminal_newline
+    }),
     ("提示音", |s| &mut s.sounds_enabled),
     ("同时接管 Win+H", |s| &mut s.winh_enabled),
     ("记录历史", |s| &mut s.history_enabled),
 ];
-/// 文字整理 6 个、提示音和 Win+H 2 个；「记录历史」和保留天数一组
-const GROUPS: [usize; 2] = [6, 8];
+/// 文字整理 7 个、提示音和 Win+H 2 个；「记录历史」和保留天数一组
+const GROUPS: [usize; 2] = [7, 9];
 
 fn separator() -> Choice {
     (0, String::new(), false)

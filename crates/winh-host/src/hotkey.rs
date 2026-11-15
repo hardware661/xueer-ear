@@ -262,6 +262,7 @@ fn record(
     let settings = Settings::load_default().unwrap_or_default();
     let post = crate::broker::postprocess();
     let mut live = Live::new(foreground_is_terminal());
+    live.set_terminal_newline(settings.text.terminal_newline);
     let source = Source::MicrophoneHold {
         device: settings.microphone.clone(),
         release: release.clone(),

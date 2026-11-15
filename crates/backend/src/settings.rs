@@ -61,6 +61,9 @@ pub struct TextSettings {
     pub fullwidth_punct_in_cjk: bool,
     /// 整句说「发送」时按回车；默认关，免得在终端里把半截话发出去
     pub allow_send: bool,
+    /// 终端里说「换行」时发 Ctrl+J。Claude Code 里是换行；普通 bash/zsh 里 Ctrl+J 就是回车、会执行命令，
+    /// 常在普通命令行里听写的可以关掉（关掉后终端里「换行」什么都不做）。
+    pub terminal_newline: bool,
 }
 
 impl Default for TextSettings {
@@ -72,6 +75,7 @@ impl Default for TextSettings {
             cjk_latin_space: false,
             fullwidth_punct_in_cjk: false,
             allow_send: false,
+            terminal_newline: true,
         }
     }
 }
@@ -344,5 +348,17 @@ mod tests {
             .validate()
             .is_err()
         );
+    }
+}
+
+#[cfg(test)]
+mod terminal_newline_tests {
+    use super::*;
+
+    #[test]
+    fn terminal_newline_defaults_on_and_old_files_keep_it_on() {
+        assert!(Settings::default().text.terminal_newline);
+        let old: Settings = serde_json::from_str(r#"{"text": {"allow_send": true}}"#).unwrap();
+        assert!(old.text.terminal_newline);
     }
 }
