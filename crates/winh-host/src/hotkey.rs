@@ -1,7 +1,7 @@
 //! 快捷键听写（默认右 Alt）：雪耳自己的面板 + 边说边出字，不经过微软的 Win+H。
 //!
 //! 交互见 `dictation.rs`：点一下打开面板开始听，停顿收句后麦克风变灰，再点接着听；
-//! 按住说、松开收句也行；点 ×、Esc 或灰着一会儿就收起。
+//! 按住说、松开收句也行；Esc 或灰着一会儿就收起。
 //! 只轮询自己关心的几个键（GetAsyncKeyState），不装全局键盘钩子、不记录按键。
 //! 键入用 SendInput 的 Unicode 方式，只发我们识别出的文字和语音指令对应的键。
 use crate::{
@@ -32,6 +32,9 @@ use xueer_ear_backend::{
     engine::{self, Event, Source},
     settings::Settings,
 };
+
+/// 正在往前台发我们自己的按键（里面可能有 Enter），轮询线程这时不把 Enter 算作主人按的
+static INJECTING: AtomicBool = AtomicBool::new(false);
 
 /// 按住超过这么久再松开，算「按住说话」，松开就收句；更短的算「点一下」
 const HOLD_THRESHOLD: Duration = Duration::from_millis(400);
@@ -73,6 +76,8 @@ impl Drop for Hotkey {
 struct Session {
     release: Arc<AtomicBool>,
     cancel: Arc<AtomicBool>,
+    /// 主人自己按 Enter 的次数（轮询线程加，听写线程读），用来去掉已发走的文字
+    sent: Arc<std::sync::atomic::AtomicU32>,
     worker: JoinHandle<()>,
 }
 
@@ -89,6 +94,7 @@ fn poll_loop(vk: i32, stop: &AtomicBool) {
     let mut session: Option<Session> = None;
     let mut was_held = false;
     let mut was_escape = false;
+    let mut was_enter = false;
     while !stop.load(Ordering::Acquire) {
         let now = Instant::now();
         let mut inputs = Vec::new();
@@ -107,6 +113,14 @@ fn poll_loop(vk: i32, stop: &AtomicBool) {
             inputs.push(Input::KeyUp);
         }
         was_held = held;
+        // 主人自己按 Enter（我们注入 Enter 时会先置 INJECTING，不算）
+        let enter = pressed(i32::from(VK_RETURN));
+        if enter && !was_enter && !INJECTING.load(Ordering::Acquire) {
+            if let Some(s) = &session {
+                s.sent.fetch_add(1, Ordering::AcqRel);
+            }
+        }
+        was_enter = enter;
         let escape = pressed(i32::from(VK_ESCAPE));
         if escape && !was_escape && state.panel() != Panel::Hidden {
             inputs.push(Input::Close);
@@ -115,8 +129,6 @@ fn poll_loop(vk: i32, stop: &AtomicBool) {
         while let Ok(click) = clicks.try_recv() {
             match click {
                 Click::Mic => inputs.push(Input::MicClick),
-                Click::Close => inputs.push(Input::Close),
-                Click::Settings => open_control_panel(),
             }
         }
         let mut effects = Vec::new();
@@ -161,15 +173,18 @@ fn poll_loop(vk: i32, stop: &AtomicBool) {
 fn begin(panel: PanelHandle) -> Session {
     let release = Arc::new(AtomicBool::new(false));
     let cancel = Arc::new(AtomicBool::new(false));
-    let (worker_release, worker_cancel) = (release.clone(), cancel.clone());
+    let sent = Arc::new(std::sync::atomic::AtomicU32::new(0));
+    let (worker_release, worker_cancel, worker_sent) =
+        (release.clone(), cancel.clone(), sent.clone());
     let worker = thread::spawn(move || {
-        if let Err(error) = record(worker_release, worker_cancel, &panel) {
+        if let Err(error) = record(worker_release, worker_cancel, worker_sent, &panel) {
             eprintln!("快捷键听写失败：{error}");
         }
     });
     Session {
         release,
         cancel,
+        sent,
         worker,
     }
 }
@@ -179,8 +194,10 @@ fn begin(panel: PanelHandle) -> Session {
 fn record(
     release: Arc<AtomicBool>,
     cancel: Arc<AtomicBool>,
+    sent: Arc<std::sync::atomic::AtomicU32>,
     panel: &PanelHandle,
 ) -> crate::install::Result<()> {
+    let mut seen_sent = 0;
     let settings = Settings::load_default().unwrap_or_default();
     let post = crate::broker::postprocess();
     let mut live = Live::new(foreground_is_terminal());
@@ -210,10 +227,17 @@ fn record(
                 }
             }
             Event::Speech(speech) => {
+                // 主人在这句说到一半时按了 Enter：屏幕上的部分已经发走，后面只打剩下的
+                let now_sent = sent.load(Ordering::Acquire);
+                if now_sent != seen_sent {
+                    seen_sent = now_sent;
+                    live.user_sent();
+                }
+                let text = live.unsent(&speech.text);
                 let keys = if speech.final_result {
-                    live.finalize(post.finalize(&speech.text, crate::broker::now_ms()))
+                    live.finalize(post.finalize(&text, crate::broker::now_ms()))
                 } else {
-                    live.partial(&speech.text)
+                    live.partial(&text)
                 };
                 typed_any |= keys.iter().any(|k| matches!(k, Key::Text(_)));
                 send_keys(&keys);
@@ -226,13 +250,6 @@ fn record(
         crate::sound::play(crate::sound::Cue::Missed, settings.sounds_enabled);
     }
     Ok(())
-}
-
-/// 齿轮：打开雪耳控制面板
-fn open_control_panel() {
-    if let Ok(exe) = std::env::current_exe() {
-        let _ = std::process::Command::new(exe.with_file_name("xueer-ear.exe")).spawn();
-    }
 }
 
 fn pressed(vk: i32) -> bool {
@@ -326,6 +343,10 @@ fn send_keys(keys: &[Key]) {
     if inputs.is_empty() {
         return;
     }
+    let has_enter = keys.iter().any(|k| matches!(k, Key::Enter));
+    if has_enter {
+        INJECTING.store(true, Ordering::Release);
+    }
     let sent = unsafe {
         SendInput(
             inputs.len() as u32,
@@ -333,6 +354,11 @@ fn send_keys(keys: &[Key]) {
             size_of::<INPUT>() as i32,
         )
     };
+    if has_enter {
+        // 轮询每 15 ms 看一次键，等它看过我们自己发的 Enter 再清标记
+        thread::sleep(Duration::from_millis(60));
+        INJECTING.store(false, Ordering::Release);
+    }
     if sent as usize != inputs.len() {
         eprintln!(
             "键入未完成：{sent}/{}（目标窗口可能是管理员权限）",

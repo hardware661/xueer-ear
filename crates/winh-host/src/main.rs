@@ -25,20 +25,20 @@ mod typing;
 
 #[cfg(windows)]
 fn main() {
-    // 只画面板不听写：截图核对外观用（`--panel-preview listening|idle`）
+    // 离屏把面板画成 PNG 核对外观（不在屏幕上弹窗）：`--panel-render 目录`
     let mut args = std::env::args().skip(1);
-    if args.next().as_deref() == Some("--panel-preview") {
-        let look = match args.next().as_deref() {
-            Some("idle") => panel::Look::Idle,
-            _ => panel::Look::Listening,
-        };
-        let (tx, _rx) = std::sync::mpsc::channel();
-        let handle = panel::spawn(tx);
-        std::thread::sleep(std::time::Duration::from_millis(300));
-        handle.set(look);
-        for i in 0..80 {
-            handle.level(((i as f32 * 0.4).sin().abs() * 9000.) as u32);
-            std::thread::sleep(std::time::Duration::from_millis(50));
+    if args.next().as_deref() == Some("--panel-render") {
+        let dir = std::path::PathBuf::from(args.next().unwrap_or_else(|| ".".into()));
+        for (name, look, level) in [
+            ("listening", panel::Look::Listening, 0.7),
+            ("idle", panel::Look::Idle, 0.),
+        ] {
+            if let Err(e) =
+                panel::render_png(look, level, 3., &dir.join(format!("panel-{name}.png")))
+            {
+                eprintln!("{e}");
+                std::process::exit(1);
+            }
         }
         return;
     }

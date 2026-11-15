@@ -1,5 +1,5 @@
-//! 雪耳自己的听写面板：样子仿 Win+H（左齿轮、中间麦克风、右关闭），屏幕底部居中、置顶、
-//! 不抢焦点（WS_EX_NOACTIVATE），所以打字的目标窗口一直是你原来的那个。
+//! 雪耳自己的听写面板：一张带一对猫耳的小卡片，中间一个麦克风；固定在屏幕顶部居中、置顶、
+//! 不抢焦点（WS_EX_NOACTIVATE），所以打字的目标窗口一直是你原来的那个。点卡片任意处 = 点麦克风。
 //! 面板跑在自己的线程和消息循环里；其他线程通过 `PanelHandle` 改状态、收点击。
 use std::{
     mem, ptr,
@@ -18,7 +18,7 @@ use windows_sys::Win32::{
             AC_SRC_ALPHA, AC_SRC_OVER, BI_RGB, BITMAPINFO, BITMAPINFOHEADER, BLENDFUNCTION,
             CreateCompatibleDC, CreateDIBSection, DIB_RGB_COLORS, DeleteDC, DeleteObject, GetDC,
             GetMonitorInfoW, MONITOR_DEFAULTTOPRIMARY, MONITORINFO, MonitorFromWindow, ReleaseDC,
-            ScreenToClient, SelectObject,
+            SelectObject,
         },
         GdiPlus as gp,
     },
@@ -26,19 +26,20 @@ use windows_sys::Win32::{
     UI::{
         HiDpi::GetDpiForWindow,
         WindowsAndMessaging::{
-            CreateWindowExW, DefWindowProcW, DispatchMessageW, GWLP_USERDATA, GetCursorPos,
-            GetForegroundWindow, GetMessageW, GetWindowLongPtrW, HTCAPTION, HTCLIENT, IDC_ARROW,
-            KillTimer, LoadCursorW, MSG, PostMessageW, RegisterClassW, SW_HIDE, SW_SHOWNOACTIVATE,
-            SetTimer, SetWindowLongPtrW, ShowWindow, ULW_ALPHA, UpdateLayeredWindow, WM_APP,
-            WM_LBUTTONUP, WM_NCHITTEST, WM_TIMER, WNDCLASSW, WS_EX_LAYERED, WS_EX_NOACTIVATE,
-            WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
+            CreateWindowExW, DefWindowProcW, DispatchMessageW, GWLP_USERDATA, GetForegroundWindow,
+            GetMessageW, GetWindowLongPtrW, IDC_ARROW, KillTimer, LoadCursorW, MSG, PostMessageW,
+            RegisterClassW, SW_HIDE, SW_SHOWNOACTIVATE, SetTimer, SetWindowLongPtrW, ShowWindow,
+            ULW_ALPHA, UpdateLayeredWindow, WM_APP, WM_LBUTTONUP, WM_TIMER, WNDCLASSW,
+            WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
         },
     },
 };
 
-/// 面板逻辑尺寸（96 DPI 下的像素）
-const WIDTH: f32 = 228.;
-const HEIGHT: f32 = 120.;
+/// 面板逻辑尺寸（96 DPI 下的像素）；上面留出猫耳的高度
+const WIDTH: f32 = 112.;
+const HEIGHT: f32 = 92.;
+/// 卡片本体从这里开始，上面是耳朵
+const BODY_TOP: f32 = 18.;
 const REFRESH: u32 = WM_APP + 10;
 const ANIMATE_TIMER: usize = 1;
 
@@ -56,8 +57,6 @@ pub enum Look {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Click {
     Mic,
-    Close,
-    Settings,
 }
 
 struct Shared {
@@ -214,19 +213,8 @@ unsafe extern "system" fn procedure(hwnd: HWND, message: u32, wp: WPARAM, lp: LP
                 window.draw();
                 0
             }
-            // 中间麦克风、左齿轮、右关闭是按钮；其余地方可以拖动面板
-            WM_NCHITTEST => {
-                let result = DefWindowProcW(hwnd, message, wp, lp);
-                if result == HTCLIENT as isize && window.button_at_cursor().is_none() {
-                    HTCAPTION as isize
-                } else {
-                    result
-                }
-            }
             WM_LBUTTONUP => {
-                if let Some(click) = window.button_at_cursor() {
-                    let _ = window.shared.clicks.send(click);
-                }
+                let _ = window.shared.clicks.send(Click::Mic);
                 0
             }
             _ => DefWindowProcW(hwnd, message, wp, lp),
@@ -264,7 +252,7 @@ impl Window {
         }
     }
 
-    /// 放到前台窗口所在屏幕的底部居中，和 Win+H 面板的位置差不多
+    /// 放到前台窗口所在屏幕的顶部居中
     unsafe fn place(&self) {
         unsafe {
             let monitor = MonitorFromWindow(GetForegroundWindow(), MONITOR_DEFAULTTOPRIMARY);
@@ -276,8 +264,9 @@ impl Window {
             let work = info.rcWork;
             let s = self.scale();
             let (w, h) = ((WIDTH * s) as i32, (HEIGHT * s) as i32);
+            // 顶部居中（主人 2026-11-15：放底部会挡住输入框）
             let x = work.left + (work.right - work.left - w) / 2;
-            let y = work.bottom - h - (24. * s) as i32;
+            let y = work.top + (12. * s) as i32;
             windows_sys::Win32::UI::WindowsAndMessaging::SetWindowPos(
                 self.hwnd,
                 windows_sys::Win32::UI::WindowsAndMessaging::HWND_TOPMOST,
@@ -287,17 +276,6 @@ impl Window {
                 h,
                 windows_sys::Win32::UI::WindowsAndMessaging::SWP_NOACTIVATE,
             );
-        }
-    }
-
-    fn button_at_cursor(&self) -> Option<Click> {
-        unsafe {
-            let mut point = POINT { x: 0, y: 0 };
-            GetCursorPos(&mut point);
-            ScreenToClient(self.hwnd, &mut point);
-            let s = self.scale();
-            let (x, y) = (point.x as f32 / s, point.y as f32 / s);
-            hit(x, y)
         }
     }
 
@@ -366,23 +344,8 @@ impl Window {
     }
 }
 
-/// 按钮位置（96 DPI 逻辑坐标）：左齿轮、中麦克风、右关闭
-fn hit(x: f32, y: f32) -> Option<Click> {
-    let near = |cx: f32, cy: f32, r: f32| (x - cx).powi(2) + (y - cy).powi(2) <= r * r;
-    if near(WIDTH / 2., 70., 28.) {
-        Some(Click::Mic)
-    } else if near(WIDTH - 22., 20., 14.) {
-        Some(Click::Close)
-    } else if near(36., 70., 18.) {
-        Some(Click::Settings)
-    } else {
-        None
-    }
-}
-
 const PANEL_FILL: u32 = 0xf5f3f3f6;
 const PANEL_EDGE: u32 = 0x33000000;
-const INK: u32 = 0xff1c1c1e;
 const MUTED: u32 = 0xff8e8e93;
 const BLUE: u32 = 0xff0a64d8;
 const HALO: u32 = 0x330a64d8;
@@ -400,20 +363,80 @@ unsafe fn paint(
         if gp::GdipCreateFromHDC(dc, &mut g) != 0 {
             return;
         }
+        paint_graphics(g, scale, look, level, phase);
+        gp::GdipDeleteGraphics(g);
+    }
+}
+
+unsafe fn paint_graphics(g: *mut gp::GpGraphics, scale: f32, look: Look, level: f32, phase: f32) {
+    unsafe {
         gp::GdipSetSmoothingMode(g, gp::SmoothingModeAntiAlias8x8);
         gp::GdipScaleWorldTransform(g, scale, scale, gp::MatrixOrderPrepend);
-        // 面板底：浅色磨砂感圆角卡片 + 细描边
-        rounded(g, 0.5, 0.5, WIDTH - 1., HEIGHT - 1., 12., PANEL_FILL, false);
-        rounded(g, 0.5, 0.5, WIDTH - 1., HEIGHT - 1., 12., PANEL_EDGE, true);
-        // 顶部拖动条
-        rounded(g, WIDTH / 2. - 18., 10., 36., 4., 2., 0xffc7c7cc, false);
-        // 右上关闭 ×
-        line(g, WIDTH - 27., 15., WIDTH - 17., 25., 1.6, INK);
-        line(g, WIDTH - 17., 15., WIDTH - 27., 25., 1.6, INK);
-        // 左边齿轮
-        gear(g, 36., 70., MUTED);
-        // 中间麦克风按钮
-        let (cx, cy) = (WIDTH / 2., 70.);
+        // 一对猫耳（左上、右上），和卡片同色，先画在下面
+        let ear_fill = PANEL_FILL;
+        cat_ear(
+            g,
+            14.,
+            BODY_TOP + 10.,
+            34.,
+            BODY_TOP + 10.,
+            18.,
+            0.,
+            ear_fill,
+            PANEL_EDGE,
+        );
+        cat_ear(
+            g,
+            WIDTH - 34.,
+            BODY_TOP + 10.,
+            WIDTH - 14.,
+            BODY_TOP + 10.,
+            WIDTH - 18.,
+            0.,
+            ear_fill,
+            PANEL_EDGE,
+        );
+        // 卡片：浅色圆角 + 细描边
+        let body_h = HEIGHT - BODY_TOP - 1.;
+        rounded(g, 0.5, BODY_TOP, WIDTH - 1., body_h, 18., PANEL_FILL, false);
+        rounded(g, 0.5, BODY_TOP, WIDTH - 1., body_h, 18., PANEL_EDGE, true);
+        // 盖掉耳朵和卡片交界处的描边，让耳朵看起来是长出来的
+        rounded(g, 12., BODY_TOP + 0.5, 25., 6., 2., PANEL_FILL, false);
+        rounded(
+            g,
+            WIDTH - 37.,
+            BODY_TOP + 0.5,
+            25.,
+            6.,
+            2.,
+            PANEL_FILL,
+            false,
+        );
+        // 内耳一点粉灰
+        cat_ear(
+            g,
+            19.,
+            BODY_TOP + 4.,
+            30.,
+            BODY_TOP + 4.,
+            20.,
+            7.,
+            0xffe9dfe3,
+            0,
+        );
+        cat_ear(
+            g,
+            WIDTH - 30.,
+            BODY_TOP + 4.,
+            WIDTH - 19.,
+            BODY_TOP + 4.,
+            WIDTH - 20.,
+            7.,
+            0xffe9dfe3,
+            0,
+        );
+        // 中间麦克风
+        let (cx, cy) = (WIDTH / 2., BODY_TOP + body_h / 2.);
         match look {
             Look::Listening | Look::Connecting => {
                 let pulse = if look == Look::Connecting {
@@ -421,24 +444,16 @@ unsafe fn paint(
                 } else {
                     level
                 };
-                let r = 26. + 8. * pulse;
+                let r = 24. + 7. * pulse;
                 ellipse(g, cx - r, cy - r, r * 2., r * 2., HALO);
-                ellipse(g, cx - 24., cy - 24., 48., 48., BLUE);
-                mic(g, cx - 10., cy - 13., 20., 0xffffffff);
+                ellipse(g, cx - 22., cy - 22., 44., 44., BLUE);
+                mic(g, cx - 9., cy - 12., 18., 0xffffffff);
             }
             _ => {
-                ellipse(g, cx - 24., cy - 24., 48., 48., GREY_FILL);
-                mic(g, cx - 10., cy - 13., 20., MUTED);
+                ellipse(g, cx - 22., cy - 22., 44., 44., GREY_FILL);
+                mic(g, cx - 9., cy - 12., 18., MUTED);
             }
         }
-        // 右边一个小兽耳：雪耳的记号
-        ear(
-            g,
-            WIDTH - 40.,
-            60.,
-            if look == Look::Idle { MUTED } else { INK },
-        );
-        gp::GdipDeleteGraphics(g);
     }
 }
 
@@ -563,48 +578,89 @@ unsafe fn mic(g: *mut gp::GpGraphics, x: f32, y: f32, size: f32, color: u32) {
     }
 }
 
-unsafe fn gear(g: *mut gp::GpGraphics, cx: f32, cy: f32, color: u32) {
+/// 一只猫耳：三角形 (x1,y1)-(x2,y2) 是耳根，(tx,ty) 是耳尖；edge 为 0 就不描边
+unsafe fn cat_ear(
+    g: *mut gp::GpGraphics,
+    x1: f32,
+    y1: f32,
+    x2: f32,
+    y2: f32,
+    tx: f32,
+    ty: f32,
+    fill: u32,
+    edge: u32,
+) {
     unsafe {
-        for i in 0..8 {
-            let a = i as f32 * std::f32::consts::TAU / 8.;
-            line(
-                g,
-                cx + a.cos() * 6.5,
-                cy + a.sin() * 6.5,
-                cx + a.cos() * 9.5,
-                cy + a.sin() * 9.5,
-                2.6,
-                color,
-            );
+        let mut path = ptr::null_mut();
+        if gp::GdipCreatePath(gp::FillModeAlternate, &mut path) != 0 {
+            return;
         }
-        arc(g, cx - 6.5, cy - 6.5, 13., 13., 0., 360., 1.8, color);
-        arc(g, cx - 2.5, cy - 2.5, 5., 5., 0., 360., 1.6, color);
+        // 耳尖用一小段圆弧，别太尖
+        gp::GdipAddPathLine(path, x1, y1, tx - 2., ty + 3.);
+        gp::GdipAddPathBezier(path, tx - 2., ty + 3., tx, ty, tx, ty, tx + 2., ty + 3.);
+        gp::GdipAddPathLine(path, tx + 2., ty + 3., x2, y2);
+        gp::GdipClosePathFigure(path);
+        let mut brush = ptr::null_mut();
+        if gp::GdipCreateSolidFill(fill, &mut brush) == 0 {
+            gp::GdipFillPath(g, brush.cast(), path);
+            gp::GdipDeleteBrush(brush.cast());
+        }
+        if edge != 0 {
+            let mut pen = ptr::null_mut();
+            if gp::GdipCreatePen1(edge, 1., gp::UnitPixel, &mut pen) == 0 {
+                gp::GdipSetPenLineJoin(pen, gp::LineJoinRound);
+                gp::GdipDrawPath(g, pen, path);
+                gp::GdipDeletePen(pen);
+            }
+        }
+        gp::GdipDeletePath(path);
     }
 }
 
-/// 一对小兽耳（和图标一样），雪耳的记号
-unsafe fn ear(g: *mut gp::GpGraphics, x: f32, y: f32, color: u32) {
+/// 离屏把面板画成 PNG（核对外观用，不在屏幕上弹窗）
+pub fn render_png(look: Look, level: f32, scale: f32, out: &std::path::Path) -> Result<(), String> {
     unsafe {
-        for dx in [0., 11.] {
-            let points = [
-                gp::PointF {
-                    X: x + dx,
-                    Y: y + 18.,
-                },
-                gp::PointF {
-                    X: x + dx + 3.5,
-                    Y: y + 2.,
-                },
-                gp::PointF {
-                    X: x + dx + 8.,
-                    Y: y + 18.,
-                },
-            ];
-            let mut brush = ptr::null_mut();
-            if gp::GdipCreateSolidFill(color, &mut brush) == 0 {
-                gp::GdipFillPolygon(g, brush.cast(), points.as_ptr(), 3, gp::FillModeAlternate);
-                gp::GdipDeleteBrush(brush.cast());
-            }
+        let mut input: gp::GdiplusStartupInput = mem::zeroed();
+        input.GdiplusVersion = 1;
+        let mut token = 0;
+        if gp::GdiplusStartup(&mut token, &input, ptr::null_mut()) != 0 {
+            return Err("无法初始化绘图".into());
         }
+        let (w, h) = ((WIDTH * scale) as i32, (HEIGHT * scale) as i32);
+        let mut bitmap = ptr::null_mut();
+        let result = if gp::GdipCreateBitmapFromScan0(
+            w,
+            h,
+            0,
+            0x0026200A, // PixelFormat32bppARGB
+            ptr::null(),
+            &mut bitmap,
+        ) != 0
+        {
+            Err("无法创建位图".to_string())
+        } else {
+            let mut g = ptr::null_mut();
+            gp::GdipGetImageGraphicsContext(bitmap.cast(), &mut g);
+            // 白底方便看
+            gp::GdipGraphicsClear(g, 0xffffffff);
+            paint_graphics(g, scale, look, level, 0.);
+            gp::GdipDeleteGraphics(g);
+            let clsid = windows_sys::core::GUID::from_u128(0x557cf406_1a04_11d3_9a73_0000f81ef32e);
+            let path: Vec<u16> = out
+                .as_os_str()
+                .to_string_lossy()
+                .encode_utf16()
+                .chain(Some(0))
+                .collect();
+            let status = gp::GdipSaveImageToFile(bitmap.cast(), path.as_ptr(), &clsid, ptr::null());
+            gp::GdipDisposeImage(bitmap.cast());
+            if status == 0 {
+                Ok(())
+            } else {
+                Err(format!("保存失败 {status}"))
+            }
+        };
+        gp::GdiplusShutdown(token);
+        result
     }
 }

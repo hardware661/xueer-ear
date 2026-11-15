@@ -97,6 +97,10 @@ impl Revision {
     pub fn accept(&mut self, update: Update) {
         self.pending = update.next;
     }
+    /// 屏幕上还没说定的那一截
+    pub fn pending(&self) -> &str {
+        &self.pending
+    }
     /// 屏幕上还没说定的那一截（按字形计数，退格用）
     pub fn pending_graphemes(&self) -> usize {
         self.pending.graphemes(true).count()

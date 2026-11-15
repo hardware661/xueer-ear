@@ -69,6 +69,8 @@ pub struct Live {
     typist: Typist,
     terminal: bool,
     last_rewrite: Option<std::time::Instant>,
+    /// 主人按 Enter 时屏幕上那截还没说定的文字（已经被发走了），这句后续结果要去掉它
+    sent: Option<String>,
 }
 
 /// 退格改字离上次屏幕变化至少隔这么久
@@ -81,7 +83,47 @@ impl Live {
             typist: Typist::default(),
             terminal,
             last_rewrite: None,
+            sent: None,
         }
+    }
+
+    /// 主人自己按了 Enter：屏幕上没说定的那截已经跟着发走了，输入框是空的。
+    pub fn user_sent(&mut self) {
+        let shown = self.revision.pending().to_string();
+        self.revision.clear();
+        self.typist.sentences.clear();
+        if !shown.is_empty() {
+            let previous = self.sent.take().unwrap_or_default();
+            self.sent = Some(previous + &shown);
+        }
+    }
+
+    /// 去掉这句里已经被 Enter 发走的开头，只剩还没上屏的部分。
+    /// 云端定稿常在发走的文字后面补标点或改一两个字，所以按「去掉标点后的前缀」对齐。
+    pub fn unsent(&self, text: &str) -> String {
+        let Some(sent) = self.sent.as_deref() else {
+            return text.to_string();
+        };
+        let wanted: Vec<char> = sent.chars().filter(|c| !is_punct(*c)).collect();
+        let mut matched = 0;
+        let mut cut = 0;
+        for (i, c) in text.char_indices() {
+            if matched == wanted.len() {
+                break;
+            }
+            if is_punct(c) {
+                continue;
+            }
+            if c != wanted[matched] {
+                break;
+            }
+            matched += 1;
+            cut = i + c.len_utf8();
+        }
+        if matched == 0 {
+            return text.to_string();
+        }
+        text[cut..].to_string()
     }
 
     /// 中间结果：退掉上次没说定的部分里变了的字，再补上新的。
@@ -116,6 +158,8 @@ impl Live {
     pub fn finalize(&mut self, output: Output) -> Vec<Key> {
         let erase = self.revision.pending_graphemes();
         self.revision.clear();
+        // 这句结束了，发走的前缀只对这句有效
+        self.sent = None;
         let mut keys = edit(erase, "");
         keys.extend(match output {
             Output::Text(text) => self.typist.text(&clean(&text), self.terminal),
@@ -133,6 +177,10 @@ impl Live {
         let joined = xueer_ear_textflow::join_for_terminal(&[previous, text]);
         joined[previous.len()..].to_string()
     }
+}
+
+fn is_punct(c: char) -> bool {
+    c.is_whitespace() || "，。！？；：、,.!?;:…—\"'“”‘’（）()".contains(c)
 }
 
 fn clean(text: &str) -> String {
@@ -214,6 +262,49 @@ mod tests {
                 Key::CtrlZ => {}
             }
         }
+    }
+
+    #[test]
+    fn enter_mid_sentence_does_not_retype_what_was_sent() {
+        let t0 = std::time::Instant::now();
+        let ms = |n| t0 + std::time::Duration::from_millis(n);
+        let mut live = Live::new(true);
+        let mut doc = String::new();
+        type_into(&mut doc, &live.partial_at("这句话非常好", ms(0)));
+        assert_eq!(doc, "这句话非常好");
+        // 主人按 Enter 发走了：输入框清空
+        live.user_sent();
+        doc.clear();
+        // 云端随后送来同一句的定稿：不该再打一遍
+        let raw = live.unsent("这句话非常好。");
+        assert_eq!(raw, "。");
+        type_into(&mut doc, &live.finalize(Output::Text(raw)));
+        assert_eq!(doc, "。");
+    }
+
+    #[test]
+    fn speech_after_enter_continues_with_only_the_new_part() {
+        let t0 = std::time::Instant::now();
+        let ms = |n| t0 + std::time::Duration::from_millis(n);
+        let mut live = Live::new(false);
+        let mut doc = String::new();
+        type_into(&mut doc, &live.partial_at("先发这句", ms(0)));
+        live.user_sent();
+        doc.clear();
+        let raw = live.unsent("先发这句然后接着说");
+        type_into(&mut doc, &live.partial_at(&raw, ms(300)));
+        assert_eq!(doc, "然后接着说");
+        let raw = live.unsent("先发这句，然后接着说。");
+        type_into(&mut doc, &live.finalize(Output::Text(raw)));
+        assert_eq!(doc, "，然后接着说。");
+        // 定稿之后前缀作废，下一句照常
+        assert_eq!(live.unsent("下一句"), "下一句");
+    }
+
+    #[test]
+    fn unsent_with_nothing_sent_is_identity() {
+        let live = Live::new(false);
+        assert_eq!(live.unsent("原样"), "原样");
     }
 
     #[test]
