@@ -1,15 +1,12 @@
-//! 雪耳面板的听写状态机（纯逻辑，可在 WSL 测）。交互仿 Win+H：
-//! 点一下热键打开面板并开始听；停顿收句后麦克风变灰、面板留着；再点热键或点麦克风接着听；
-//! 按住热键说、松开收句；点 ×、Esc 或灰着放一会儿就收起。
+//! 雪耳面板的听写状态机（纯逻辑，可在 WSL 测）。
+//! 主人 2026-11-15 定：点一下热键开始；再点一下（或点麦克风、Esc、按住后松开）就停止并收起面板；
+//! 一阵子没识别出新字，听写自己结束，面板也收起。没有「灰着等着」的状态。
 use std::time::{Duration, Instant};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Panel {
     Hidden,
-    /// 正在听（蓝色麦克风）
     Listening,
-    /// 面板开着、没在听（灰色麦克风）
-    Idle,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -19,9 +16,9 @@ pub enum Input {
     KeyUp,
     /// 点了面板上的麦克风
     MicClick,
-    /// 点了 × 或按了 Esc
+    /// 按了 Esc
     Close,
-    /// 识别那边这一轮结束了（停顿收句、出错或被取消）
+    /// 听写那边自己结束了（太久没识别出新字、出错或到最长时间）
     SessionEnded,
     /// 按热键时还按着别的修饰键（组合键）
     Chord,
@@ -33,27 +30,23 @@ pub enum Effect {
     Hide,
     /// 开始一轮听写
     Start,
-    /// 停止采音，让这一轮正常收尾出定稿
+    /// 停止采音，让最后一句正常收尾上屏
     Finish,
 }
 
 pub struct Dictation {
     hold_threshold: Duration,
-    idle_timeout: Duration,
     panel: Panel,
-    /// 热键按下的时刻；按着时为 Some。只有这次按下开启了听写，松开才可能收句
+    /// 这次按下的时刻，以及这次按下是不是开启了听写（只有开启的那次，松开才可能算「按住说话」）
     pressed: Option<(Instant, bool)>,
-    idle_since: Option<Instant>,
 }
 
 impl Dictation {
-    pub fn new(hold_threshold: Duration, idle_timeout: Duration) -> Self {
+    pub fn new(hold_threshold: Duration) -> Self {
         Self {
             hold_threshold,
-            idle_timeout,
             panel: Panel::Hidden,
             pressed: None,
-            idle_since: None,
         }
     }
 
@@ -66,84 +59,34 @@ impl Dictation {
             (_, Input::Chord) => vec![],
             (Panel::Hidden, Input::KeyDown) => {
                 self.pressed = Some((now, true));
-                self.listen();
+                self.panel = Panel::Listening;
                 vec![Effect::Show, Effect::Start]
             }
-            (Panel::Idle, Input::KeyDown) => {
-                self.pressed = Some((now, true));
-                self.listen();
-                vec![Effect::Start]
-            }
             (Panel::Listening, Input::KeyDown) => {
-                // 正在听时点一下：收句（松开时不再重复处理）
                 self.pressed = Some((now, false));
-                self.go_idle(now);
-                vec![Effect::Finish]
+                self.stop()
             }
-            (_, Input::KeyUp) => {
-                let held = self.pressed.take();
-                match held {
-                    Some((at, true))
-                        if self.panel == Panel::Listening
-                            && now.duration_since(at) >= self.hold_threshold =>
-                    {
-                        self.go_idle(now);
-                        vec![Effect::Finish]
-                    }
-                    _ => vec![],
+            (_, Input::KeyUp) => match self.pressed.take() {
+                Some((at, true))
+                    if self.panel == Panel::Listening
+                        && now.duration_since(at) >= self.hold_threshold =>
+                {
+                    self.stop()
                 }
-            }
-            (Panel::Idle, Input::MicClick) => {
-                self.listen();
-                vec![Effect::Start]
-            }
-            (Panel::Listening, Input::MicClick) => {
-                self.go_idle(now);
-                vec![Effect::Finish]
-            }
+                _ => vec![],
+            },
+            (Panel::Listening, Input::MicClick | Input::Close) => self.stop(),
             (Panel::Listening, Input::SessionEnded) => {
-                self.go_idle(now);
-                vec![]
-            }
-            (Panel::Listening, Input::Close) => {
-                self.hide();
-                vec![Effect::Finish, Effect::Hide]
-            }
-            (Panel::Idle, Input::Close) => {
-                self.hide();
+                self.panel = Panel::Hidden;
                 vec![Effect::Hide]
             }
-            (Panel::Hidden, _) | (Panel::Idle, Input::SessionEnded) => vec![],
+            (Panel::Hidden, _) => vec![],
         }
     }
 
-    /// 定时调用：灰着超过 idle_timeout 就收起
-    pub fn tick(&mut self, now: Instant) -> Vec<Effect> {
-        match self.idle_since {
-            Some(since)
-                if self.panel == Panel::Idle && now.duration_since(since) > self.idle_timeout =>
-            {
-                self.hide();
-                vec![Effect::Hide]
-            }
-            _ => vec![],
-        }
-    }
-
-    fn listen(&mut self) {
-        self.panel = Panel::Listening;
-        self.idle_since = None;
-    }
-
-    fn go_idle(&mut self, now: Instant) {
-        self.panel = Panel::Idle;
-        self.idle_since = Some(now);
-    }
-
-    fn hide(&mut self) {
+    fn stop(&mut self) -> Vec<Effect> {
         self.panel = Panel::Hidden;
-        self.idle_since = None;
-        self.pressed = None;
+        vec![Effect::Finish, Effect::Hide]
     }
 }
 
@@ -154,23 +97,19 @@ mod tests {
     use Input::*;
 
     const HOLD: Duration = Duration::from_millis(400);
-    const IDLE: Duration = Duration::from_secs(10);
 
     struct Clock(Instant, Dictation);
     impl Clock {
         fn new() -> Self {
-            Self(Instant::now(), Dictation::new(HOLD, IDLE))
+            Self(Instant::now(), Dictation::new(HOLD))
         }
         fn at(&mut self, ms: u64, input: Input) -> Vec<Effect> {
             self.1.input(self.0 + Duration::from_millis(ms), input)
         }
-        fn tick(&mut self, ms: u64) -> Vec<Effect> {
-            self.1.tick(self.0 + Duration::from_millis(ms))
-        }
     }
 
     #[test]
-    fn tap_opens_panel_and_keeps_listening_after_release() {
+    fn tap_starts_and_keeps_listening_after_release() {
         let mut c = Clock::new();
         assert_eq!(c.at(0, KeyDown), [Show, Start]);
         assert_eq!(c.at(150, KeyUp), []);
@@ -178,81 +117,58 @@ mod tests {
     }
 
     #[test]
-    fn hold_then_release_finishes_the_sentence() {
-        let mut c = Clock::new();
-        assert_eq!(c.at(0, KeyDown), [Show, Start]);
-        assert_eq!(c.at(2000, KeyUp), [Finish]);
-    }
-
-    #[test]
-    fn tap_while_listening_finishes() {
+    fn second_tap_stops_and_hides() {
         let mut c = Clock::new();
         c.at(0, KeyDown);
         c.at(100, KeyUp);
-        assert_eq!(c.at(5000, KeyDown), [Finish]);
+        assert_eq!(c.at(5000, KeyDown), [Finish, Hide]);
+        assert_eq!(c.1.panel(), Panel::Hidden);
         assert_eq!(c.at(5100, KeyUp), []);
     }
 
     #[test]
-    fn silence_end_turns_grey_and_tap_or_mic_resumes() {
+    fn hold_then_release_stops_and_hides() {
         let mut c = Clock::new();
         c.at(0, KeyDown);
-        c.at(100, KeyUp);
-        assert_eq!(c.at(8000, SessionEnded), []);
-        assert_eq!(c.1.panel(), Panel::Idle);
-        assert_eq!(c.at(9000, MicClick), [Start]);
-        assert_eq!(c.1.panel(), Panel::Listening);
-        c.at(12000, SessionEnded);
-        assert_eq!(c.at(13000, KeyDown), [Start]);
+        assert_eq!(c.at(2000, KeyUp), [Finish, Hide]);
     }
 
     #[test]
-    fn mic_click_while_listening_finishes() {
+    fn mic_click_and_close_stop_and_hide() {
         let mut c = Clock::new();
         c.at(0, KeyDown);
         c.at(100, KeyUp);
-        assert_eq!(c.at(3000, MicClick), [Finish]);
+        assert_eq!(c.at(3000, MicClick), [Finish, Hide]);
+        let mut c = Clock::new();
+        c.at(0, KeyDown);
+        c.at(100, KeyUp);
+        assert_eq!(c.at(3000, Close), [Finish, Hide]);
     }
 
     #[test]
-    fn idle_panel_hides_after_timeout_but_not_while_listening() {
+    fn session_ending_by_itself_hides() {
         let mut c = Clock::new();
         c.at(0, KeyDown);
         c.at(100, KeyUp);
-        assert_eq!(c.tick(60_000), []);
-        c.at(61_000, SessionEnded);
-        assert_eq!(c.tick(70_000), []);
-        assert_eq!(c.tick(71_001), [Hide]);
+        assert_eq!(c.at(12000, SessionEnded), [Hide]);
         assert_eq!(c.1.panel(), Panel::Hidden);
+        // 再点一下重新开始
+        assert_eq!(c.at(13000, KeyDown), [Show, Start]);
     }
 
     #[test]
-    fn close_finishes_and_hides() {
+    fn session_end_while_key_held_hides_and_release_is_ignored() {
         let mut c = Clock::new();
         c.at(0, KeyDown);
-        c.at(100, KeyUp);
-        assert_eq!(c.at(2000, Close), [Finish, Hide]);
-        let mut c = Clock::new();
-        c.at(0, KeyDown);
-        c.at(100, KeyUp);
-        c.at(500, SessionEnded);
-        assert_eq!(c.at(2000, Close), [Hide]);
+        assert_eq!(c.at(500, SessionEnded), [Hide]);
+        assert_eq!(c.at(900, KeyUp), []);
     }
 
     #[test]
-    fn chord_is_ignored_and_does_not_open() {
+    fn chord_is_ignored() {
         let mut c = Clock::new();
         assert_eq!(c.at(0, Chord), []);
         assert_eq!(c.1.panel(), Panel::Hidden);
-    }
-
-    #[test]
-    fn session_end_while_key_held_does_not_restart() {
-        let mut c = Clock::new();
-        c.at(0, KeyDown);
-        assert_eq!(c.at(500, SessionEnded), []);
-        assert_eq!(c.at(900, KeyUp), []);
-        assert_eq!(c.1.panel(), Panel::Idle);
     }
 
     #[test]

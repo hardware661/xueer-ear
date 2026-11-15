@@ -38,10 +38,10 @@ static INJECTING: AtomicBool = AtomicBool::new(false);
 
 /// 按住超过这么久再松开，算「按住说话」，松开就收句；更短的算「点一下」
 const HOLD_THRESHOLD: Duration = Duration::from_millis(400);
-/// 一直没人说话这么久，就自己停止听写（麦克风变灰）
-const QUIET_STOP: Duration = Duration::from_secs(60);
-/// 麦克风灰着这么久没动静，面板自动收起
-const IDLE_HIDE: Duration = Duration::from_secs(10);
+/// 这么久没识别出新字，就自己结束听写并收起面板（主人 2026-11-15：「10秒钟就比较合适」）
+const QUIET_STOP: Duration = Duration::from_secs(10);
+/// 识别出新字后，波浪保持这么久再变回麦克风
+const WAVE_HOLD: Duration = Duration::from_millis(900);
 
 pub struct Hotkey {
     stop: Arc<AtomicBool>,
@@ -92,7 +92,7 @@ impl Session {
 fn poll_loop(vk: i32, stop: &AtomicBool) {
     let (clicks_tx, clicks) = mpsc::channel();
     let panel = panel::spawn(clicks_tx);
-    let mut state = Dictation::new(HOLD_THRESHOLD, IDLE_HIDE);
+    let mut state = Dictation::new(HOLD_THRESHOLD);
     let mut session: Option<Session> = None;
     let mut was_held = false;
     let mut was_escape = false;
@@ -105,6 +105,9 @@ fn poll_loop(vk: i32, stop: &AtomicBool) {
             inputs.push(Input::SessionEnded);
         }
         let held = pressed(vk);
+        if held && !was_held && is_alt(vk) {
+            mask_menu();
+        }
         if held && !was_held {
             inputs.push(if other_modifier(vk) {
                 Input::Chord
@@ -137,7 +140,6 @@ fn poll_loop(vk: i32, stop: &AtomicBool) {
         for input in inputs {
             effects.extend(state.input(now, input));
         }
-        effects.extend(state.tick(now));
         for effect in effects {
             match effect {
                 Effect::Show => {}
@@ -159,7 +161,6 @@ fn poll_loop(vk: i32, stop: &AtomicBool) {
             }
         }
         match state.panel() {
-            Panel::Idle => panel.set_if_changed(Look::Idle),
             Panel::Hidden => panel.set_if_changed(Look::Hidden),
             Panel::Listening => {}
         }
@@ -210,7 +211,9 @@ fn record(
     let stopped = cancel.clone();
     let mut typed_any = false;
     let started = Instant::now();
-    let mut last_voice = Instant::now();
+    // 最近一次识别出新字的时间；开头留出说第一句的时间
+    let mut last_text = Instant::now();
+    let mut last_heard = String::new();
     let max_listen = Duration::from_secs(u64::from(settings.max_listen_minutes) * 60);
     engine::run_wetype(source, cancel, |event| {
         if stopped.load(Ordering::Acquire) {
@@ -219,25 +222,25 @@ fn record(
         match event {
             // 停顿只是一句说完（定稿上屏），不结束：一直听到主人再点一下、点麦克风、Esc，
             // 或者超过「最长听写时间」（主人 2026-11-15：说着说着停顿一下就断了，要能一直说）
-            // 蓝麦克风=在听；听到说话（recognizing）就换成波浪；一句说完（paused）回到蓝麦克风
-            Event::Activity("armed") | Event::Activity("paused") => {
-                last_voice = Instant::now();
-                panel.set(Look::Listening)
-            }
-            Event::Activity("recognizing") => {
-                last_voice = Instant::now();
-                panel.set(Look::Speaking)
-            }
+            // 蓝麦克风=在听；识别出新字的那一阵子显示波浪（只认真的出字，咳嗽、敲桌子不算）
             Event::Activity("connecting") => panel.set(Look::Connecting),
+            Event::Activity(_) => panel.set(Look::Listening),
             Event::Progress { peak, .. } => {
                 panel.level(peak);
-                // 到「最长听写时间」，或者一分钟没人说话（主人："本次对话已经结束…怎么样才能让这个弹窗消失"），
-                // 就自己停：麦克风变灰，再过 10 秒面板收起
-                if started.elapsed() >= max_listen || last_voice.elapsed() >= QUIET_STOP {
+                if last_text.elapsed() >= WAVE_HOLD {
+                    panel.set_if_changed(Look::Listening);
+                }
+                // 到「最长听写时间」，或者 10 秒没识别出新字，就自己结束
+                if started.elapsed() >= max_listen || last_text.elapsed() >= QUIET_STOP {
                     release.store(true, Ordering::Release);
                 }
             }
             Event::Speech(speech) => {
+                if speech.text != last_heard {
+                    last_heard = speech.text.clone();
+                    last_text = Instant::now();
+                    panel.set_if_changed(Look::Speaking);
+                }
                 // 主人在这句说到一半时按了 Enter：屏幕上的部分已经发走，后面只打剩下的
                 let now_sent = sent.load(Ordering::Acquire);
                 if now_sent != seen_sent {
@@ -261,6 +264,23 @@ fn record(
         crate::sound::play(crate::sound::Cue::Missed, settings.sounds_enabled);
     }
     Ok(())
+}
+
+fn is_alt(vk: i32) -> bool {
+    matches!(vk, 0x12 | 0xA4 | 0xA5)
+}
+
+/// 热键是 Alt 时，趁 Alt 还按着补发一个没人用的键（vkE8，和 AutoHotkey 的 MenuMaskKey 一样），
+/// 这样松开 Alt 时前台窗口不会进入菜单模式把后面打的字吃掉（主人：WSL 里有时不出字）。
+fn mask_menu() {
+    let inputs = [key(0xE8, 0, 0), key(0xE8, 0, KEYEVENTF_KEYUP)];
+    unsafe {
+        SendInput(
+            inputs.len() as u32,
+            inputs.as_ptr(),
+            size_of::<INPUT>() as i32,
+        );
+    }
 }
 
 fn pressed(vk: i32) -> bool {
@@ -317,18 +337,36 @@ fn tap(vk: u16) -> [INPUT; 2] {
     [key(vk, 0, 0), key(vk, 0, KEYEVENTF_KEYUP)]
 }
 
-/// 文字和退格直接给前台窗口里的焦点控件发 WM_CHAR（和终端路径一样）。
-/// SendInput 的 Unicode 方式在 Qt 程序里（微信就是 Qt 5.15）会把每批第一个字认成上一批的
-/// 最后一个字（Qt 把连续的 VK_PACKET 当成同一个键的自动重复，沿用旧字）——2026-11-15 主人在
-/// 微信里看到「。天天气不错」。发不过去（比如管理员窗口）就返回 false，退回 SendInput。
-fn send_chars(units: &[u16]) -> bool {
+/// Qt 程序（微信 4 是 Qt 5.15）单独处理：SendInput 的 Unicode 方式在 Qt 里会把每批第一个字
+/// 认成上一批的最后一个字（Qt 把连续的 VK_PACKET 当成同一个键的自动重复）。
+/// 所以对 Qt 窗口：文字发 WM_CHAR、退格发 VK_BACK 的按下/抬起（Qt 不认 WM_CHAR 里的 \b，
+/// 2026-11-15 退格也走 WM_CHAR 时，微信里每句都重复一次）。其他程序照旧 SendInput。
+/// 返回 false 表示不是 Qt 窗口或发不过去，调用方退回 SendInput。
+fn send_to_qt(key: &Key) -> bool {
     use windows_sys::Win32::UI::WindowsAndMessaging::{
         GUITHREADINFO, GetGUIThreadInfo, GetWindowThreadProcessId, SMTO_ABORTIFHUNG, SMTO_BLOCK,
-        SendMessageTimeoutW, WM_CHAR,
+        SendMessageTimeoutW, WM_CHAR, WM_KEYDOWN, WM_KEYUP,
+    };
+    let messages: Vec<(u32, usize, isize)> = match key {
+        Key::Text(text) => text
+            .encode_utf16()
+            .map(|u| (WM_CHAR, usize::from(u), 1))
+            .collect(),
+        Key::Backspace(count) => (0..*count)
+            .flat_map(|_| {
+                [
+                    (WM_KEYDOWN, VK_BACK as usize, 0x000e_0001),
+                    (WM_KEYUP, VK_BACK as usize, 0xc00e_0001_u32 as isize),
+                ]
+            })
+            .collect(),
+        _ => return false,
     };
     unsafe {
         let window = GetForegroundWindow();
-        if window.is_null() {
+        let mut class = [0_u16; 64];
+        let count = GetClassNameW(window, class.as_mut_ptr(), class.len() as i32);
+        if count <= 0 || !String::from_utf16_lossy(&class[..count as usize]).starts_with("Qt") {
             return false;
         }
         let thread = GetWindowThreadProcessId(window, std::ptr::null_mut());
@@ -337,13 +375,13 @@ fn send_chars(units: &[u16]) -> bool {
         if GetGUIThreadInfo(thread, &mut info) == 0 || info.hwndFocus.is_null() {
             return false;
         }
-        for &unit in units {
+        for (message, wparam, lparam) in messages {
             let mut result = 0;
             if SendMessageTimeoutW(
                 info.hwndFocus,
-                WM_CHAR,
-                usize::from(unit),
-                1,
+                message,
+                wparam,
+                lparam,
                 SMTO_BLOCK | SMTO_ABORTIFHUNG,
                 250,
                 &mut result,
@@ -365,15 +403,10 @@ fn send_keys(keys: &[Key]) {
         }
     }
     for k in keys {
-        // 文字和退格优先走 WM_CHAR；前面攒着的按键先发出去，保证顺序
-        let chars: Option<Vec<u16>> = match k {
-            Key::Text(text) => Some(text.encode_utf16().collect()),
-            Key::Backspace(count) => Some(vec![8; *count]),
-            _ => None,
-        };
-        if let Some(units) = chars {
+        // Qt 窗口（微信）里的文字和退格单独发；前面攒着的按键先发出去，保证顺序
+        if matches!(k, Key::Text(_) | Key::Backspace(_)) {
             flush(&mut inputs);
-            if send_chars(&units) {
+            if send_to_qt(k) {
                 continue;
             }
         }

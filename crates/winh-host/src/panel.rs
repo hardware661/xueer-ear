@@ -52,7 +52,7 @@ pub enum Look {
     Speaking,
     /// 正在连接云端
     Connecting,
-    /// 灰色麦克风
+    /// 灰色麦克风（只在离屏预览里用）
     Idle,
 }
 
@@ -375,42 +375,6 @@ unsafe fn paint_graphics(g: *mut gp::GpGraphics, scale: f32, look: Look, level: 
         gp::GdipSetSmoothingMode(g, gp::SmoothingModeAntiAlias8x8);
         gp::GdipScaleWorldTransform(g, scale, scale, gp::MatrixOrderPrepend);
         let body_h = HEIGHT - BODY_TOP - 6.;
-        // 没有描边，用一圈很淡的影子托住卡片和耳朵（主人：灰边框影响观感）
-        for (grow, alpha) in [(4., 0x04_u32), (2.5, 0x06), (1., 0x09)] {
-            let shadow = alpha << 24;
-            rounded(
-                g,
-                3. - grow,
-                BODY_TOP + 2. - grow / 2.,
-                WIDTH - 6. + grow * 2.,
-                body_h + grow,
-                22. + grow,
-                shadow,
-                false,
-            );
-            cat_ear(
-                g,
-                8. - grow,
-                BODY_TOP + 16.,
-                44. + grow,
-                BODY_TOP + 16.,
-                16.,
-                1. - grow,
-                shadow,
-                0,
-            );
-            cat_ear(
-                g,
-                WIDTH - 44. - grow,
-                BODY_TOP + 16.,
-                WIDTH - 8. + grow,
-                BODY_TOP + 16.,
-                WIDTH - 16.,
-                1. - grow,
-                shadow,
-                0,
-            );
-        }
         // 一对大一点的猫耳（左上、右上），和卡片连成一体
         cat_ear(
             g,
