@@ -43,6 +43,8 @@ static INJECTING: AtomicBool = AtomicBool::new(false);
 const HOLD_THRESHOLD: Duration = Duration::from_millis(400);
 /// 这么久没识别出新字，就自己结束听写并收起面板（主人 2026-11-15：「10秒钟就比较合适」）
 const QUIET_STOP: Duration = Duration::from_secs(10);
+/// 停了马上又开时，等上一轮把最后一句收完的最长时间（收句最多等 4 秒定稿）
+const FINISH_GRACE: Duration = Duration::from_millis(4500);
 /// 识别出新字后，波浪保持这么久再变回麦克风
 const WAVE_HOLD: Duration = Duration::from_millis(900);
 /// 单独说一个指令词（删除、撤回、发送……）后停这么久没再出新字，就马上执行，不等静音收句。
@@ -179,13 +181,14 @@ fn poll_loop(vk: u32, stop: &AtomicBool, status: &Status) {
                 Effect::Show => {}
                 Effect::Hide => panel.set(Look::Hidden),
                 Effect::Start => {
-                    // 上一轮还没收尾就先取消它，避免两轮抢麦克风
-                    if let Some(old) = session.take() {
-                        old.cancel.store(true, Ordering::Release);
-                        let _ = old.worker.join();
+                    // 上一轮可能还在收尾（已停止采音、在等最后一句定稿）：交给新一轮的线程去等它收完再开录，
+                    // 轮询线程不卡（审查 R9：原来直接取消上一轮，最后一句定稿丢了）
+                    let previous = session.take();
+                    if let Some(old) = &previous {
+                        old.finish();
                     }
                     panel.set(Look::Connecting);
-                    session = Some(begin(panel.clone(), status.clone()));
+                    session = Some(begin(panel.clone(), status.clone(), previous));
                 }
                 Effect::Finish => {
                     if let Some(s) = &session {
@@ -207,7 +210,7 @@ fn poll_loop(vk: u32, stop: &AtomicBool, status: &Status) {
     panel.set(Look::Hidden);
 }
 
-fn begin(panel: PanelHandle, status: Status) -> Session {
+fn begin(panel: PanelHandle, status: Status, previous: Option<Session>) -> Session {
     let release = Arc::new(AtomicBool::new(false));
     let cancel = Arc::new(AtomicBool::new(false));
     let sent = Arc::new(std::sync::atomic::AtomicU32::new(0));
@@ -216,6 +219,15 @@ fn begin(panel: PanelHandle, status: Status) -> Session {
     let (worker_release, worker_cancel, worker_sent) =
         (release.clone(), cancel.clone(), sent.clone());
     let worker = thread::spawn(move || {
+        if let Some(old) = previous {
+            // 等上一轮把最后一句收完，最多 FINISH_GRACE；超时就取消它，免得两轮同时往屏幕上打字
+            let deadline = Instant::now() + FINISH_GRACE;
+            while !old.worker.is_finished() && Instant::now() < deadline {
+                thread::sleep(Duration::from_millis(20));
+            }
+            old.cancel.store(true, Ordering::Release);
+            let _ = old.worker.join();
+        }
         let cancelled = worker_cancel.clone();
         let result = record(
             worker_release,
