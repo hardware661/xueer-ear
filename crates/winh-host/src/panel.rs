@@ -13,7 +13,6 @@ use std::{
 use windows_sys::Win32::{
     Foundation::{HWND, LPARAM, LRESULT, POINT, SIZE, WPARAM},
     Graphics::{
-        Dwm::{DWMWA_WINDOW_CORNER_PREFERENCE, DwmSetWindowAttribute},
         Gdi::{
             AC_SRC_ALPHA, AC_SRC_OVER, BI_RGB, BITMAPINFO, BITMAPINFOHEADER, BLENDFUNCTION,
             CreateCompatibleDC, CreateDIBSection, DIB_RGB_COLORS, DeleteDC, DeleteObject, GetDC,
@@ -175,13 +174,7 @@ unsafe fn run(shared: Arc<Shared>, slot: Arc<Mutex<usize>>) {
             eprintln!("面板：无法创建窗口");
             return;
         }
-        let corner = 2_u32;
-        DwmSetWindowAttribute(
-            hwnd,
-            DWMWA_WINDOW_CORNER_PREFERENCE as u32,
-            (&corner as *const u32).cast(),
-            4,
-        );
+        // 不要 DWM 圆角：Windows 11 会顺带给窗口加一圈灰边和阴影（主人不要边框），形状全靠位图透明度
         let window = Box::into_raw(Box::new(Window {
             shared,
             hwnd,
@@ -346,11 +339,12 @@ impl Window {
     }
 }
 
-const PANEL_FILL: u32 = 0xf5f3f3f6;
+const PANEL_FILL: u32 = 0xfff2f2f5;
 const INNER_EAR: u32 = 0xfff1d9df;
 const MUTED: u32 = 0xff8e8e93;
-const BLUE: u32 = 0xff0a64d8;
-const HALO: u32 = 0x330a64d8;
+/// 在听、在说话：深灰（主人不喜欢蓝色）
+const BLUE: u32 = 0xff3a3a3c;
+const HALO: u32 = 0x263a3a3c;
 const GREY_FILL: u32 = 0xffe5e5ea;
 
 unsafe fn paint(
@@ -422,7 +416,7 @@ unsafe fn paint_graphics(g: *mut gp::GpGraphics, scale: f32, look: Look, level: 
             INNER_EAR,
             0,
         );
-        // 中间：灰=停、蓝麦克风=在听、蓝底波浪=听到在说话
+        // 中间：浅灰麦克风=在听、还没听到说话；深灰底白波浪=正在出字（主人：没说话时麦克风应该是淡灰）
         let (cx, cy) = (WIDTH / 2., BODY_TOP + body_h / 2.);
         match look {
             Look::Speaking => {
@@ -431,16 +425,11 @@ unsafe fn paint_graphics(g: *mut gp::GpGraphics, scale: f32, look: Look, level: 
                 ellipse(g, cx - 22., cy - 22., 44., 44., BLUE);
                 wave(g, cx, cy, level, phase);
             }
-            Look::Listening | Look::Connecting => {
-                let pulse = if look == Look::Connecting {
-                    0.25 + 0.25 * phase.sin().abs()
-                } else {
-                    0.
-                };
-                let r = 24. + 6. * pulse;
+            Look::Connecting => {
+                let r = 24. + 6. * (0.25 + 0.25 * phase.sin().abs());
                 ellipse(g, cx - r, cy - r, r * 2., r * 2., HALO);
-                ellipse(g, cx - 22., cy - 22., 44., 44., BLUE);
-                mic(g, cx - 9., cy - 12., 18., 0xffffffff);
+                ellipse(g, cx - 22., cy - 22., 44., 44., GREY_FILL);
+                mic(g, cx - 9., cy - 12., 18., MUTED);
             }
             _ => {
                 ellipse(g, cx - 22., cy - 22., 44., 44., GREY_FILL);
