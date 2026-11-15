@@ -68,6 +68,12 @@ Windows 11 的语音输入。屏幕顶上一个小猫面板，边说边出字，
 
 「热词 → 打开热词表」用记事本打开整张表，一行一个词，替换规则写成 `错=对`。改完从下一次听写开始生效。
 
+**加之前想一想**：读音一样的两个词（比如「雪儿」和「雪耳」）只能留一个，不然另一个会被改掉；大小写本来就对的词（Alt、bug）不用加，加了反而会改动原话。
+
+**自带热词**：软件自带一份 AI、编程里常听错的词，比如「克劳德」→ Claude、「Cloud Code」→ Claude Code、「欧拉玛」→ Ollama、「温加H」→ Win+H。每条都写明了错法，不会按读音乱改。默认开着，在「热词」菜单里可以关掉。你自己的热词表和它冲突时，用你写的。
+
+**改之前先试一下**：命令行跑 `xueer-ear-cli hotword-check`，会拿你本机的听写历史按现在的热词过一遍，列出会被改动的句子，确认没有改坏的再用。只读本机文件，不上传。
+
 ### 出错时
 
 | 情况 | 雪耳怎么做 |
@@ -135,6 +141,11 @@ cargo test --workspace
 ```
 
 工具要求和安装包的约定见 [packaging/README.md](packaging/README.md)。
+
+## 致谢
+
+- [微win](https://github.com/Elnyxn/weiwin)（Elnyxn，MIT）：雪耳在它的基础上开发，接入微信输入法云端识别的部分来自微win。
+- [CapsWriter-Offline](https://github.com/HaujetZhao/CapsWriter-Offline)（Haujet Zhao，MIT）：自带热词表里的部分错法对照参考了它的热词示例。
 
 ## 许可
 
