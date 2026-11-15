@@ -6,6 +6,8 @@ mod control;
 mod input_guard;
 #[cfg(any(windows, test))]
 mod hotkey_state;
+#[cfg(any(windows, test))]
+mod typing;
 #[cfg(windows)]
 mod install;
 #[cfg(any(windows, test))]
