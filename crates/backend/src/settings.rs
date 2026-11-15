@@ -8,6 +8,8 @@ use std::{
 };
 
 const MAX_FILE_BYTES: u64 = 8 * 1024;
+/// 右 Alt 的虚拟键码
+pub const HOTKEY_RIGHT_ALT: u32 = 0xA5;
 pub const SILENCE_SECONDS_OPTIONS: &[u32] = &[1, 2, 3, 5, 10];
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -19,6 +21,10 @@ pub struct Settings {
     pub text: TextSettings,
     pub history_enabled: bool,
     pub history_keep_days: u32,
+    /// 快捷键模式：按住说话、松开上屏，不经过 Win+H
+    pub hotkey_enabled: bool,
+    /// Windows 虚拟键码，默认右 Alt（0xA5）
+    pub hotkey_vk: u32,
 }
 
 impl Default for Settings {
@@ -29,6 +35,8 @@ impl Default for Settings {
             text: TextSettings::default(),
             history_enabled: true,
             history_keep_days: 7,
+            hotkey_enabled: true,
+            hotkey_vk: HOTKEY_RIGHT_ALT,
         }
     }
 }
@@ -73,6 +81,11 @@ impl Settings {
         }
         if !(1..=365).contains(&self.history_keep_days) {
             return Err("历史记录保留天数需在 1～365 之间".into());
+        }
+        // 只允许 F1～F24、左右 Ctrl/Alt/Shift、CapsLock、ScrollLock 这类不会打出字的键
+        let allowed = matches!(self.hotkey_vk, 0x14 | 0x91 | 0x70..=0x87 | 0xA0..=0xA5);
+        if !allowed {
+            return Err("快捷键只能用 F1～F24、左右 Ctrl/Alt/Shift、CapsLock 或 ScrollLock".into());
         }
         Ok(())
     }
@@ -223,6 +236,17 @@ mod tests {
         for days in [0, 366] {
             settings.history_keep_days = days;
             assert!(settings.validate().is_err(), "{days}");
+        }
+        settings.history_keep_days = 7;
+        assert!(settings.hotkey_enabled);
+        assert_eq!(settings.hotkey_vk, HOTKEY_RIGHT_ALT);
+        for vk in [0x41, 0x0D, 0x20] {
+            settings.hotkey_vk = vk;
+            assert!(settings.validate().is_err(), "{vk:#x}");
+        }
+        for vk in [0x14, 0x70, 0x87, 0xA3] {
+            settings.hotkey_vk = vk;
+            assert!(settings.validate().is_ok(), "{vk:#x}");
         }
     }
 

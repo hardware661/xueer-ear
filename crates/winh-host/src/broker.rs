@@ -78,7 +78,7 @@ impl Backend {
 }
 
 /// 每次唤起 Win+H 重新读设置和热词，改完下次生效（和麦克风、静音时间一致）。
-fn postprocess() -> Postprocess {
+pub(crate) fn postprocess() -> Postprocess {
     let settings = Settings::load_default().unwrap_or_default();
     let dir = std::env::var_os("LOCALAPPDATA")
         .map(|local| PathBuf::from(local).join("XueerEar"))
@@ -88,7 +88,7 @@ fn postprocess() -> Postprocess {
     post
 }
 
-fn now_ms() -> u64 {
+pub(crate) fn now_ms() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| d.as_millis() as u64)
@@ -288,6 +288,33 @@ fn start(
     }
 }
 
+/// 指纹对不上时：不接管 Win+H，只开快捷键模式，直到被要求退出。
+fn hotkey_only(
+    control: &crate::control::Control,
+    status: &Status,
+    reason: &str,
+) -> Result<()> {
+    eprintln!("{reason}");
+    let mut settings = Settings::load_default().unwrap_or_default();
+    settings.hotkey_enabled = true;
+    let hotkey = crate::hotkey::Hotkey::start(&settings);
+    status.error(reason.to_string());
+    control.ready();
+    let mut heartbeat = Instant::now();
+    while !EXIT.load(Ordering::Acquire) && !control.should_stop() {
+        thread::sleep(Duration::from_millis(200));
+        if heartbeat.elapsed() >= Duration::from_secs(5) {
+            status.touch();
+            heartbeat = Instant::now();
+        }
+    }
+    drop(hotkey);
+    control.stopping();
+    status.restored();
+    control.completed();
+    Ok(())
+}
+
 pub fn run() -> Result<()> {
     let control = crate::control::Control::new()?;
     let mut arguments = std::env::args_os().skip(1);
@@ -344,7 +371,13 @@ pub fn run() -> Result<()> {
         env!("CARGO_PKG_VERSION"),
         ".dll"
     )));
-    let mut adapter = Adapter::install(&dll)?;
+    let mut adapter = match Adapter::install(&dll) {
+        Ok(adapter) => adapter,
+        Err(error) if error.is::<crate::install::Unsupported>() => {
+            return hotkey_only(&control, &status, &error.to_string());
+        }
+        Err(error) => return Err(error),
+    };
     let output = Arc::new(Mutex::new(adapter.events.take().ok_or("结果通道不存在")?));
     let (sender, requests) = mpsc::sync_channel(32);
     let read = adapter.requests.try_clone()?;
@@ -369,6 +402,8 @@ pub fn run() -> Result<()> {
         }
     });
     println!("已接入原生 Win+H；按 Ctrl+C 退出并恢复。");
+    // 快捷键模式和 Win+H 并行可用；broker 退出时随 drop 停掉
+    let _hotkey = crate::hotkey::Hotkey::start(&Settings::load_default().unwrap_or_default());
     status.phase("ready");
     control.ready();
     let mut active: Option<Active> = None;

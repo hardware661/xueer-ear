@@ -1080,6 +1080,7 @@ dependencies = [
  "windows-sys 0.61.2",
  "xueer-ear-backend",
  "xueer-ear-bridge",
+ "xueer-ear-textflow",
 ]
 
 [[package]]

@@ -1,7 +1,7 @@
 //! 定稿文字上屏前的整理（textflow）和上屏后的历史记录（history）。
 //!
 //! 只处理定稿（final_result）；边说边改的中间结果原样上屏，免得数字、口癖在中途跳变。
-//! 整句是语音指令（换行、撤销……）时先原样上屏：执行指令要按键，属于 Win+H 接管部分，还没接。
+//! 整句是语音指令（换行、撤销……）时：Win+H 路径原样上屏；快捷键路径用 `finalize` 拿到指令去按键。
 use crate::settings::Settings;
 use std::path::Path;
 use xueer_ear_history::{Entry, History, Settings as HistorySettings};
@@ -43,29 +43,38 @@ impl Postprocess {
         Self { options, history }
     }
 
-    /// 整理一条识别事件；定稿且非空时写一条历史。历史写失败只打日志，不影响上屏。
+    /// 整理一条识别事件（Win+H 路径）；定稿且非空时写一条历史。指令先原样上屏。
     pub fn apply(&self, event: SpeechEvent, now_ms: u64) -> SpeechEvent {
         if !event.final_result {
             return event;
         }
-        let text = match process(&event.text, &self.options) {
+        let text = match self.finalize(&event.text, now_ms) {
             Output::Text(text) => text,
             Output::Command(_) => event.text,
         };
-        if !text.is_empty() {
-            let entry = Entry {
-                at_ms: now_ms,
-                text: text.clone(),
-                app: String::new(),
-            };
-            if let Err(error) = self.history.append(&entry) {
-                eprintln!("历史记录写入失败：{error}");
-            }
-        }
         SpeechEvent {
             final_result: true,
             text,
         }
+    }
+
+    /// 整理一句定稿文字（快捷键路径能执行指令，所以把指令原样交回）。
+    /// 是文字且非空时写一条历史；历史写失败只打日志，不影响上屏。
+    pub fn finalize(&self, text: &str, now_ms: u64) -> Output {
+        let output = process(text, &self.options);
+        if let Output::Text(text) = &output {
+            if !text.is_empty() {
+                let entry = Entry {
+                    at_ms: now_ms,
+                    text: text.clone(),
+                    app: String::new(),
+                };
+                if let Err(error) = self.history.append(&entry) {
+                    eprintln!("历史记录写入失败：{error}");
+                }
+            }
+        }
+        output
     }
 
     /// 启动时调用一次：清掉超过保留天数的历史。
@@ -137,6 +146,16 @@ mod tests {
         // 执行指令需要按键，属于 Win+H 接管部分，这里先原样上屏
         let (_dir, p) = setup(&Settings::default());
         assert_eq!(p.apply(final_event("换行。"), 1).text, "换行。");
+    }
+
+    #[test]
+    fn finalize_hands_back_commands_without_recording() {
+        let (dir, p) = setup(&Settings::default());
+        assert_eq!(
+            p.finalize("换行。", 1),
+            Output::Command(xueer_ear_textflow::VoiceCommand::NewLine)
+        );
+        assert!(!dir.path().join("history.jsonl").exists());
     }
 
     #[test]

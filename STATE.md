@@ -7,9 +7,9 @@
 
 - [x] T1 Inno Setup 6.7.4 → `D:\devtool\InnoSetup6`（签名有效，当前用户安装）；PowerShell 7.7.0 便携 → `D:\devtool\pwsh`（SHA-256 与 GitHub 公布一致）；都经 ghfast.top 镜像下载
 - [x] T2 `tools/win.sh pwsh-script packaging/build-windows.ps1` 出包成功：portable.zip 1.6 MB、setup.exe 3.4 MB、SHA256SUMS（在 `D:\projects\_build\xueer-ear\dist\release`）。修了三处：crate description 改 ASCII（Windows PowerShell 解析中文 JSON 出错）、win.sh 给打包补 PATH/ISCC/RunAsInvoker、build 脚本认 `XUEER_EAR_ISCC`
-- [ ] T3 C9 指纹对不上：不接管、提示一次、自动切快捷键模式
-- [ ] T4 C11 快捷键模式（按住右 Alt 说话、松开上屏）
-- [ ] T5 A4 语音指令执行（换行/删上一句/撤销/发送）
+- [x] T3 C9：`install.rs` 指纹/路径对不上返回 `Unsupported`；`broker` 认出后不接管 Win+H，只开快捷键模式，状态栏显示原因（原生 Win+H 照常）
+- [x] T4 C11：`hotkey.rs`（只轮询热键状态，不装全局钩子；SendInput Unicode 键入）+ `hotkey_state.rs`（误触 <300ms、组合键取消）+ 音源 `MicrophoneHold`（松开后这句正常收尾）。设置 `hotkey_enabled`（默认开）、`hotkey_vk`（默认右 Alt 0xA5，只允许 F 键/修饰键/CapsLock/ScrollLock）
+- [x] T5 A4：快捷键路径执行指令（`typing.rs`：终端换行用 Shift+Enter、删上一句按字数退格、发送默认关）；Win+H 路径仍原样上屏（那条路的上屏由系统输入面板负责）。Windows 全量 129 个测试通过
 - [ ] T6 设置界面：文字整理开关、历史天数、历史查看
 - [ ] T7 B8 晓晓提示音
 - [ ] T8 装到主人电脑 + 自启动；请主人真机验收

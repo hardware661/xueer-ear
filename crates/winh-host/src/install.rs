@@ -246,10 +246,21 @@ fn verify_file(path: &Path, expected: &[&str]) -> Result<()> {
         write!(&mut actual, "{byte:02x}")?;
     }
     if !expected.contains(&actual.as_str()) {
-        return Err("当前系统版本不在已验证范围内".into());
+        return Err(Box::new(Unsupported));
     }
     Ok(())
 }
+
+/// 系统组件和已适配的版本对不上（多半是 Windows 更新换了文件）。
+/// 这时不接管 Win+H，原生语音输入照常可用；broker 据此退回快捷键模式。
+#[derive(Debug)]
+pub struct Unsupported;
+impl std::fmt::Display for Unsupported {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("系统更新后语音组件变了，雪耳先不接管 Win+H（原生 Win+H 照常可用），请用快捷键说话")
+    }
+}
+impl std::error::Error for Unsupported {}
 
 fn load_checked(process: HANDLE, pid: u32, name: &str, path: &str) -> Result<()> {
     if module(pid, name).is_ok() {
@@ -313,7 +324,7 @@ impl Adapter {
         if !image.eq_ignore_ascii_case(
             r"C:\Windows\SystemApps\MicrosoftWindows.Client.CBS_cw5n1h2txyewy\TextInputHost.exe",
         ) {
-            return Err("TextInputHost 路径与受支持系统不符".into());
+            return Err(Box::new(Unsupported));
         }
         verify_file(Path::new(&image), HOST_HASHES)?;
         // Initialize the known system boundary before first Win+H activation. This
