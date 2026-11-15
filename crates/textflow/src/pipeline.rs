@@ -2,7 +2,7 @@
 
 use crate::{
     CommandOptions, Hotwords, PunctOptions, VoiceCommand, apply_punctuation, normalize_numbers,
-    parse_command, strip_fillers,
+    parse_command, parse_trailing_command, strip_fillers,
 };
 
 #[derive(Debug, Clone)]
@@ -70,7 +70,7 @@ fn split_trailing_command<'a>(
     let body = text.trim_end_matches(['。', '！', '？', '!', '?', '.', '，', ',']);
     let cut = body.rfind(['，', ',', '。', '；', ';', '！', '？'])?;
     let separator = body[cut..].chars().next()?.len_utf8();
-    let command = parse_command(&body[cut + separator..], options)?;
+    let command = parse_trailing_command(&body[cut + separator..], options)?;
     Some((&text[..cut + separator], command))
 }
 

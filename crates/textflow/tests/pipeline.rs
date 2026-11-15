@@ -106,3 +106,35 @@ fn terminal_append_gives_only_the_new_piece_with_its_separator() {
         join_for_terminal(&["OK.", "好的。", "继续", "run", "tests"])
     );
 }
+
+#[test]
+fn everyday_phrases_ending_in_a_delete_word_are_just_text() {
+    // 审查 R2：「这些临时文件，全部删除」被当成指令，把这次听写打的字全删光
+    let o = Options::default();
+    for text in [
+        "这些临时文件，全部删除",
+        "缓存，清空",
+        "日志太多了，删了",
+        "这一步，撤销",
+        "不要的文件，删除。",
+    ] {
+        assert!(
+            matches!(process(text, &o), Output::Text(_)),
+            "{text} 不该是指令"
+        );
+    }
+    // 单独说照样是指令
+    assert_eq!(
+        process("全部删除", &o),
+        Output::Command(VoiceCommand::DeleteAll)
+    );
+    assert_eq!(
+        process("撤销。", &o),
+        Output::Command(VoiceCommand::DeleteLastSentence)
+    );
+    // 明确说「删掉上一句」接在句尾仍然算（主人 2026-11-15 要的）
+    assert_eq!(
+        process("这句是错的，删除上一句话", &o),
+        Output::TextThen("这句是错的，".into(), VoiceCommand::DeleteLastSentence)
+    );
+}

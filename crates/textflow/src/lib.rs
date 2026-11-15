@@ -9,7 +9,7 @@ pub use numbers::normalize_numbers;
 mod punct;
 pub use punct::{PunctOptions, apply_punctuation};
 mod commands;
-pub use commands::{CommandOptions, VoiceCommand, parse_command};
+pub use commands::{CommandOptions, VoiceCommand, parse_command, parse_trailing_command};
 mod hotwords;
 pub use hotwords::{Hotwords, add_hotword_line};
 mod pipeline;

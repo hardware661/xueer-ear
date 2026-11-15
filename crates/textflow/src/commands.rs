@@ -41,6 +41,23 @@ const WORDS: &[(&str, VoiceCommand)] = &[
     ("发送", VoiceCommand::Send),
 ];
 
+/// 能接在一句话末尾执行的指令（「第一行，换行」「今天吃什么，发送」「这句不对，删掉上一句」）。
+/// 「删除」「清空」「撤销」这类短词在日常说话里太常见（「这些临时文件，全部删除」），
+/// 只在整句单独说时才算（审查 R2，2026-11-16）。
+pub fn parse_trailing_command(text: &str, options: &CommandOptions) -> Option<VoiceCommand> {
+    let command = parse_command(text, options)?;
+    let core = text
+        .trim()
+        .trim_end_matches(['。', '！', '？', '!', '?', '.', '，', ','])
+        .trim();
+    let explicit = core.contains("上一") || core.contains("上句");
+    match command {
+        VoiceCommand::NewLine | VoiceCommand::Send => Some(command),
+        VoiceCommand::DeleteLastSentence if explicit => Some(command),
+        _ => None,
+    }
+}
+
 /// 整句是指令就返回它，否则返回 None（当普通文字上屏）。
 pub fn parse_command(text: &str, options: &CommandOptions) -> Option<VoiceCommand> {
     let core = text
