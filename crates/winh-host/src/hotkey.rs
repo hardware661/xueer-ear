@@ -275,8 +275,8 @@ fn record(
     let max_listen = Duration::from_secs(u64::from(settings.max_listen_minutes) * 60);
     // 这一句里说话的最大音量和最后的增益，一句说完写一行日志（只记数字，不记内容）
     let (mut loudest, mut last_gain) = (0_u32, 1_f32);
-    // 中间结果正好是一个指令词：（指令, 从什么时候开始没变）
-    let mut pending_command: Option<(xueer_ear_textflow::VoiceCommand, Instant)> = None;
+    // 中间结果整句是指令、或者句尾是指令：（此刻的中间结果, 从什么时候开始没变）
+    let mut pending_command: Option<(String, Instant)> = None;
     let result = engine::run_wetype(source, cancel, |event| {
         if stopped.load(Ordering::Acquire) {
             return Ok(());
@@ -308,10 +308,18 @@ fn record(
             } => {
                 loudest = loudest.max(peak);
                 last_gain = gain;
-                if let Some((command, since)) = pending_command {
+                // 指令说完停了一下、没再出新字：现在就执行，不等静音收句
+                if let Some((text, since)) = &pending_command {
                     if since.elapsed() >= COMMAND_SETTLE {
+                        let keys = match post.command_only(text) {
+                            Some(command) => live.early_command(command),
+                            // 句尾指令：前面的话先定稿上屏（会记进历史），再按指令
+                            None => live
+                                .early_finish(post.finalize(text, crate::broker::now_ms()), text),
+                        };
                         pending_command = None;
-                        send_keys(&live.early_command(command));
+                        typed_any |= keys.iter().any(|k| matches!(k, Key::Text(_)));
+                        send_keys(&keys);
                     }
                 }
                 status.progress(peak, partials, finals);
@@ -347,13 +355,14 @@ fn record(
                     pending_command = None;
                     live.finalize(post.finalize(&text, crate::broker::now_ms()))
                 } else {
-                    // 只说了一个指令词：记下来，停一小会儿没再说别的就提前执行
-                    pending_command = match (post.command_only(&text), pending_command) {
-                        (Some(command), Some((old, since))) if old == command => {
-                            Some((command, since))
-                        }
-                        (Some(command), _) => Some((command, Instant::now())),
-                        (None, _) => None,
+                    // 整句只有指令词，或者句尾单独一小句是指令（「今天吃什么，发送」）：
+                    // 记下来，停一小会儿没再说别的就提前执行
+                    let is_command = post.command_only(&text).is_some()
+                        || post.trailing_command(&text).is_some();
+                    pending_command = match pending_command.take() {
+                        Some((old, since)) if is_command && old == text => Some((old, since)),
+                        _ if is_command => Some((text.clone(), Instant::now())),
+                        _ => None,
                     };
                     live.partial(&text)
                 };

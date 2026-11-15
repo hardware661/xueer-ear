@@ -91,6 +91,14 @@ impl Postprocess {
         parse_command(&text, &self.options.commands)
     }
 
+    /// 一句还没定稿时，句尾是不是单独一小句指令（「今天吃什么，发送」）。是的话快捷键路径可以马上执行。
+    pub fn trailing_command(&self, text: &str) -> Option<VoiceCommand> {
+        match process(text, &self.options) {
+            Output::TextThen(_, command) => Some(command),
+            _ => None,
+        }
+    }
+
     /// 听写出错中断时，屏幕上那截还没说定的话：原样记进历史（不整理、不当指令），免得白说。
     pub fn keep_unfinished(&self, text: &str, now_ms: u64) {
         if text.trim().is_empty() {
@@ -249,5 +257,26 @@ mod tests {
         on.text.allow_send = true;
         let (_dir, p) = setup(&on);
         assert_eq!(p.command_only("发送"), Some(VoiceCommand::Send));
+    }
+
+    #[test]
+    fn a_trailing_command_is_found_while_the_sentence_is_still_open() {
+        let mut on = Settings::default();
+        on.text.allow_send = true;
+        let (_dir, p) = setup(&on);
+        assert_eq!(
+            p.trailing_command("今天吃什么，发送"),
+            Some(VoiceCommand::Send)
+        );
+        assert_eq!(
+            p.trailing_command("这句不对，删掉上一句"),
+            Some(VoiceCommand::DeleteLastSentence)
+        );
+        // 句中的指令词、整句只有指令词，都不算「句尾指令」
+        assert_eq!(p.trailing_command("发送的速度太慢了"), None);
+        assert_eq!(p.trailing_command("发送"), None);
+        // 「发送」开关关着时不算
+        let (_dir, off) = setup(&Settings::default());
+        assert_eq!(off.trailing_command("今天吃什么，发送"), None);
     }
 }

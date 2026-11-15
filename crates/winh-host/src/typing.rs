@@ -115,7 +115,7 @@ pub struct Live {
     /// 主人在这句说到一半时动了键盘或鼠标：光标可能已经不在原处，这句剩下的时间只往后接字。
     /// 值是冻结时这句已经上屏的字数。
     frozen: Option<usize>,
-    /// 这句开头的语音指令已经提前执行了：后续结果里先去掉这个指令词再上屏
+    /// 这句里的语音指令已经提前执行了（值是指令词）：后续结果里去掉指令词和它前面的部分再上屏
     early: Option<String>,
 }
 
@@ -150,7 +150,7 @@ impl Live {
         {
             return vec![];
         }
-        let spoken = self.revision.pending().to_string();
+        let spoken = last_clause(self.revision.pending());
         let erase = if self.frozen.is_some() {
             0
         } else {
@@ -158,9 +158,31 @@ impl Live {
         };
         self.revision.clear();
         self.frozen = self.frozen.map(|_| 0);
-        self.early = Some(spoken.trim().to_string());
+        self.early = Some(spoken);
         let mut keys = edit(erase, "");
         keys.extend(self.typist.command(command, self.terminal));
+        keys
+    }
+
+    /// 句尾带指令（「今天吃什么，发送」）、停了一下没再说：不等静音收句，现在就把前面的话定稿上屏，
+    /// 再执行指令。`spoken` 是此刻的中间结果，用来记住指令词，之后这句的结果去掉指令词及以前的部分。
+    pub fn early_finish(&mut self, output: Output, spoken: &str) -> Vec<Key> {
+        let Output::TextThen(head, command) = output else {
+            return vec![];
+        };
+        if self.early.is_some() {
+            return vec![];
+        }
+        let deletes = matches!(
+            command,
+            VoiceCommand::DeleteLastSentence | VoiceCommand::DeleteAll
+        );
+        if self.frozen.is_some() && deletes {
+            return vec![];
+        }
+        let mut keys = self.finalize(Output::Text(head));
+        keys.extend(self.typist.command(command, self.terminal));
+        self.early = Some(last_clause(spoken));
         keys
     }
 
@@ -233,28 +255,24 @@ impl Live {
         rest.to_string()
     }
 
-    /// 提前执行过指令的这句：去掉开头的指令词和跟在后面的标点（标点不参与对齐）
+    /// 提前执行过指令的这句：找到正好是指令词的那一小句，去掉它和它前面的部分（前面的已经上屏或发走了）。
+    /// 云端后来常改前面几个字、换标点，所以按小句找，不按前缀对齐；还没找到就当这句全都处理过了。
     fn without_early(&self, text: &str) -> String {
         let Some(word) = self.early.as_deref() else {
             return text.to_string();
         };
-        let wanted: Vec<char> = word.chars().filter(|c| !is_punct(*c)).collect();
-        let mut matched = 0;
-        let mut cut = 0;
-        for (i, c) in text.char_indices() {
-            if matched == wanted.len() {
-                break;
-            }
-            if is_punct(c) {
+        let mut start = 0;
+        for (i, c) in text.char_indices().chain(Some((text.len(), '。'))) {
+            if !is_punct(c) {
                 continue;
             }
-            if c != wanted[matched] {
-                break;
+            let clause: String = text[start..i].chars().filter(|c| !is_punct(*c)).collect();
+            if clause == word {
+                return text[i..].trim_start_matches(is_punct).to_string();
             }
-            matched += 1;
-            cut = i + c.len_utf8();
+            start = i + c.len_utf8().min(text.len() - i);
         }
-        text[cut..].trim_start_matches(is_punct).to_string()
+        String::new()
     }
 
     /// 中间结果：退掉上次没说定的部分里变了的字，再补上新的。
@@ -346,6 +364,15 @@ impl Live {
         let joined = xueer_ear_textflow::join_for_terminal(&[previous, text]);
         joined[previous.len()..].to_string()
     }
+}
+
+/// 最后一小句（去掉标点和空格），用来记住说出来的指令词
+fn last_clause(text: &str) -> String {
+    let body = text.trim_end_matches(is_punct);
+    let start = body.rfind(is_punct).map_or(0, |i| {
+        i + body[i..].chars().next().map_or(0, char::len_utf8)
+    });
+    body[start..].chars().filter(|c| !is_punct(*c)).collect()
 }
 
 fn is_punct(c: char) -> bool {
@@ -764,5 +791,53 @@ mod tests {
         type_into(&mut doc, &live.partial("删除"));
         live.user_touched();
         assert_eq!(live.early_command(VoiceCommand::DeleteLastSentence), []);
+    }
+
+    #[test]
+    fn a_command_at_the_end_of_a_sentence_runs_early_too() {
+        // 主人 2026-11-16：「发送的速度还是特别慢」——说完一句接着说「发送」，云端把它并进同一句，
+        // 原来要等 3 秒静音收句才执行
+        let mut live = Live::new(true);
+        let mut doc = String::new();
+        type_into(&mut doc, &live.partial("今天吃什么，发送"));
+        type_into(
+            &mut doc,
+            &live.early_finish(
+                Output::TextThen("今天吃什么，".into(), VoiceCommand::Send),
+                "今天吃什么，发送",
+            ),
+        );
+        assert_eq!(doc, "今天吃什么，\n");
+        // 定稿到了，云端顺手改了前面几个字、加了标点：已经发走了，什么都不再打
+        for text in ["今天吃点什么，发送", "今天吃点什么？发送。"] {
+            let rest = live.unsent(text);
+            type_into(&mut doc, &live.partial(&rest));
+        }
+        let rest = live.unsent("今天吃点什么？发送。");
+        type_into(&mut doc, &live.finalize(Output::Text(rest)));
+        assert_eq!(doc, "今天吃什么，\n", "不能再打一遍或再按一次回车");
+        // 下一句照常
+        type_into(&mut doc, &live.partial("下一句"));
+        type_into(&mut doc, &live.finalize(Output::Text("下一句。".into())));
+        assert_eq!(doc, "今天吃什么，\n下一句。");
+    }
+
+    #[test]
+    fn words_after_an_early_trailing_command_are_kept() {
+        let mut live = Live::new(false);
+        let mut doc = String::new();
+        type_into(&mut doc, &live.partial("第一行，换行"));
+        type_into(
+            &mut doc,
+            &live.early_finish(
+                Output::TextThen("第一行，".into(), VoiceCommand::NewLine),
+                "第一行，换行",
+            ),
+        );
+        let rest = live.unsent("第一行，换行，第二行");
+        type_into(&mut doc, &live.partial(&rest));
+        let rest = live.unsent("第一行。换行。第二行。");
+        type_into(&mut doc, &live.finalize(Output::Text(rest)));
+        assert_eq!(doc, "第一行，\n第二行。");
     }
 }
