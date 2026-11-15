@@ -148,14 +148,16 @@ fn produce(
     };
     match source {
         Source::Microphone(device) => {
-            let mut microphone = Microphone::open(device.as_deref())?;
+            let mut microphone = Microphone::open(device.as_deref())
+                .map_err(|error| format!("麦克风打不开：{error}"))?;
             turns_ready(&ready_sender, Some(microphone.device.clone()))?;
             while !stop.load(Ordering::Acquire) {
                 microphone.poll(&mut accept)?;
             }
         }
         Source::MicrophoneHold { device, release } => {
-            let mut microphone = Microphone::open(device.as_deref())?;
+            let mut microphone = Microphone::open(device.as_deref())
+                .map_err(|error| format!("麦克风打不开：{error}"))?;
             turns_ready(&ready_sender, Some(microphone.device.clone()))?;
             while !stop.load(Ordering::Acquire) && !release.load(Ordering::Acquire) {
                 microphone.poll(&mut accept)?;

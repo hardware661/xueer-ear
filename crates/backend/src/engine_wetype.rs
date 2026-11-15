@@ -1,6 +1,6 @@
 //! WeType turns over our own socket. Capture/VAD and native UI contracts are shared.
 use super::{Audio, Capture, Counts, Event, Source};
-use crate::{Result, wetype::Client};
+use crate::{Result, replay::Replay, wetype::Client};
 use std::{
     sync::{
         Arc,
@@ -172,6 +172,30 @@ impl Drop for Turn {
     }
 }
 
+/// 这一句的连接出错了：还没重试过就重连，并把这句已经录的音重发一遍；重试过了就把原错往外抛。
+/// 重连前发一个 `reconnecting` 活动事件，让面板能显示出来。
+fn reconnect(
+    stop: &AtomicBool,
+    replay: &mut Replay,
+    error: Box<dyn std::error::Error + Send + Sync>,
+    output: &mut impl FnMut(Event) -> Result<()>,
+) -> Result<Option<Turn>> {
+    if replay.retried() {
+        return Err(error);
+    }
+    eprintln!("识别连接出错，重连并重发这一句：{error}");
+    output(Event::Activity("reconnecting"))?;
+    let turn = replay.recover(
+        error,
+        || Turn::start(stop),
+        |turn, chunk| turn.upload(chunk),
+    )?;
+    if turn.is_some() {
+        output(Event::Activity("recognizing"))?;
+    }
+    Ok(turn)
+}
+
 pub fn run(
     source: Source,
     stop: Arc<AtomicBool>,
@@ -183,6 +207,8 @@ pub fn run(
     let mut ready = false;
     let mut text = String::new();
     let mut last_report = Instant::now();
+    // 当前这句已上传的音频留底：连接断了重连后整句重发，每句只重试一次
+    let mut replay = Replay::default();
     loop {
         match capture.input.try_recv() {
             Ok(Audio::Ready(device)) => {
@@ -203,7 +229,11 @@ pub fn run(
                 }
                 if !stop.load(Ordering::Acquire) {
                     output(Event::Activity("connecting"))?;
-                    let started = Turn::start(&stop)?;
+                    replay = Replay::default();
+                    let started = match Turn::start(&stop) {
+                        Ok(started) => started,
+                        Err(error) => reconnect(&stop, &mut replay, error, &mut output)?,
+                    };
                     if !stop.load(Ordering::Acquire) {
                         turn = started;
                         output(Event::Activity("recognizing"))?;
@@ -212,8 +242,12 @@ pub fn run(
             }
             Ok(Audio::Chunk(audio)) => {
                 if !stop.load(Ordering::Acquire) {
-                    if let Some(turn) = turn.as_mut() {
-                        turn.upload(&audio)?;
+                    replay.push(&audio);
+                    if let Some(current) = turn.as_mut() {
+                        if let Err(error) = current.upload(&audio) {
+                            // replay 里已经含这一块，重连时会一起重发
+                            turn = reconnect(&stop, &mut replay, error, &mut output)?;
+                        }
                         counts.pieces += 1;
                     }
                 }
@@ -242,8 +276,18 @@ pub fn run(
             }
         }
         if !stop.load(Ordering::Acquire) {
-            if let Some(turn) = turn.as_mut() {
-                turn.poll(&stop, &mut counts, &mut output)?;
+            if let Some(current) = turn.as_mut() {
+                // 只有连接层的错才重连；output 回调（上屏）出的错照常往外抛
+                let mut sink_failed = false;
+                let polled = current.poll(&stop, &mut counts, &mut |event| {
+                    output(event).inspect_err(|_| sink_failed = true)
+                });
+                if let Err(error) = polled {
+                    if sink_failed {
+                        return Err(error);
+                    }
+                    turn = reconnect(&stop, &mut replay, error, &mut output)?;
+                }
             }
         }
         if last_report.elapsed() >= Duration::from_millis(250) {

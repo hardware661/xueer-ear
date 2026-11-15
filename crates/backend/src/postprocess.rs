@@ -77,6 +77,21 @@ impl Postprocess {
         output
     }
 
+    /// 听写出错中断时，屏幕上那截还没说定的话：原样记进历史（不整理、不当指令），免得白说。
+    pub fn keep_unfinished(&self, text: &str, now_ms: u64) {
+        if text.trim().is_empty() {
+            return;
+        }
+        let entry = Entry {
+            at_ms: now_ms,
+            text: text.to_string(),
+            app: String::new(),
+        };
+        if let Err(error) = self.history.append(&entry) {
+            eprintln!("历史记录写入失败：{error}");
+        }
+    }
+
     /// 启动时调用一次：清掉超过保留天数的历史。
     pub fn prune_history(&self, now_ms: u64) {
         if let Err(error) = self.history.prune(now_ms) {
@@ -180,5 +195,22 @@ mod tests {
         assert_eq!(p.apply(final_event("嗯。"), 2).text, "");
         let history = fs::read_to_string(dir.path().join("history.jsonl")).unwrap();
         assert_eq!(history.lines().count(), 1, "空的定稿不该记历史：{history}");
+    }
+
+    #[test]
+    fn unfinished_text_is_kept_in_history_as_is() {
+        // 出错时屏幕上那截没说定的话：原样记一条，不整理、不当指令
+        let (dir, p) = setup(&Settings::default());
+        p.keep_unfinished("嗯，删除", 2_000);
+        p.keep_unfinished("  ", 2_001);
+        let history = fs::read_to_string(dir.path().join("history.jsonl")).unwrap();
+        assert_eq!(history.lines().count(), 1, "{history}");
+        assert!(history.contains("嗯，删除"), "{history}");
+        // 历史关着就不记
+        let mut off = Settings::default();
+        off.history_enabled = false;
+        let (dir, p) = setup(&off);
+        p.keep_unfinished("没说完的话", 2_000);
+        assert!(!dir.path().join("history.jsonl").exists());
     }
 }

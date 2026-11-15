@@ -10,8 +10,12 @@ mod hotkey;
 mod input_guard;
 #[cfg(windows)]
 mod install;
+#[cfg(any(windows, test))]
+mod look;
 #[cfg(windows)]
 mod panel;
+#[cfg(any(windows, test))]
+mod recovery;
 #[cfg(any(windows, test))]
 mod revision;
 #[cfg(windows)]
@@ -33,10 +37,16 @@ fn main() {
             ("listening", panel::Look::Listening, 0.),
             ("speaking", panel::Look::Speaking, 0.7),
             ("idle", panel::Look::Idle, 0.),
+            ("notice", panel::Look::Notice, 0.),
         ] {
-            if let Err(e) =
-                panel::render_png(look, level, 3., &dir.join(format!("panel-{name}.png")))
-            {
+            let text = recovery::message(recovery::Kind::Network);
+            if let Err(e) = panel::render_png(
+                look,
+                level,
+                3.,
+                text,
+                &dir.join(format!("panel-{name}.png")),
+            ) {
                 eprintln!("{e}");
                 std::process::exit(1);
             }

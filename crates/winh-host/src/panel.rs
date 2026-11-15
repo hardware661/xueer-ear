@@ -1,6 +1,9 @@
 //! 雪耳自己的听写面板：一张带一对猫耳的小卡片，中间一个麦克风；固定在屏幕顶部居中、置顶、
 //! 不抢焦点（WS_EX_NOACTIVATE），所以打字的目标窗口一直是你原来的那个。点卡片任意处 = 点麦克风。
 //! 面板跑在自己的线程和消息循环里；其他线程通过 `PanelHandle` 改状态、收点击。
+//! 出错时卡片变宽、写一句原因，留几秒自己收起（规则在 `look.rs`）。
+use crate::look::Board;
+pub use crate::look::Look;
 use std::{
     mem, ptr,
     sync::{
@@ -9,6 +12,7 @@ use std::{
         mpsc::Sender,
     },
     thread,
+    time::Instant,
 };
 use windows_sys::Win32::{
     Foundation::{HWND, LPARAM, LRESULT, POINT, SIZE, WPARAM},
@@ -42,17 +46,15 @@ const BODY_TOP: f32 = 24.;
 const REFRESH: u32 = WM_APP + 10;
 const ANIMATE_TIMER: usize = 1;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Look {
-    Hidden,
-    /// 蓝色麦克风：在听、还没听到说话
-    Listening,
-    /// 听到在说话：中间变成随音量起伏的波浪
-    Speaking,
-    /// 正在连接云端
-    Connecting,
-    /// 灰色麦克风（只在离屏预览里用）
-    Idle,
+/// 出错提示时卡片的宽度
+const NOTICE_WIDTH: f32 = 292.;
+
+fn width(look: Look) -> f32 {
+    if look == Look::Notice {
+        NOTICE_WIDTH
+    } else {
+        WIDTH
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -61,7 +63,7 @@ pub enum Click {
 }
 
 struct Shared {
-    look: Mutex<Look>,
+    board: Mutex<Board>,
     level: AtomicU32,
     clicks: Sender<Click>,
 }
@@ -75,8 +77,18 @@ pub struct PanelHandle {
 
 impl PanelHandle {
     pub fn set(&self, look: Look) {
-        *self.shared.look.lock().unwrap_or_else(|e| e.into_inner()) = look;
+        self.board().set(look, Instant::now());
         self.post();
+    }
+
+    /// 出错了：卡片上写一句原因，留几秒自己收起（这期间别的线程说收起不算数）
+    pub fn notice(&self, text: &str) {
+        self.board().notice(text, Instant::now());
+        self.post();
+    }
+
+    fn board(&self) -> std::sync::MutexGuard<'_, Board> {
+        self.shared.board.lock().unwrap_or_else(|e| e.into_inner())
     }
 
     /// 面板窗口句柄（还没建好时是 0），用来判断鼠标是不是点在面板上
@@ -86,13 +98,7 @@ impl PanelHandle {
 
     /// 只有外观真的变了才刷新（轮询线程每 15 ms 调一次）
     pub fn set_if_changed(&self, look: Look) {
-        let changed = {
-            let mut current = self.shared.look.lock().unwrap_or_else(|e| e.into_inner());
-            let changed = *current != look;
-            *current = look;
-            changed
-        };
-        if changed {
+        if self.board().set(look, Instant::now()) {
             self.post();
         }
     }
@@ -115,7 +121,7 @@ impl PanelHandle {
 /// 起一个面板线程，返回句柄；点击通过 `clicks` 送回。
 pub fn spawn(clicks: Sender<Click>) -> PanelHandle {
     let shared = Arc::new(Shared {
-        look: Mutex::new(Look::Hidden),
+        board: Mutex::new(Board::default()),
         level: AtomicU32::new(0),
         clicks,
     });
@@ -209,12 +215,21 @@ unsafe extern "system" fn procedure(hwnd: HWND, message: u32, wp: WPARAM, lp: LP
                 0
             }
             WM_TIMER => {
-                window.phase += 0.18;
-                window.draw();
+                if window.board().expire(Instant::now()) {
+                    window.refresh();
+                } else if window.look() != Look::Notice {
+                    window.phase += 0.18;
+                    window.draw();
+                }
                 0
             }
             WM_LBUTTONUP => {
-                let _ = window.shared.clicks.send(Click::Mic);
+                // 点出错提示 = 知道了，收起；其他时候 = 点麦克风
+                if window.board().dismiss() {
+                    window.refresh();
+                } else {
+                    let _ = window.shared.clicks.send(Click::Mic);
+                }
                 0
             }
             _ => DefWindowProcW(hwnd, message, wp, lp),
@@ -223,8 +238,12 @@ unsafe extern "system" fn procedure(hwnd: HWND, message: u32, wp: WPARAM, lp: LP
 }
 
 impl Window {
+    fn board(&self) -> std::sync::MutexGuard<'_, Board> {
+        self.shared.board.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
     fn look(&self) -> Look {
-        *self.shared.look.lock().unwrap_or_else(|e| e.into_inner())
+        self.board().look()
     }
 
     fn scale(&self) -> f32 {
@@ -242,7 +261,11 @@ impl Window {
                     self.place();
                     self.draw();
                     ShowWindow(self.hwnd, SW_SHOWNOACTIVATE);
-                    if matches!(look, Look::Listening | Look::Speaking | Look::Connecting) {
+                    // 提示也要定时器：到点自己收起
+                    if matches!(
+                        look,
+                        Look::Listening | Look::Speaking | Look::Connecting | Look::Notice
+                    ) {
                         SetTimer(self.hwnd, ANIMATE_TIMER, 33, None);
                     } else {
                         KillTimer(self.hwnd, ANIMATE_TIMER);
@@ -263,7 +286,7 @@ impl Window {
             }
             let work = info.rcWork;
             let s = self.scale();
-            let (w, h) = ((WIDTH * s) as i32, (HEIGHT * s) as i32);
+            let (w, h) = ((width(self.look()) * s) as i32, (HEIGHT * s) as i32);
             // 顶部居中（主人 2026-11-15：放底部会挡住输入框）
             let x = work.left + (work.right - work.left - w) / 2;
             let y = work.top + (12. * s) as i32;
@@ -283,7 +306,11 @@ impl Window {
     unsafe fn draw(&mut self) {
         unsafe {
             let s = self.scale();
-            let (w, h) = ((WIDTH * s) as i32, (HEIGHT * s) as i32);
+            let (look, text) = {
+                let board = self.board();
+                (board.look(), board.text().to_string())
+            };
+            let (w, h) = ((width(look) * s) as i32, (HEIGHT * s) as i32);
             let screen = GetDC(ptr::null_mut());
             let dc = CreateCompatibleDC(screen);
             let mut info: BITMAPINFO = mem::zeroed();
@@ -306,7 +333,7 @@ impl Window {
             let old = SelectObject(dc, bitmap);
             let target = self.target_level();
             self.smooth += (target - self.smooth) * 0.35;
-            paint(dc, s, self.look(), self.smooth, self.phase);
+            paint(dc, s, look, self.smooth, self.phase, &text);
             let size = SIZE { cx: w, cy: h };
             let source = POINT { x: 0, y: 0 };
             let blend = BLENDFUNCTION {
@@ -351,6 +378,7 @@ const MUTED: u32 = 0xff8e8e93;
 const ACCENT: u32 = 0xff8e8e93;
 const HALO: u32 = 0x268e8e93;
 const GREY_FILL: u32 = 0xffe5e5ea;
+const NOTICE_TEXT: u32 = 0xff3a3a3c;
 
 unsafe fn paint(
     dc: windows_sys::Win32::Graphics::Gdi::HDC,
@@ -358,18 +386,28 @@ unsafe fn paint(
     look: Look,
     level: f32,
     phase: f32,
+    text: &str,
 ) {
     unsafe {
         let mut g = ptr::null_mut();
         if gp::GdipCreateFromHDC(dc, &mut g) != 0 {
             return;
         }
-        paint_graphics(g, scale, look, level, phase);
+        paint_graphics(g, scale, look, level, phase, text);
         gp::GdipDeleteGraphics(g);
     }
 }
 
-unsafe fn paint_graphics(g: *mut gp::GpGraphics, scale: f32, look: Look, level: f32, phase: f32) {
+unsafe fn paint_graphics(
+    g: *mut gp::GpGraphics,
+    scale: f32,
+    look: Look,
+    level: f32,
+    phase: f32,
+    text: &str,
+) {
+    // 卡片宽度：平时是小方块，出错提示时变宽
+    let card_w = width(look);
     unsafe {
         gp::GdipSetSmoothingMode(g, gp::SmoothingModeAntiAlias8x8);
         gp::GdipScaleWorldTransform(g, scale, scale, gp::MatrixOrderPrepend);
@@ -388,16 +426,16 @@ unsafe fn paint_graphics(g: *mut gp::GpGraphics, scale: f32, look: Look, level: 
         );
         cat_ear(
             g,
-            WIDTH - 44.,
+            card_w - 44.,
             BODY_TOP + 16.,
-            WIDTH - 8.,
+            card_w - 8.,
             BODY_TOP + 16.,
-            WIDTH - 16.,
+            card_w - 16.,
             1.,
             PANEL_FILL,
             0,
         );
-        rounded(g, 3., BODY_TOP, WIDTH - 6., body_h, 22., PANEL_FILL, false);
+        rounded(g, 3., BODY_TOP, card_w - 6., body_h, 22., PANEL_FILL, false);
         // 内耳一点粉
         cat_ear(
             g,
@@ -412,18 +450,32 @@ unsafe fn paint_graphics(g: *mut gp::GpGraphics, scale: f32, look: Look, level: 
         );
         cat_ear(
             g,
-            WIDTH - 35.,
+            card_w - 35.,
             BODY_TOP + 10.,
-            WIDTH - 17.,
+            card_w - 17.,
             BODY_TOP + 10.,
-            WIDTH - 20.,
+            card_w - 20.,
             9.,
             INNER_EAR,
             0,
         );
         // 中间：同一种中灰圆底，没开口时是白麦克风，出字时是白波浪
-        let (cx, cy) = (WIDTH / 2., BODY_TOP + body_h / 2.);
+        let (cx, cy) = (card_w / 2., BODY_TOP + body_h / 2.);
         match look {
+            // 出错提示：左边灰掉的麦克风，右边一句原因
+            Look::Notice => {
+                ellipse(g, 18., cy - 22., 44., 44., GREY_FILL);
+                mic(g, 18. + 13., cy - 12., 18., MUTED);
+                label(
+                    g,
+                    text,
+                    74.,
+                    BODY_TOP,
+                    card_w - 74. - 16.,
+                    body_h,
+                    NOTICE_TEXT,
+                );
+            }
             Look::Speaking => {
                 let r = 24. + 6. * level;
                 ellipse(g, cx - r, cy - r, r * 2., r * 2., HALO);
@@ -445,6 +497,65 @@ unsafe fn paint_graphics(g: *mut gp::GpGraphics, scale: f32, look: Look, level: 
                 mic(g, cx - 9., cy - 12., 18., MUTED);
             }
         }
+    }
+}
+
+/// 一行字，左对齐、竖直居中，放不下就省略号
+unsafe fn label(g: *mut gp::GpGraphics, text: &str, x: f32, y: f32, w: f32, h: f32, color: u32) {
+    unsafe {
+        let mut family = ptr::null_mut();
+        if gp::GdipCreateFontFamilyFromName(
+            wide("Microsoft YaHei UI").as_ptr(),
+            ptr::null_mut(),
+            &mut family,
+        ) != 0
+            && gp::GdipCreateFontFamilyFromName(
+                wide("Segoe UI").as_ptr(),
+                ptr::null_mut(),
+                &mut family,
+            ) != 0
+        {
+            return;
+        }
+        let mut font = ptr::null_mut();
+        let mut format = ptr::null_mut();
+        let mut brush = ptr::null_mut();
+        if gp::GdipCreateFont(family, 14.5, 0, gp::UnitPixel, &mut font) == 0
+            && gp::GdipCreateStringFormat(0, 0, &mut format) == 0
+            && gp::GdipCreateSolidFill(color, &mut brush) == 0
+        {
+            gp::GdipSetStringFormatLineAlign(format, gp::StringAlignmentCenter);
+            gp::GdipSetStringFormatFlags(format, gp::StringFormatFlagsNoWrap);
+            gp::GdipSetStringFormatTrimming(format, gp::StringTrimmingEllipsisCharacter);
+            // 分层窗口每像素透明，用灰度抗锯齿（ClearType 会带彩边）
+            gp::GdipSetTextRenderingHint(g, gp::TextRenderingHintAntiAlias);
+            let rect = gp::RectF {
+                X: x,
+                Y: y,
+                Width: w,
+                Height: h,
+            };
+            let units: Vec<u16> = text.encode_utf16().collect();
+            gp::GdipDrawString(
+                g,
+                units.as_ptr(),
+                units.len() as i32,
+                font,
+                &rect,
+                format,
+                brush.cast(),
+            );
+        }
+        if !brush.is_null() {
+            gp::GdipDeleteBrush(brush.cast());
+        }
+        if !format.is_null() {
+            gp::GdipDeleteStringFormat(format);
+        }
+        if !font.is_null() {
+            gp::GdipDeleteFont(font);
+        }
+        gp::GdipDeleteFontFamily(family);
     }
 }
 
@@ -622,7 +733,13 @@ unsafe fn cat_ear(
 }
 
 /// 离屏把面板画成 PNG（核对外观用，不在屏幕上弹窗）
-pub fn render_png(look: Look, level: f32, scale: f32, out: &std::path::Path) -> Result<(), String> {
+pub fn render_png(
+    look: Look,
+    level: f32,
+    scale: f32,
+    text: &str,
+    out: &std::path::Path,
+) -> Result<(), String> {
     unsafe {
         let mut input: gp::GdiplusStartupInput = mem::zeroed();
         input.GdiplusVersion = 1;
@@ -630,7 +747,7 @@ pub fn render_png(look: Look, level: f32, scale: f32, out: &std::path::Path) -> 
         if gp::GdiplusStartup(&mut token, &input, ptr::null_mut()) != 0 {
             return Err("无法初始化绘图".into());
         }
-        let (w, h) = ((WIDTH * scale) as i32, (HEIGHT * scale) as i32);
+        let (w, h) = ((width(look) * scale) as i32, (HEIGHT * scale) as i32);
         let mut bitmap = ptr::null_mut();
         let result = if gp::GdipCreateBitmapFromScan0(
             w,
@@ -647,7 +764,7 @@ pub fn render_png(look: Look, level: f32, scale: f32, out: &std::path::Path) -> 
             gp::GdipGetImageGraphicsContext(bitmap.cast(), &mut g);
             // 白底方便看
             gp::GdipGraphicsClear(g, 0xffffffff);
-            paint_graphics(g, scale, look, level, 0.);
+            paint_graphics(g, scale, look, level, 0., text);
             gp::GdipDeleteGraphics(g);
             let clsid = windows_sys::core::GUID::from_u128(0x557cf406_1a04_11d3_9a73_0000f81ef32e);
             let path: Vec<u16> = out

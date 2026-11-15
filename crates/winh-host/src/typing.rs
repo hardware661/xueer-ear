@@ -143,6 +143,11 @@ impl Live {
         }
     }
 
+    /// 屏幕上还没说定的那一截。听写出错时这截字留在屏幕上，调用方把它存进历史。
+    pub fn leftover(&self) -> &str {
+        self.revision.pending()
+    }
+
     /// 主人自己动了键盘或鼠标（点了别处、打了字、选了文字）。雪耳改字靠「退格再重打」，
     /// 不知道光标在哪时再退格就会删错地方，所以这句剩下的时间只往后接字，之前打的也不再往回删。
     pub fn user_touched(&mut self) {
@@ -631,5 +636,18 @@ mod tests {
         type_into(&mut doc, &t.command(VoiceCommand::DeleteAll, false));
         assert_eq!(doc, "手打的");
         assert_eq!(t.command(VoiceCommand::DeleteAll, false), []);
+    }
+
+    #[test]
+    fn leftover_is_what_is_on_screen_but_not_yet_final() {
+        // 出错时：屏幕上没说定的那截留着，交给调用方存进历史
+        let mut live = Live::new(false);
+        assert_eq!(live.leftover(), "");
+        live.finalize(Output::Text("第一句。".into()));
+        live.partial("第二句说到一");
+        assert_eq!(live.leftover(), "第二句说到一");
+        // 说定了就没有剩下的
+        live.finalize(Output::Text("第二句说到一半。".into()));
+        assert_eq!(live.leftover(), "");
     }
 }

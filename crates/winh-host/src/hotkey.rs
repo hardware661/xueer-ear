@@ -7,6 +7,8 @@
 use crate::{
     dictation::{Dictation, Effect, Input, Panel},
     panel::{self, Click, Look, PanelHandle},
+    recovery,
+    status::Status,
     typing::{Key, Live},
 };
 use std::{
@@ -50,14 +52,15 @@ pub struct Hotkey {
 
 impl Hotkey {
     /// 设置里关着就返回 None。
-    pub fn start(settings: &Settings) -> Option<Self> {
+    /// `status` 是给控制面板看的状态文件：听写时的阶段、出错原因都写进去。
+    pub fn start(settings: &Settings, status: Status) -> Option<Self> {
         if !settings.hotkey_enabled {
             return None;
         }
         let vk = settings.hotkey_vk as i32;
         let stop = Arc::new(AtomicBool::new(false));
         let worker_stop = stop.clone();
-        let worker = thread::spawn(move || poll_loop(vk, &worker_stop));
+        let worker = thread::spawn(move || poll_loop(vk, &worker_stop, &status));
         println!("快捷键听写已开启：点一下 {vk:#x} 打开面板说话");
         Some(Self {
             stop,
@@ -91,7 +94,7 @@ impl Session {
     }
 }
 
-fn poll_loop(vk: i32, stop: &AtomicBool) {
+fn poll_loop(vk: i32, stop: &AtomicBool, status: &Status) {
     let (clicks_tx, clicks) = mpsc::channel();
     let panel = panel::spawn(clicks_tx);
     let mut state = Dictation::new(HOLD_THRESHOLD);
@@ -159,7 +162,7 @@ fn poll_loop(vk: i32, stop: &AtomicBool) {
                         let _ = old.worker.join();
                     }
                     panel.set(Look::Connecting);
-                    session = Some(begin(panel.clone()));
+                    session = Some(begin(panel.clone(), status.clone()));
                 }
                 Effect::Finish => {
                     if let Some(s) = &session {
@@ -181,7 +184,7 @@ fn poll_loop(vk: i32, stop: &AtomicBool) {
     panel.set(Look::Hidden);
 }
 
-fn begin(panel: PanelHandle) -> Session {
+fn begin(panel: PanelHandle, status: Status) -> Session {
     let release = Arc::new(AtomicBool::new(false));
     let cancel = Arc::new(AtomicBool::new(false));
     let sent = Arc::new(std::sync::atomic::AtomicU32::new(0));
@@ -190,14 +193,26 @@ fn begin(panel: PanelHandle) -> Session {
     let (worker_release, worker_cancel, worker_sent) =
         (release.clone(), cancel.clone(), sent.clone());
     let worker = thread::spawn(move || {
-        if let Err(error) = record(
+        let cancelled = worker_cancel.clone();
+        let result = record(
             worker_release,
             worker_cancel,
             worker_sent,
             worker_touched,
             &panel,
-        ) {
-            eprintln!("快捷键听写失败：{error}");
+            &status,
+        );
+        match result {
+            // 被新一轮听写取消的不算出错
+            Err(_) if cancelled.load(Ordering::Acquire) => status.phase("ready"),
+            Err(error) => {
+                // 走到这里的连接错误已经自动重连重发过一次了：告诉主人原因，面板留几秒
+                let kind = recovery::classify(&error.to_string());
+                eprintln!("快捷键听写失败（{kind:?}）：{error}");
+                panel.notice(recovery::message(kind));
+                status.error(format!("{}（{error}）", recovery::message(kind)));
+            }
+            Ok(()) => status.phase("ready"),
         }
     });
     Session {
@@ -217,6 +232,7 @@ fn record(
     sent: Arc<std::sync::atomic::AtomicU32>,
     touched: Arc<std::sync::atomic::AtomicU32>,
     panel: &PanelHandle,
+    status: &Status,
 ) -> crate::install::Result<()> {
     let mut seen_sent = 0;
     let mut seen_touched = 0;
@@ -234,17 +250,30 @@ fn record(
     let mut last_text = Instant::now();
     let mut last_heard = String::new();
     let max_listen = Duration::from_secs(u64::from(settings.max_listen_minutes) * 60);
-    engine::run_wetype(source, cancel, |event| {
+    let result = engine::run_wetype(source, cancel, |event| {
         if stopped.load(Ordering::Acquire) {
             return Ok(());
         }
         match event {
+            Event::Input { name, .. } => status.microphone(name),
             // 停顿只是一句说完（定稿上屏），不结束：一直听到主人再点一下、点麦克风、Esc，
             // 或者超过「最长听写时间」（主人 2026-11-15：说着说着停顿一下就断了，要能一直说）
             // 蓝麦克风=在听；识别出新字的那一阵子显示波浪（只认真的出字，咳嗽、敲桌子不算）
-            Event::Activity("connecting") => panel.set(Look::Connecting),
-            Event::Activity(_) => panel.set(Look::Listening),
-            Event::Progress { peak, .. } => {
+            Event::Activity(phase) => {
+                status.phase(phase);
+                panel.set(if matches!(phase, "connecting" | "reconnecting") {
+                    Look::Connecting
+                } else {
+                    Look::Listening
+                });
+            }
+            Event::Progress {
+                peak,
+                partials,
+                finals,
+                ..
+            } => {
+                status.progress(peak, partials, finals);
                 panel.level(peak);
                 if last_text.elapsed() >= WAVE_HOLD {
                     panel.set_if_changed(Look::Listening);
@@ -284,7 +313,14 @@ fn record(
             _ => {}
         }
         Ok(())
-    })?;
+    });
+    if let Err(error) = result {
+        // 屏幕上已经出的字不动；还没说定的那截原样存进历史，免得白说
+        if !stopped.load(Ordering::Acquire) {
+            post.keep_unfinished(live.leftover(), crate::broker::now_ms());
+        }
+        return Err(error);
+    }
     if !typed_any && !stopped.load(Ordering::Acquire) {
         crate::sound::play(crate::sound::Cue::Missed, settings.sounds_enabled);
     }

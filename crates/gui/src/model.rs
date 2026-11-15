@@ -73,6 +73,7 @@ impl Status {
             "ready" => "待机",
             "armed" => "聆听中",
             "connecting" => "正在连接",
+            "reconnecting" => "正在重连",
             "recognizing" => "识别中",
             "paused" => "静音暂停",
             _ => "等待状态",
@@ -108,6 +109,8 @@ mod tests {
         assert_eq!(status.headline(16_001, true, true), "状态未更新");
         status.phase = "paused".into();
         assert_eq!(status.headline(2000, true, true), "静音暂停");
+        status.phase = "reconnecting".into();
+        assert_eq!(status.headline(2000, true, true), "正在重连");
         status.backend = "windows".into();
         assert_eq!(status.backend_label(), "Windows 原生");
         assert_eq!(status.headline(100_000, false, false), "Windows 原生");

@@ -5,6 +5,7 @@ pub mod check;
 #[cfg(windows)]
 pub mod engine;
 pub mod postprocess;
+pub mod replay;
 #[cfg(windows)]
 pub mod runtime_account;
 pub mod settings;

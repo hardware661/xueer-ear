@@ -304,7 +304,7 @@ fn hotkey_only(
 ) -> Result<()> {
     let mut settings = Settings::load_default().unwrap_or_default();
     settings.hotkey_enabled = true;
-    let hotkey = crate::hotkey::Hotkey::start(&settings);
+    let hotkey = crate::hotkey::Hotkey::start(&settings, status.clone());
     match fallback {
         Some(reason) => {
             eprintln!("{reason}");
@@ -421,7 +421,10 @@ pub fn run() -> Result<()> {
     });
     println!("已接入原生 Win+H；按 Ctrl+C 退出并恢复。");
     // 快捷键模式和 Win+H 并行可用；broker 退出时随 drop 停掉
-    let _hotkey = crate::hotkey::Hotkey::start(&Settings::load_default().unwrap_or_default());
+    let _hotkey = crate::hotkey::Hotkey::start(
+        &Settings::load_default().unwrap_or_default(),
+        status.clone(),
+    );
     status.phase("ready");
     control.ready();
     let mut active: Option<Active> = None;
