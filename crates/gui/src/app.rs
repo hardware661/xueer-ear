@@ -1031,42 +1031,32 @@ impl App {
         }
     }
 
+    /// 托盘右键菜单：和控制面板里的菜单同一套样子（圆角高亮、同样的字体），不用系统默认的灰菜单。
     unsafe fn menu(&mut self) {
-        let menu = CreatePopupMenu();
-        if menu.is_null() {
-            return;
-        }
-        let disabled = if self.busy.is_some() { MF_GRAYED } else { 0 };
-        AppendMenuW(menu, MF_STRING, OPEN, wide("打开控制面板").as_ptr());
-        AppendMenuW(menu, MF_SEPARATOR, 0, ptr::null());
-        AppendMenuW(
-            menu,
-            MF_STRING | disabled,
+        let choices = crate::prefs::tray_choices(
+            self.headline(),
+            self.settings.hotkey_vk,
+            self.installed,
+            self.busy.is_some(),
+            OPEN,
             TOGGLE,
-            wide(if self.installed {
-                "关闭后台服务"
-            } else {
-                "开启后台服务"
-            })
-            .as_ptr(),
+            EXIT,
         );
-        AppendMenuW(menu, MF_SEPARATOR, 0, ptr::null());
-        AppendMenuW(menu, MF_STRING | disabled, EXIT, wide("退出").as_ptr());
         let mut point: POINT = mem::zeroed();
         GetCursorPos(&mut point);
+        // 不先把自己设成前台，点菜单外面时菜单不会消失
         SetForegroundWindow(self.hwnd);
-        let selected = TrackPopupMenu(
-            menu,
-            TPM_RETURNCMD | TPM_RIGHTBUTTON,
+        let selected = crate::menu::popup_at(
+            self.hwnd,
             point.x,
             point.y,
-            0,
-            self.hwnd,
-            ptr::null(),
+            &choices,
+            self.fonts[3],
+            self.dpi,
         );
-        DestroyMenu(menu);
-        PostMessageW(self.hwnd, WM_NULL, 0, 0);
-        self.action(selected as usize);
+        if selected != crate::prefs::NOTHING {
+            self.action(selected);
+        }
     }
 
     unsafe fn action(&mut self, id: usize) {
@@ -1948,9 +1938,27 @@ unsafe fn settle(milliseconds: u64) {
     }
 }
 
+/// 把位图存成 PNG
+unsafe fn save_bitmap(bitmap: HBITMAP, path: &std::path::Path) -> Result<(), String> {
+    use windows_sys::Win32::Graphics::GdiPlus as gp;
+    let mut image = ptr::null_mut();
+    if gp::GdipCreateBitmapFromHBITMAP(bitmap, ptr::null_mut(), &mut image) != 0 {
+        return Err("无法转换位图".to_owned());
+    }
+    // PNG 编码器
+    let png = windows_sys::core::GUID::from_u128(0x557cf406_1a04_11d3_9a73_0000f81ef32e);
+    let name = wide(&path.to_string_lossy());
+    let saved = gp::GdipSaveImageToFile(image.cast(), name.as_ptr(), &png, ptr::null()) == 0;
+    gp::GdipDisposeImage(image.cast());
+    if saved {
+        Ok(())
+    } else {
+        Err(format!("无法保存 {}", path.display()))
+    }
+}
+
 /// 把一个窗口现在的样子存成 PNG
 unsafe fn capture(window: HWND, path: &std::path::Path) -> Result<(), String> {
-    use windows_sys::Win32::Graphics::GdiPlus as gp;
     #[link(name = "user32")]
     unsafe extern "system" {
         fn PrintWindow(window: HWND, dc: HDC, flags: u32) -> i32;
@@ -1965,17 +1973,11 @@ unsafe fn capture(window: HWND, path: &std::path::Path) -> Result<(), String> {
     // 2 = PW_RENDERFULLCONTENT：连同圆角和子控件一起画
     let printed = PrintWindow(window, dc, 2) != 0;
     SelectObject(dc, old);
-    let mut image = ptr::null_mut();
-    let mut result = Err("无法截取窗口".to_owned());
-    if printed && gp::GdipCreateBitmapFromHBITMAP(bitmap, ptr::null_mut(), &mut image) == 0 {
-        // PNG 编码器
-        let png = windows_sys::core::GUID::from_u128(0x557cf406_1a04_11d3_9a73_0000f81ef32e);
-        let name = wide(&path.to_string_lossy());
-        if gp::GdipSaveImageToFile(image.cast(), name.as_ptr(), &png, ptr::null()) == 0 {
-            result = Ok(());
-        }
-        gp::GdipDisposeImage(image.cast());
-    }
+    let result = if printed {
+        save_bitmap(bitmap, path)
+    } else {
+        Err("无法截取窗口".to_owned())
+    };
     DeleteObject(bitmap);
     DeleteDC(dc);
     ReleaseDC(ptr::null_mut(), screen);
@@ -2005,7 +2007,23 @@ pub fn snapshot(dir: &std::path::Path) -> Result<(), String> {
             DestroyWindow(dialog);
             result
         };
+        // 托盘右键菜单：按「正在用」的样子画一张，鼠标停在「打开控制面板」上
+        let tray = {
+            let choices = crate::prefs::tray_choices(
+                "待机",
+                app.settings.hotkey_vk,
+                true,
+                false,
+                OPEN,
+                TOGGLE,
+                EXIT,
+            );
+            let (bitmap, _, _) = crate::menu::render(&choices, app.fonts[3], app.dpi, 2);
+            let result = save_bitmap(bitmap, &dir.join("tray-menu.png"));
+            DeleteObject(bitmap);
+            result
+        };
         DestroyWindow(hwnd);
-        panel.and(asked)
+        panel.and(asked).and(tray)
     }
 }

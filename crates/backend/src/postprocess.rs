@@ -6,7 +6,10 @@ use crate::settings::Settings;
 use std::path::Path;
 use xueer_ear_history::{Entry, History, Settings as HistorySettings};
 use xueer_ear_protocol::transcript::SpeechEvent;
-use xueer_ear_textflow::{CommandOptions, Hotwords, Options, Output, PunctOptions, process};
+use xueer_ear_textflow::{
+    CommandOptions, Hotwords, Options, Output, PunctOptions, VoiceCommand, parse_command, process,
+    strip_fillers,
+};
 
 /// 热词文件上限，防止误放一个大文件拖慢每句话。
 const MAX_HOTWORDS_BYTES: u64 = 256 * 1024;
@@ -77,6 +80,17 @@ impl Postprocess {
         output
     }
 
+    /// 一句还没定稿时，这句话是不是整句只有一个语音指令（「删除」「撤回」「发送」……）。
+    /// 是的话快捷键路径可以马上执行，不用等静音收句。句中带指令词的（「删除这个文件」）不算。
+    pub fn command_only(&self, text: &str) -> Option<VoiceCommand> {
+        let text = if self.options.strip_fillers {
+            strip_fillers(text)
+        } else {
+            text.to_string()
+        };
+        parse_command(&text, &self.options.commands)
+    }
+
     /// 听写出错中断时，屏幕上那截还没说定的话：原样记进历史（不整理、不当指令），免得白说。
     pub fn keep_unfinished(&self, text: &str, now_ms: u64) {
         if text.trim().is_empty() {
@@ -121,6 +135,7 @@ fn read_hotwords(path: &Path) -> Hotwords {
 mod tests {
     use super::*;
     use std::fs;
+    use xueer_ear_textflow::VoiceCommand;
 
     fn final_event(text: &str) -> SpeechEvent {
         SpeechEvent {
@@ -212,5 +227,27 @@ mod tests {
         let (dir, p) = setup(&off);
         p.keep_unfinished("没说完的话", 2_000);
         assert!(!dir.path().join("history.jsonl").exists());
+    }
+
+    #[test]
+    fn only_a_whole_sentence_command_counts_as_early_command() {
+        let (_dir, p) = setup(&Settings::default());
+        assert_eq!(
+            p.command_only("删除"),
+            Some(VoiceCommand::DeleteLastSentence)
+        );
+        assert_eq!(
+            p.command_only("嗯，撤回。"),
+            Some(VoiceCommand::DeleteLastSentence)
+        );
+        assert_eq!(p.command_only("全部删除"), Some(VoiceCommand::DeleteAll));
+        assert_eq!(p.command_only("删除这个文件"), None);
+        assert_eq!(p.command_only("这句不对，删掉上一句"), None);
+        // 「发送」只有开关打开时才算
+        assert_eq!(p.command_only("发送"), None);
+        let mut on = Settings::default();
+        on.text.allow_send = true;
+        let (_dir, p) = setup(&on);
+        assert_eq!(p.command_only("发送"), Some(VoiceCommand::Send));
     }
 }

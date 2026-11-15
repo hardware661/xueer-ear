@@ -203,6 +203,41 @@ pub fn history_pick(texts: &[String], id: usize) -> Option<&str> {
     texts.get(id.checked_sub(HISTORY_BASE)?).map(String::as_str)
 }
 
+/// 托盘右键菜单：上面一行灰字说状态，中间是常用的几项，最后是退出。
+/// 状态行和分隔线不能点（命令号 0 / NOTHING）。
+pub fn tray_choices(
+    headline: &str,
+    hotkey_vk: u32,
+    running: bool,
+    busy: bool,
+    open: usize,
+    toggle: usize,
+    exit: usize,
+) -> Vec<Choice> {
+    let status = if running {
+        format!("{headline} · 点一下 {} 说话", key_name(hotkey_vk))
+    } else {
+        headline.to_owned()
+    };
+    let mut out = vec![(NOTHING, status, false), separator()];
+    out.push((open, "打开控制面板".to_owned(), false));
+    if !busy {
+        out.push((
+            toggle,
+            if running {
+                "暂停雪耳"
+            } else {
+                "开启雪耳"
+            }
+            .to_owned(),
+            false,
+        ));
+    }
+    out.push(separator());
+    out.push((exit, "退出".to_owned(), false));
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -363,6 +398,24 @@ mod tests {
         assert_eq!(history_summary(&s), "最近 30 天");
         s.history_enabled = false;
         assert_eq!(history_summary(&s), "已关闭");
+    }
+
+    #[test]
+    fn tray_menu_shows_state_and_plain_actions() {
+        let c = tray_choices("待机", 0xA5, true, false, 1, 2, 3);
+        assert_eq!(
+            c[0],
+            (NOTHING, "待机 · 点一下 右 Alt 说话".to_owned(), false)
+        );
+        assert_eq!(c[1].1, "");
+        let names: Vec<&str> = c.iter().map(|(_, t, _)| t.as_str()).collect();
+        assert_eq!(names[2..], ["打开控制面板", "暂停雪耳", "", "退出"]);
+        // 没开时：开启雪耳；正在切换时不给开关
+        let off = tray_choices("未开启", 0xA5, false, false, 1, 2, 3);
+        assert_eq!(off[0].1, "未开启");
+        assert!(off.iter().any(|(id, t, _)| *id == 2 && t == "开启雪耳"));
+        let busy = tray_choices("正在开启", 0xA5, false, true, 1, 2, 3);
+        assert!(!busy.iter().any(|(id, _, _)| *id == 2));
     }
 
     #[test]

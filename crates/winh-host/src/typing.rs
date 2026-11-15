@@ -115,6 +115,8 @@ pub struct Live {
     /// 主人在这句说到一半时动了键盘或鼠标：光标可能已经不在原处，这句剩下的时间只往后接字。
     /// 值是冻结时这句已经上屏的字数。
     frozen: Option<usize>,
+    /// 这句开头的语音指令已经提前执行了：后续结果里先去掉这个指令词再上屏
+    early: Option<String>,
 }
 
 /// 退格改字离上次屏幕变化至少隔这么久
@@ -129,7 +131,37 @@ impl Live {
             last_rewrite: None,
             sent: None,
             frozen: None,
+            early: None,
         }
+    }
+
+    /// 这句到目前为止只说了一个指令词（调用方用 Postprocess::command_only 判断过），马上执行，
+    /// 不等静音收句：先擦掉屏幕上的指令词，再按指令按键。之后这句的结果会去掉开头的指令词。
+    /// 主人动过键盘鼠标（冻结）时，删除类指令不执行，交给定稿时照常处理。
+    pub fn early_command(&mut self, command: VoiceCommand) -> Vec<Key> {
+        if self.early.is_some() {
+            return vec![];
+        }
+        if self.frozen.is_some()
+            && matches!(
+                command,
+                VoiceCommand::DeleteLastSentence | VoiceCommand::DeleteAll
+            )
+        {
+            return vec![];
+        }
+        let spoken = self.revision.pending().to_string();
+        let erase = if self.frozen.is_some() {
+            0
+        } else {
+            self.revision.pending_graphemes()
+        };
+        self.revision.clear();
+        self.frozen = self.frozen.map(|_| 0);
+        self.early = Some(spoken.trim().to_string());
+        let mut keys = edit(erase, "");
+        keys.extend(self.typist.command(command, self.terminal));
+        keys
     }
 
     /// 主人自己按了 Enter：屏幕上没说定的那截已经跟着发走了，输入框是空的。
@@ -173,6 +205,7 @@ impl Live {
     /// 去掉这句里已经被 Enter 发走的开头，只剩还没上屏的部分。
     /// 云端定稿常在发走的文字后面补标点或改一两个字，所以按「去掉标点后的前缀」对齐。
     pub fn unsent(&self, text: &str) -> String {
+        let text = &self.without_early(text);
         let Some(sent) = self.sent.as_deref() else {
             return text.to_string();
         };
@@ -198,6 +231,30 @@ impl Live {
         // 发走部分后面紧跟的标点也算发走了的那句的，别单独留在新输入框开头
         let rest = text[cut..].trim_start_matches(is_punct);
         rest.to_string()
+    }
+
+    /// 提前执行过指令的这句：去掉开头的指令词和跟在后面的标点（标点不参与对齐）
+    fn without_early(&self, text: &str) -> String {
+        let Some(word) = self.early.as_deref() else {
+            return text.to_string();
+        };
+        let wanted: Vec<char> = word.chars().filter(|c| !is_punct(*c)).collect();
+        let mut matched = 0;
+        let mut cut = 0;
+        for (i, c) in text.char_indices() {
+            if matched == wanted.len() {
+                break;
+            }
+            if is_punct(c) {
+                continue;
+            }
+            if c != wanted[matched] {
+                break;
+            }
+            matched += 1;
+            cut = i + c.len_utf8();
+        }
+        text[cut..].trim_start_matches(is_punct).to_string()
     }
 
     /// 中间结果：退掉上次没说定的部分里变了的字，再补上新的。
@@ -238,8 +295,13 @@ impl Live {
         }
         let erase = self.revision.pending_graphemes();
         self.revision.clear();
-        // 这句结束了，发走的前缀只对这句有效
+        // 这句结束了，发走的前缀、提前执行的指令都只对这句有效
         self.sent = None;
+        let early = self.early.take().is_some();
+        // 指令已经提前执行过、这句没剩别的字：什么都不打
+        if early && matches!(&output, Output::Text(t) if t.trim().is_empty()) {
+            return edit(erase, "");
+        }
         let mut keys = edit(erase, "");
         keys.extend(match output {
             Output::Text(text) => self.typist.text(&clean(&text), self.terminal),
@@ -271,6 +333,7 @@ impl Live {
         self.revision.clear();
         self.sent = None;
         self.frozen = None;
+        self.early = None;
         keys
     }
 
@@ -649,5 +712,57 @@ mod tests {
         // 说定了就没有剩下的
         live.finalize(Output::Text("第二句说到一半。".into()));
         assert_eq!(live.leftover(), "");
+    }
+
+    #[test]
+    fn a_spoken_command_runs_before_the_sentence_is_final() {
+        // 主人 2026-11-16：「撤回和删除的速度…不是特别快，还有发送的速度」。
+        // 说完「删除」停一下就执行，不等 3 秒静音收句；之后的定稿不再打出「删除」两个字
+        let mut live = Live::new(false);
+        let mut doc = String::new();
+        type_into(&mut doc, &live.finalize(Output::Text("第一句。".into())));
+        type_into(&mut doc, &live.partial("删除"));
+        assert_eq!(doc, "第一句。删除");
+        type_into(
+            &mut doc,
+            &live.early_command(VoiceCommand::DeleteLastSentence),
+        );
+        assert_eq!(doc, "");
+        type_into(&mut doc, &live.partial(&live.unsent("删除。")));
+        type_into(
+            &mut doc,
+            &live.finalize(Output::Text(live.unsent("删除。"))),
+        );
+        assert_eq!(doc, "");
+        // 下一句照常
+        type_into(&mut doc, &live.partial("新的一句"));
+        type_into(&mut doc, &live.finalize(Output::Text("新的一句。".into())));
+        assert_eq!(doc, "新的一句。");
+    }
+
+    #[test]
+    fn words_after_an_early_command_are_still_typed() {
+        let mut live = Live::new(false);
+        let mut doc = String::new();
+        type_into(&mut doc, &live.partial("换行"));
+        type_into(&mut doc, &live.early_command(VoiceCommand::NewLine));
+        assert_eq!(doc, "\n");
+        let rest = live.unsent("换行，接着说");
+        type_into(&mut doc, &live.partial(&rest));
+        type_into(
+            &mut doc,
+            &live.finalize(Output::Text(live.unsent("换行，接着说。"))),
+        );
+        assert_eq!(doc, "\n接着说。");
+    }
+
+    #[test]
+    fn early_delete_is_skipped_after_the_owner_touched_the_keyboard() {
+        let mut live = Live::new(false);
+        let mut doc = String::new();
+        type_into(&mut doc, &live.finalize(Output::Text("第一句。".into())));
+        type_into(&mut doc, &live.partial("删除"));
+        live.user_touched();
+        assert_eq!(live.early_command(VoiceCommand::DeleteLastSentence), []);
     }
 }

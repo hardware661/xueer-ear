@@ -45,6 +45,9 @@ const HOLD_THRESHOLD: Duration = Duration::from_millis(400);
 const QUIET_STOP: Duration = Duration::from_secs(10);
 /// 识别出新字后，波浪保持这么久再变回麦克风
 const WAVE_HOLD: Duration = Duration::from_millis(900);
+/// 单独说一个指令词（删除、撤回、发送……）后停这么久没再出新字，就马上执行，不等静音收句。
+/// 主人 2026-11-16：「撤回和删除的速度…不是特别快，还有发送的速度」——原来要等 3 秒静音
+const COMMAND_SETTLE: Duration = Duration::from_millis(600);
 
 pub struct Hotkey {
     stop: Arc<AtomicBool>,
@@ -272,6 +275,8 @@ fn record(
     let max_listen = Duration::from_secs(u64::from(settings.max_listen_minutes) * 60);
     // 这一句里说话的最大音量和最后的增益，一句说完写一行日志（只记数字，不记内容）
     let (mut loudest, mut last_gain) = (0_u32, 1_f32);
+    // 中间结果正好是一个指令词：（指令, 从什么时候开始没变）
+    let mut pending_command: Option<(xueer_ear_textflow::VoiceCommand, Instant)> = None;
     let result = engine::run_wetype(source, cancel, |event| {
         if stopped.load(Ordering::Acquire) {
             return Ok(());
@@ -303,6 +308,12 @@ fn record(
             } => {
                 loudest = loudest.max(peak);
                 last_gain = gain;
+                if let Some((command, since)) = pending_command {
+                    if since.elapsed() >= COMMAND_SETTLE {
+                        pending_command = None;
+                        send_keys(&live.early_command(command));
+                    }
+                }
                 status.progress(peak, partials, finals);
                 panel.level(peak);
                 if last_text.elapsed() >= WAVE_HOLD {
@@ -333,8 +344,17 @@ fn record(
                 }
                 let text = live.unsent(&speech.text);
                 let keys = if speech.final_result {
+                    pending_command = None;
                     live.finalize(post.finalize(&text, crate::broker::now_ms()))
                 } else {
+                    // 只说了一个指令词：记下来，停一小会儿没再说别的就提前执行
+                    pending_command = match (post.command_only(&text), pending_command) {
+                        (Some(command), Some((old, since))) if old == command => {
+                            Some((command, since))
+                        }
+                        (Some(command), _) => Some((command, Instant::now())),
+                        (None, _) => None,
+                    };
                     live.partial(&text)
                 };
                 typed_any |= keys.iter().any(|k| matches!(k, Key::Text(_)));
