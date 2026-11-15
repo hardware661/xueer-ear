@@ -11,8 +11,14 @@
 - [x] R2 B6 图标：手画 SVG 兽耳（深灰底、白耳、笑脸弧线），PNG 1024 和 ICO 七帧从 SVG 重新生成，16 像素下看过能认出
 - [x] R3 C12 更新检查：核对过，已经查 `hardware661/xueer-ear` 的 Releases（`crates/gui/src/update.rs`），每 6 小时一次，不用改；「上游有新版」提示没做（要加第二个查询地址，放后面）
 - [x] R4 设置：`backend/src/settings.rs` 的 settings.json 加 `text`（TextSettings 六个开关）、`history_enabled`、`history_keep_days`（1～365）；旧文件缺字段自动用默认值；GUI 保存时克隆整份不会丢字段。还没有界面开关，要手改 json
-- [ ] R5 把 textflow 接到定稿文字上屏前、history 接到上屏后（只改出字那一处）
-- [ ] R6 Windows 全量 `cargo test --workspace`
+- [x] R5 新增 `backend/src/postprocess.rs`（只处理定稿；指令先原样上屏；热词文件 ≤256 KiB；历史写失败不影响上屏），WSL 5 个测试过；`winh-host/src/broker.rs` 的 `run` 包了一层 output 回调接入，每次唤起重新读设置和热词，并顺手清过期历史
+- [x] R6 Windows 全量 `tools/win.sh cargo test --workspace`：22 组 117 个测试全过，0 编译警告（2026-11-15）
+
+**第二轮结果**
+- 现状：文字整理和历史记录**已接进 Win+H 出字流程**（只作用于定稿句子）。还没装到主人电脑，**没真机验证**；没推送。
+- 真机要验：Win+H 说"嗯，百分之五十"→ 上屏"50%"；`%LOCALAPPDATA%\XueerEar\history.jsonl` 出现这一句；在 `hotwords.txt` 写一个词再说一次看纠错。边说边出字的中间结果不该被整理。
+- 没做：设置界面上的开关（现在要手改 settings.json）、执行语音指令（要按键）、「上游有新版」提示、C9、C11、B8 提示音、打包安装。
+- 回滚：`git revert` 本轮提交即可；只回退接线就 revert 改 broker.rs 的那个提交。
 
 **这一轮仍不碰**：C9 指纹、C11 键盘钩子 + 模拟键入、Win+H 接管逻辑本身、微信云端协议、打包安装、推送。
 

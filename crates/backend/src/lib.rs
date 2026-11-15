@@ -6,6 +6,7 @@ pub mod check;
 pub mod engine;
 #[cfg(windows)]
 pub mod runtime_account;
+pub mod postprocess;
 pub mod settings;
 pub mod wetype;
 use serde::Deserialize;

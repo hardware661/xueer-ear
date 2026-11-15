@@ -1,0 +1,165 @@
+//! 定稿文字上屏前的整理（textflow）和上屏后的历史记录（history）。
+//!
+//! 只处理定稿（final_result）；边说边改的中间结果原样上屏，免得数字、口癖在中途跳变。
+//! 整句是语音指令（换行、撤销……）时先原样上屏：执行指令要按键，属于 Win+H 接管部分，还没接。
+use crate::settings::Settings;
+use std::path::Path;
+use xueer_ear_history::{Entry, History, Settings as HistorySettings};
+use xueer_ear_protocol::transcript::SpeechEvent;
+use xueer_ear_textflow::{CommandOptions, Hotwords, Options, Output, PunctOptions, process};
+
+/// 热词文件上限，防止误放一个大文件拖慢每句话。
+const MAX_HOTWORDS_BYTES: u64 = 256 * 1024;
+
+pub struct Postprocess {
+    options: Options,
+    history: History,
+}
+
+impl Postprocess {
+    /// `dir` 是数据目录（%LOCALAPPDATA%\XueerEar），里面放 hotwords.txt 和 history.jsonl。
+    pub fn new(settings: &Settings, dir: &Path) -> Self {
+        let text = &settings.text;
+        let options = Options {
+            hotwords: read_hotwords(&dir.join("hotwords.txt")),
+            punct: PunctOptions {
+                drop_final_period: text.drop_final_period,
+                cjk_latin_space: text.cjk_latin_space,
+                fullwidth_punct_in_cjk: text.fullwidth_punct_in_cjk,
+            },
+            commands: CommandOptions {
+                allow_send: text.allow_send,
+            },
+            strip_fillers: text.strip_fillers,
+            normalize_numbers: text.normalize_numbers,
+        };
+        let history = History::new(
+            dir.join("history.jsonl"),
+            HistorySettings {
+                enabled: settings.history_enabled,
+                keep_days: settings.history_keep_days,
+            },
+        );
+        Self { options, history }
+    }
+
+    /// 整理一条识别事件；定稿且非空时写一条历史。历史写失败只打日志，不影响上屏。
+    pub fn apply(&self, event: SpeechEvent, now_ms: u64) -> SpeechEvent {
+        if !event.final_result {
+            return event;
+        }
+        let text = match process(&event.text, &self.options) {
+            Output::Text(text) => text,
+            Output::Command(_) => event.text,
+        };
+        if !text.is_empty() {
+            let entry = Entry {
+                at_ms: now_ms,
+                text: text.clone(),
+                app: String::new(),
+            };
+            if let Err(error) = self.history.append(&entry) {
+                eprintln!("历史记录写入失败：{error}");
+            }
+        }
+        SpeechEvent {
+            final_result: true,
+            text,
+        }
+    }
+
+    /// 启动时调用一次：清掉超过保留天数的历史。
+    pub fn prune_history(&self, now_ms: u64) {
+        if let Err(error) = self.history.prune(now_ms) {
+            eprintln!("历史记录清理失败：{error}");
+        }
+    }
+}
+
+fn read_hotwords(path: &Path) -> Hotwords {
+    let Ok(meta) = std::fs::metadata(path) else {
+        return Hotwords::default();
+    };
+    if meta.len() > MAX_HOTWORDS_BYTES {
+        eprintln!("热词文件超过 256 KiB，已忽略");
+        return Hotwords::default();
+    }
+    match std::fs::read_to_string(path) {
+        Ok(text) => Hotwords::parse(&text),
+        Err(error) => {
+            eprintln!("热词文件读取失败：{error}");
+            Hotwords::default()
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+
+    fn final_event(text: &str) -> SpeechEvent {
+        SpeechEvent {
+            final_result: true,
+            text: text.into(),
+        }
+    }
+
+    fn setup(settings: &Settings) -> (tempfile::TempDir, Postprocess) {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("hotwords.txt"), "雪耳\nNew API\n").unwrap();
+        let p = Postprocess::new(settings, dir.path());
+        (dir, p)
+    }
+
+    #[test]
+    fn final_text_is_cleaned_and_recorded() {
+        let (dir, p) = setup(&Settings::default());
+        let out = p.apply(final_event("嗯，重启new api，雪而百分之五十"), 1_000);
+        assert_eq!(out, final_event("重启New API，雪耳50%"));
+        let history = fs::read_to_string(dir.path().join("history.jsonl")).unwrap();
+        assert!(history.contains("重启New API，雪耳50%"), "{history}");
+    }
+
+    #[test]
+    fn partial_text_passes_through_untouched_and_unrecorded() {
+        let (dir, p) = setup(&Settings::default());
+        let partial = SpeechEvent {
+            final_result: false,
+            text: "嗯，百分之".into(),
+        };
+        assert_eq!(p.apply(partial.clone(), 1_000), partial);
+        assert!(!dir.path().join("history.jsonl").exists());
+    }
+
+    #[test]
+    fn voice_commands_stay_as_spoken_text_for_now() {
+        // 执行指令需要按键，属于 Win+H 接管部分，这里先原样上屏
+        let (_dir, p) = setup(&Settings::default());
+        assert_eq!(p.apply(final_event("换行。"), 1).text, "换行。");
+    }
+
+    #[test]
+    fn switches_off_cleanup_and_history() {
+        let mut settings = Settings::default();
+        settings.text.strip_fillers = false;
+        settings.text.normalize_numbers = false;
+        settings.history_enabled = false;
+        let (dir, p) = setup(&settings);
+        assert_eq!(
+            p.apply(final_event("嗯，百分之五十"), 1).text,
+            "嗯，百分之五十"
+        );
+        assert!(!dir.path().join("history.jsonl").exists());
+    }
+
+    #[test]
+    fn missing_hotword_file_and_empty_finals_are_fine() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = Postprocess::new(&Settings::default(), dir.path());
+        assert_eq!(p.apply(final_event("雪而"), 1).text, "雪而");
+        assert_eq!(p.apply(final_event("嗯。"), 2).text, "");
+        let history = fs::read_to_string(dir.path().join("history.jsonl")).unwrap();
+        assert_eq!(history.lines().count(), 1, "空的定稿不该记历史：{history}");
+    }
+}

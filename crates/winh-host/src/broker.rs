@@ -13,6 +13,7 @@ use std::{
     time::{Duration, Instant},
 };
 use xueer_ear_backend::engine::{self, Event, Source};
+use xueer_ear_backend::{postprocess::Postprocess, settings::Settings};
 use xueer_ear_bridge::ipc::{BridgeError, BridgeEvent, BridgeRequest};
 use windows_sys::Win32::System::Console::SetConsoleCtrlHandler;
 
@@ -61,13 +62,36 @@ impl Backend {
         self,
         source: Source,
         stop: Arc<AtomicBool>,
-        output: impl FnMut(Event) -> Result<()>,
+        mut output: impl FnMut(Event) -> Result<()>,
     ) -> Result<String> {
+        // 定稿文字先过文字整理并记历史，再交给原来的上屏流程
+        let post = postprocess();
+        let output = move |event: Event| match event {
+            Event::Speech(speech) => output(Event::Speech(post.apply(speech, now_ms()))),
+            other => output(other),
+        };
         match self {
             Self::WeType => engine::run_wetype(source, stop, output),
             Self::WeChat => engine::run(install::wechat_pid()?, source, stop, output),
         }
     }
+}
+
+/// 每次唤起 Win+H 重新读设置和热词，改完下次生效（和麦克风、静音时间一致）。
+fn postprocess() -> Postprocess {
+    let settings = Settings::load_default().unwrap_or_default();
+    let dir = std::env::var_os("LOCALAPPDATA")
+        .map(|local| PathBuf::from(local).join("XueerEar"))
+        .unwrap_or_default();
+    let post = Postprocess::new(&settings, &dir);
+    post.prune_history(now_ms());
+    post
+}
+
+fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_millis() as u64)
 }
 
 fn send(output: &Output, event: &BridgeEvent) -> Result<()> {
