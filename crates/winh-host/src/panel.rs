@@ -36,18 +36,20 @@ use windows_sys::Win32::{
 };
 
 /// 面板逻辑尺寸（96 DPI 下的像素）；上面留出猫耳的高度
-const WIDTH: f32 = 112.;
-const HEIGHT: f32 = 92.;
+const WIDTH: f32 = 120.;
+const HEIGHT: f32 = 100.;
 /// 卡片本体从这里开始，上面是耳朵
-const BODY_TOP: f32 = 18.;
+const BODY_TOP: f32 = 24.;
 const REFRESH: u32 = WM_APP + 10;
 const ANIMATE_TIMER: usize = 1;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Look {
     Hidden,
-    /// 蓝色麦克风，随音量起伏
+    /// 蓝色麦克风：在听、还没听到说话
     Listening,
+    /// 听到在说话：中间变成随音量起伏的波浪
+    Speaking,
     /// 正在连接云端
     Connecting,
     /// 灰色麦克风
@@ -242,7 +244,7 @@ impl Window {
                     self.place();
                     self.draw();
                     ShowWindow(self.hwnd, SW_SHOWNOACTIVATE);
-                    if matches!(look, Look::Listening | Look::Connecting) {
+                    if matches!(look, Look::Listening | Look::Speaking | Look::Connecting) {
                         SetTimer(self.hwnd, ANIMATE_TIMER, 33, None);
                     } else {
                         KillTimer(self.hwnd, ANIMATE_TIMER);
@@ -335,7 +337,7 @@ impl Window {
 
     fn target_level(&self) -> f32 {
         match self.look() {
-            Look::Listening => {
+            Look::Listening | Look::Speaking => {
                 let peak = self.shared.level.swap(0, Ordering::Relaxed) as f32;
                 (peak / 6000.).clamp(0., 1.)
             }
@@ -345,7 +347,7 @@ impl Window {
 }
 
 const PANEL_FILL: u32 = 0xf5f3f3f6;
-const PANEL_EDGE: u32 = 0x33000000;
+const INNER_EAR: u32 = 0xfff1d9df;
 const MUTED: u32 = 0xff8e8e93;
 const BLUE: u32 = 0xff0a64d8;
 const HALO: u32 = 0x330a64d8;
@@ -372,79 +374,106 @@ unsafe fn paint_graphics(g: *mut gp::GpGraphics, scale: f32, look: Look, level: 
     unsafe {
         gp::GdipSetSmoothingMode(g, gp::SmoothingModeAntiAlias8x8);
         gp::GdipScaleWorldTransform(g, scale, scale, gp::MatrixOrderPrepend);
-        // 一对猫耳（左上、右上），和卡片同色，先画在下面
-        let ear_fill = PANEL_FILL;
+        let body_h = HEIGHT - BODY_TOP - 6.;
+        // 没有描边，用一圈很淡的影子托住卡片和耳朵（主人：灰边框影响观感）
+        for (grow, alpha) in [(4., 0x04_u32), (2.5, 0x06), (1., 0x09)] {
+            let shadow = alpha << 24;
+            rounded(
+                g,
+                3. - grow,
+                BODY_TOP + 2. - grow / 2.,
+                WIDTH - 6. + grow * 2.,
+                body_h + grow,
+                22. + grow,
+                shadow,
+                false,
+            );
+            cat_ear(
+                g,
+                8. - grow,
+                BODY_TOP + 16.,
+                44. + grow,
+                BODY_TOP + 16.,
+                16.,
+                1. - grow,
+                shadow,
+                0,
+            );
+            cat_ear(
+                g,
+                WIDTH - 44. - grow,
+                BODY_TOP + 16.,
+                WIDTH - 8. + grow,
+                BODY_TOP + 16.,
+                WIDTH - 16.,
+                1. - grow,
+                shadow,
+                0,
+            );
+        }
+        // 一对大一点的猫耳（左上、右上），和卡片连成一体
         cat_ear(
             g,
-            14.,
-            BODY_TOP + 10.,
-            34.,
-            BODY_TOP + 10.,
-            18.,
-            0.,
-            ear_fill,
-            PANEL_EDGE,
-        );
-        cat_ear(
-            g,
-            WIDTH - 34.,
-            BODY_TOP + 10.,
-            WIDTH - 14.,
-            BODY_TOP + 10.,
-            WIDTH - 18.,
-            0.,
-            ear_fill,
-            PANEL_EDGE,
-        );
-        // 卡片：浅色圆角 + 细描边
-        let body_h = HEIGHT - BODY_TOP - 1.;
-        rounded(g, 0.5, BODY_TOP, WIDTH - 1., body_h, 18., PANEL_FILL, false);
-        rounded(g, 0.5, BODY_TOP, WIDTH - 1., body_h, 18., PANEL_EDGE, true);
-        // 盖掉耳朵和卡片交界处的描边，让耳朵看起来是长出来的
-        rounded(g, 12., BODY_TOP + 0.5, 25., 6., 2., PANEL_FILL, false);
-        rounded(
-            g,
-            WIDTH - 37.,
-            BODY_TOP + 0.5,
-            25.,
-            6.,
-            2.,
+            8.,
+            BODY_TOP + 16.,
+            44.,
+            BODY_TOP + 16.,
+            16.,
+            1.,
             PANEL_FILL,
-            false,
+            0,
         );
-        // 内耳一点粉灰
         cat_ear(
             g,
-            19.,
-            BODY_TOP + 4.,
-            30.,
-            BODY_TOP + 4.,
+            WIDTH - 44.,
+            BODY_TOP + 16.,
+            WIDTH - 8.,
+            BODY_TOP + 16.,
+            WIDTH - 16.,
+            1.,
+            PANEL_FILL,
+            0,
+        );
+        rounded(g, 3., BODY_TOP, WIDTH - 6., body_h, 22., PANEL_FILL, false);
+        // 内耳一点粉
+        cat_ear(
+            g,
+            17.,
+            BODY_TOP + 10.,
+            35.,
+            BODY_TOP + 10.,
             20.,
-            7.,
-            0xffe9dfe3,
+            9.,
+            INNER_EAR,
             0,
         );
         cat_ear(
             g,
-            WIDTH - 30.,
-            BODY_TOP + 4.,
-            WIDTH - 19.,
-            BODY_TOP + 4.,
+            WIDTH - 35.,
+            BODY_TOP + 10.,
+            WIDTH - 17.,
+            BODY_TOP + 10.,
             WIDTH - 20.,
-            7.,
-            0xffe9dfe3,
+            9.,
+            INNER_EAR,
             0,
         );
-        // 中间麦克风
+        // 中间：灰=停、蓝麦克风=在听、蓝底波浪=听到在说话
         let (cx, cy) = (WIDTH / 2., BODY_TOP + body_h / 2.);
         match look {
+            Look::Speaking => {
+                let r = 24. + 6. * level;
+                ellipse(g, cx - r, cy - r, r * 2., r * 2., HALO);
+                ellipse(g, cx - 22., cy - 22., 44., 44., BLUE);
+                wave(g, cx, cy, level, phase);
+            }
             Look::Listening | Look::Connecting => {
                 let pulse = if look == Look::Connecting {
                     0.25 + 0.25 * phase.sin().abs()
                 } else {
-                    level
+                    0.
                 };
-                let r = 24. + 7. * pulse;
+                let r = 24. + 6. * pulse;
                 ellipse(g, cx - r, cy - r, r * 2., r * 2., HALO);
                 ellipse(g, cx - 22., cy - 22., 44., 44., BLUE);
                 mic(g, cx - 9., cy - 12., 18., 0xffffffff);
@@ -453,6 +482,19 @@ unsafe fn paint_graphics(g: *mut gp::GpGraphics, scale: f32, look: Look, level: 
                 ellipse(g, cx - 22., cy - 22., 44., 44., GREY_FILL);
                 mic(g, cx - 9., cy - 12., 18., MUTED);
             }
+        }
+    }
+}
+
+/// 说话时的波浪：五根圆头竖条，高度随音量和时间起伏
+unsafe fn wave(g: *mut gp::GpGraphics, cx: f32, cy: f32, level: f32, phase: f32) {
+    unsafe {
+        let shape = [0.45, 0.75, 1.0, 0.75, 0.45];
+        for (i, k) in shape.iter().enumerate() {
+            let wobble = ((phase * 1.7 + i as f32 * 1.1).sin() * 0.5 + 0.5) * 0.6 + 0.4;
+            let h = 5. + 20. * k * (0.25 + 0.75 * level) * wobble;
+            let x = cx + (i as f32 - 2.) * 6.5;
+            line(g, x, cy - h / 2., x, cy + h / 2., 4.4, 0xffffffff);
         }
     }
 }

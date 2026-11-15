@@ -38,6 +38,8 @@ static INJECTING: AtomicBool = AtomicBool::new(false);
 
 /// 按住超过这么久再松开，算「按住说话」，松开就收句；更短的算「点一下」
 const HOLD_THRESHOLD: Duration = Duration::from_millis(400);
+/// 一直没人说话这么久，就自己停止听写（麦克风变灰）
+const QUIET_STOP: Duration = Duration::from_secs(60);
 /// 麦克风灰着这么久没动静，面板自动收起
 const IDLE_HIDE: Duration = Duration::from_secs(10);
 
@@ -208,6 +210,7 @@ fn record(
     let stopped = cancel.clone();
     let mut typed_any = false;
     let started = Instant::now();
+    let mut last_voice = Instant::now();
     let max_listen = Duration::from_secs(u64::from(settings.max_listen_minutes) * 60);
     engine::run_wetype(source, cancel, |event| {
         if stopped.load(Ordering::Acquire) {
@@ -216,13 +219,21 @@ fn record(
         match event {
             // 停顿只是一句说完（定稿上屏），不结束：一直听到主人再点一下、点麦克风、Esc，
             // 或者超过「最长听写时间」（主人 2026-11-15：说着说着停顿一下就断了，要能一直说）
-            Event::Activity("armed")
-            | Event::Activity("recognizing")
-            | Event::Activity("paused") => panel.set(Look::Listening),
+            // 蓝麦克风=在听；听到说话（recognizing）就换成波浪；一句说完（paused）回到蓝麦克风
+            Event::Activity("armed") | Event::Activity("paused") => {
+                last_voice = Instant::now();
+                panel.set(Look::Listening)
+            }
+            Event::Activity("recognizing") => {
+                last_voice = Instant::now();
+                panel.set(Look::Speaking)
+            }
             Event::Activity("connecting") => panel.set(Look::Connecting),
             Event::Progress { peak, .. } => {
                 panel.level(peak);
-                if started.elapsed() >= max_listen {
+                // 到「最长听写时间」，或者一分钟没人说话（主人："本次对话已经结束…怎么样才能让这个弹窗消失"），
+                // 就自己停：麦克风变灰，再过 10 秒面板收起
+                if started.elapsed() >= max_listen || last_voice.elapsed() >= QUIET_STOP {
                     release.store(true, Ordering::Release);
                 }
             }
@@ -306,6 +317,45 @@ fn tap(vk: u16) -> [INPUT; 2] {
     [key(vk, 0, 0), key(vk, 0, KEYEVENTF_KEYUP)]
 }
 
+/// 文字和退格直接给前台窗口里的焦点控件发 WM_CHAR（和终端路径一样）。
+/// SendInput 的 Unicode 方式在 Qt 程序里（微信就是 Qt 5.15）会把每批第一个字认成上一批的
+/// 最后一个字（Qt 把连续的 VK_PACKET 当成同一个键的自动重复，沿用旧字）——2026-11-15 主人在
+/// 微信里看到「。天天气不错」。发不过去（比如管理员窗口）就返回 false，退回 SendInput。
+fn send_chars(units: &[u16]) -> bool {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        GUITHREADINFO, GetGUIThreadInfo, GetWindowThreadProcessId, SMTO_ABORTIFHUNG, SMTO_BLOCK,
+        SendMessageTimeoutW, WM_CHAR,
+    };
+    unsafe {
+        let window = GetForegroundWindow();
+        if window.is_null() {
+            return false;
+        }
+        let thread = GetWindowThreadProcessId(window, std::ptr::null_mut());
+        let mut info: GUITHREADINFO = std::mem::zeroed();
+        info.cbSize = size_of::<GUITHREADINFO>() as u32;
+        if GetGUIThreadInfo(thread, &mut info) == 0 || info.hwndFocus.is_null() {
+            return false;
+        }
+        for &unit in units {
+            let mut result = 0;
+            if SendMessageTimeoutW(
+                info.hwndFocus,
+                WM_CHAR,
+                usize::from(unit),
+                1,
+                SMTO_BLOCK | SMTO_ABORTIFHUNG,
+                250,
+                &mut result,
+            ) == 0
+            {
+                return false;
+            }
+        }
+        true
+    }
+}
+
 fn send_keys(keys: &[Key]) {
     let mut inputs: Vec<INPUT> = Vec::new();
     // 热键可能是 Alt/Ctrl/Shift：先把它们抬起，免得和要键入的字凑成组合键
@@ -315,6 +365,18 @@ fn send_keys(keys: &[Key]) {
         }
     }
     for k in keys {
+        // 文字和退格优先走 WM_CHAR；前面攒着的按键先发出去，保证顺序
+        let chars: Option<Vec<u16>> = match k {
+            Key::Text(text) => Some(text.encode_utf16().collect()),
+            Key::Backspace(count) => Some(vec![8; *count]),
+            _ => None,
+        };
+        if let Some(units) = chars {
+            flush(&mut inputs);
+            if send_chars(&units) {
+                continue;
+            }
+        }
         match k {
             Key::Text(text) => {
                 for unit in text.encode_utf16() {
@@ -340,10 +402,17 @@ fn send_keys(keys: &[Key]) {
             }
         }
     }
+    flush(&mut inputs);
+}
+
+/// 把攒着的 SendInput 按键一次发出去并清空。里面有 Enter 时先立 INJECTING，免得当成主人按的。
+fn flush(inputs: &mut Vec<INPUT>) {
     if inputs.is_empty() {
         return;
     }
-    let has_enter = keys.iter().any(|k| matches!(k, Key::Enter));
+    let has_enter = inputs
+        .iter()
+        .any(|i| unsafe { i.Anonymous.ki.wVk } == VK_RETURN);
     if has_enter {
         INJECTING.store(true, Ordering::Release);
     }
@@ -365,4 +434,5 @@ fn send_keys(keys: &[Key]) {
             inputs.len()
         );
     }
+    inputs.clear();
 }

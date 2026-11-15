@@ -30,7 +30,8 @@ fn main() {
     if args.next().as_deref() == Some("--panel-render") {
         let dir = std::path::PathBuf::from(args.next().unwrap_or_else(|| ".".into()));
         for (name, look, level) in [
-            ("listening", panel::Look::Listening, 0.7),
+            ("listening", panel::Look::Listening, 0.),
+            ("speaking", panel::Look::Speaking, 0.7),
             ("idle", panel::Look::Idle, 0.),
         ] {
             if let Err(e) =
