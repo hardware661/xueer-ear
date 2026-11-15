@@ -138,6 +138,7 @@ pub fn command() -> Result<bool> {
             )
             .join("XueerEar");
             fs::create_dir_all(&root)?;
+            let _ = crate::logfile::trim(&root.join("service.log"), crate::logfile::MAX_BYTES);
             let log = File::options()
                 .create(true)
                 .append(true)

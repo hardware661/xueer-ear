@@ -11,6 +11,8 @@ mod input_guard;
 #[cfg(windows)]
 mod install;
 #[cfg(any(windows, test))]
+mod logfile;
+#[cfg(any(windows, test))]
 mod look;
 #[cfg(windows)]
 mod panel;
