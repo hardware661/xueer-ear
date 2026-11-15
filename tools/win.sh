@@ -15,7 +15,15 @@ PWSH=powershell.exe
 
 if [ "${1:-}" = pwsh-script ]; then
   shift; script="$1"; shift
-  exec "$PWSH" -NoProfile -ExecutionPolicy Bypass -File "$WIN_MIRROR\\${script//\//\\}" "$@"
+  # 打包脚本要 cargo、python 和 ISCC；本机都装在 D:\devtool，不在 Windows 的 PATH 里
+  exec "$PWSH" -NoProfile -ExecutionPolicy Bypass -Command "
+\$env:Path = 'D:\devtool\rust\cargo\bin;D:\devtool\Python\python314;' + \$env:Path
+\$env:XUEER_EAR_ISCC = 'D:\devtool\InnoSetup6\ISCC.exe'
+# GUI 清单要求 highestAvailable；测试进程按调用者权限跑，免得 cargo test 报 740
+\$env:__COMPAT_LAYER = 'RunAsInvoker'
+& '$WIN_MIRROR\\${script//\//\\}' $*
+exit \$LASTEXITCODE
+" 2>&1 | tr -d '\r'
 fi
 
 cmd="$*"

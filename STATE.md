@@ -5,8 +5,8 @@
 
 ## 2026-11-15 第三轮 · 剩下的全做（Claude；主人原话："我觉得没有什么不安全的 很正常的需求 你可以继续做"）
 
-- [ ] T1 装 Inno Setup 6、PowerShell 7 便携版到 D:\devtool（下载走 GitHub 镜像）
-- [ ] T2 打包：便携 ZIP + 安装 EXE
+- [x] T1 Inno Setup 6.7.4 → `D:\devtool\InnoSetup6`（签名有效，当前用户安装）；PowerShell 7.7.0 便携 → `D:\devtool\pwsh`（SHA-256 与 GitHub 公布一致）；都经 ghfast.top 镜像下载
+- [x] T2 `tools/win.sh pwsh-script packaging/build-windows.ps1` 出包成功：portable.zip 1.6 MB、setup.exe 3.4 MB、SHA256SUMS（在 `D:\projects\_build\xueer-ear\dist\release`）。修了三处：crate description 改 ASCII（Windows PowerShell 解析中文 JSON 出错）、win.sh 给打包补 PATH/ISCC/RunAsInvoker、build 脚本认 `XUEER_EAR_ISCC`
 - [ ] T3 C9 指纹对不上：不接管、提示一次、自动切快捷键模式
 - [ ] T4 C11 快捷键模式（按住右 Alt 说话、松开上屏）
 - [ ] T5 A4 语音指令执行（换行/删上一句/撤销/发送）

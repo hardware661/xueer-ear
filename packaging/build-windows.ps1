@@ -66,11 +66,12 @@ try {
     Invoke-Tool 'python' @((Join-Path $PSScriptRoot 'verify_payload.py'), '--zip', $portable, '--version', $version)
 
     $innoCandidates = @(
+        $env:XUEER_EAR_ISCC,
         (Join-Path ${env:ProgramFiles(x86)} 'Inno Setup 6\ISCC.exe'),
         (Join-Path $env:ProgramFiles 'Inno Setup 6\ISCC.exe'),
         (Join-Path $env:LOCALAPPDATA 'Programs\Inno Setup 6\ISCC.exe')
     )
-    $inno = @($innoCandidates | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1)
+    $inno = @($innoCandidates | Where-Object { $_ -and (Test-Path -LiteralPath $_) } | Select-Object -First 1)
     if (-not $inno.Count) { throw 'Inno Setup 6 is absent. No system tools were installed automatically.' }
     Invoke-Tool $inno[0] @('/Qp', "/DAppVersion=$version", "/DStageDir=$stage", "/O$releaseDirectory", (Join-Path $PSScriptRoot 'xueer-ear.iss'))
     $installer = Join-Path $releaseDirectory $installerName

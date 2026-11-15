@@ -3,7 +3,7 @@ name = "xueer-ear-textflow"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "识别文字的后处理：热词、口癖、标点、语音指令、数字、终端拼接。纯函数，不依赖 Windows。"
+description = "Post-processing for recognized text: hotwords, fillers, punctuation, voice commands, numbers, terminal joining."
 
 [dependencies]
 pinyin = "0.11"

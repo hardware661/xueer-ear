@@ -3,7 +3,7 @@ name = "xueer-ear-history"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "本地听写历史：jsonl 追加写、按天数清理、读最近记录。不上传。"
+description = "Local dictation history as JSON lines with day-based pruning."
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }
