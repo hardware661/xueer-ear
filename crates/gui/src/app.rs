@@ -310,11 +310,11 @@ impl App {
             Ok(value) => (value, String::new()),
             Err(error) => (Default::default(), error),
         };
-        let (settings, settings_error) =
-            match xueer_ear_backend::settings::Settings::load_default() {
-                Ok(value) => (value, String::new()),
-                Err(error) => (Default::default(), format!("无法读取设置：{error}")),
-            };
+        let (settings, settings_error) = match xueer_ear_backend::settings::Settings::load_default()
+        {
+            Ok(value) => (value, String::new()),
+            Err(error) => (Default::default(), format!("无法读取设置：{error}")),
+        };
         let module = GetModuleHandleW(ptr::null());
         let mut icon = LoadIconW(module, 100_usize as *const u16);
         if icon.is_null() {
@@ -793,10 +793,7 @@ impl App {
                     self.update_release = None;
                     if manual {
                         self.set_text(UPDATE_TITLE, "当前已是最新版本");
-                        self.set_text(
-                            UPDATE_BODY,
-                            &format!("雪耳 v{}", env!("CARGO_PKG_VERSION")),
-                        );
+                        self.set_text(UPDATE_BODY, &format!("雪耳 v{}", env!("CARGO_PKG_VERSION")));
                         self.update_bubble(true);
                     } else {
                         self.update_bubble(false);
@@ -1093,7 +1090,10 @@ impl App {
             self.fonts[3],
             self.dpi,
         );
-        if matches!(selected, crate::prefs::OPEN_HISTORY | crate::prefs::OPEN_HOTWORDS) {
+        if matches!(
+            selected,
+            crate::prefs::OPEN_HISTORY | crate::prefs::OPEN_HOTWORDS
+        ) {
             let name = if selected == crate::prefs::OPEN_HISTORY {
                 "history.jsonl"
             } else {

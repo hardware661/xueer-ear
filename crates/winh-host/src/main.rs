@@ -2,14 +2,12 @@
 mod broker;
 #[cfg(windows)]
 mod control;
-#[cfg(any(windows, test))]
-mod input_guard;
 #[cfg(windows)]
 mod hotkey;
 #[cfg(any(windows, test))]
 mod hotkey_state;
 #[cfg(any(windows, test))]
-mod typing;
+mod input_guard;
 #[cfg(windows)]
 mod install;
 #[cfg(any(windows, test))]
@@ -20,6 +18,8 @@ mod sound;
 mod status;
 #[cfg(windows)]
 mod terminal;
+#[cfg(any(windows, test))]
+mod typing;
 
 #[cfg(windows)]
 fn main() {

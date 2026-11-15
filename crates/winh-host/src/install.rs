@@ -8,7 +8,6 @@ use std::{
     path::{Path, PathBuf},
     ptr,
 };
-use xueer_ear_bridge::{INSTALL_MAGIC, InstallArgs};
 use windows_sys::Win32::{
     Foundation::{
         CloseHandle, DUPLICATE_SAME_ACCESS, DuplicateHandle, FreeLibrary, HANDLE,
@@ -40,6 +39,7 @@ use windows_sys::Win32::{
         },
     },
 };
+use xueer_ear_bridge::{INSTALL_MAGIC, InstallArgs};
 
 pub type Result<T> = std::result::Result<T, Box<dyn std::error::Error + Send + Sync>>;
 struct Handle(HANDLE);
@@ -257,7 +257,9 @@ fn verify_file(path: &Path, expected: &[&str]) -> Result<()> {
 pub struct Unsupported;
 impl std::fmt::Display for Unsupported {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("系统更新后语音组件变了，雪耳先不接管 Win+H（原生 Win+H 照常可用），请用快捷键说话")
+        f.write_str(
+            "系统更新后语音组件变了，雪耳先不接管 Win+H（原生 Win+H 照常可用），请用快捷键说话",
+        )
     }
 }
 impl std::error::Error for Unsupported {}

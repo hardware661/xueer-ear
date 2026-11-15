@@ -12,6 +12,7 @@ use std::{
     thread::{self, JoinHandle},
     time::{Duration, Instant},
 };
+pub use wetype::run as run_wetype;
 use xueer_ear_audio::{
     activity::{Activity, ActivityEvent},
     encoder::{CHUNK_SAMPLES, FRAME_SAMPLES, OpusStream},
@@ -20,7 +21,6 @@ use xueer_ear_audio::{
 use xueer_ear_protocol::{
     receiver::Receiver as SpeechReceiver, rpc, stream, transcript::SpeechEvent, voice::Profile,
 };
-pub use wetype::run as run_wetype;
 
 pub enum Source {
     Microphone(Option<String>),

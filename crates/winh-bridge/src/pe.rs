@@ -273,11 +273,17 @@ mod tests {
         };
         let bytes = std::fs::read(path).unwrap();
         let hash = format!("{:x}", Sha256::digest(&bytes));
-        assert!(CARBON_HASHES.contains(&hash.as_str()), "unverified CarbonDictation {hash}");
+        assert!(
+            CARBON_HASHES.contains(&hash.as_str()),
+            "unverified CarbonDictation {hash}"
+        );
         // imports() already rejects images that miss a required or add an unknown start/stop.
         let image = imports(&bytes).unwrap();
         assert!(image.imports.iter().all(|i| i.delay_stub_rva.is_some()));
-        for name in ["result_get_text", "recognizer_start_continuous_recognition_async"] {
+        for name in [
+            "result_get_text",
+            "recognizer_start_continuous_recognition_async",
+        ] {
             assert!(image.imports.iter().any(|i| i.name == name));
         }
     }

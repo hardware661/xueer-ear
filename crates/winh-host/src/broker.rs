@@ -12,10 +12,10 @@ use std::{
     thread::{self, JoinHandle},
     time::{Duration, Instant},
 };
+use windows_sys::Win32::System::Console::SetConsoleCtrlHandler;
 use xueer_ear_backend::engine::{self, Event, Source};
 use xueer_ear_backend::{postprocess::Postprocess, settings::Settings};
 use xueer_ear_bridge::ipc::{BridgeError, BridgeEvent, BridgeRequest};
-use windows_sys::Win32::System::Console::SetConsoleCtrlHandler;
 
 static EXIT: AtomicBool = AtomicBool::new(false);
 unsafe extern "system" fn console(_: u32) -> i32 {
@@ -289,11 +289,7 @@ fn start(
 }
 
 /// 指纹对不上时：不接管 Win+H，只开快捷键模式，直到被要求退出。
-fn hotkey_only(
-    control: &crate::control::Control,
-    status: &Status,
-    reason: &str,
-) -> Result<()> {
+fn hotkey_only(control: &crate::control::Control, status: &Status, reason: &str) -> Result<()> {
     eprintln!("{reason}");
     let mut settings = Settings::load_default().unwrap_or_default();
     settings.hotkey_enabled = true;

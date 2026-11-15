@@ -295,7 +295,14 @@ pub unsafe fn background(dc: HDC, dpi: u32, enabled: bool, peak: u32, frame: u64
     c.rounded(348., 476., 32., 30., 6., LINE, true);
     // 文字与历史：三行文字 + 一支笔
     for (i, w) in [14., 10., 12.].iter().enumerate() {
-        c.line(22., 541. + i as f32 * 5., 22. + w, 541. + i as f32 * 5., 1.5, MUTED);
+        c.line(
+            22.,
+            541. + i as f32 * 5.,
+            22. + w,
+            541. + i as f32 * 5.,
+            1.5,
+            MUTED,
+        );
     }
     c.line(33., 556., 39., 545., 1.5, MUTED);
 }
