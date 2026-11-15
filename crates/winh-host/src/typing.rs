@@ -253,24 +253,39 @@ impl Live {
         rest.to_string()
     }
 
-    /// 提前执行过指令的这句：找到正好是指令词的那一小句，去掉它和它前面的部分（前面的已经上屏或发走了）。
-    /// 云端后来常改前面几个字、换标点，所以按小句找，不按前缀对齐；还没找到就当这句全都处理过了。
+    /// 提前执行过指令的这句：去掉指令词和它前面的部分（前面的已经上屏或发走了），只留后面接着说的。
+    /// 按「去掉标点后」找指令词最后一次出现的位置：云端常改前面几个字、换标点，
+    /// 也会把后面的话直接粘在指令词后面（「换行接着说」）。找不到就整句照打，宁可多打也不丢字（审查 R3）。
     fn without_early(&self, text: &str) -> String {
         let Some(word) = self.early.as_deref() else {
             return text.to_string();
         };
-        let mut start = 0;
-        for (i, c) in text.char_indices().chain(Some((text.len(), '。'))) {
-            if !is_punct(c) {
-                continue;
-            }
-            let clause: String = text[start..i].chars().filter(|c| !is_punct(*c)).collect();
-            if clause == word {
-                return text[i..].trim_start_matches(is_punct).to_string();
-            }
-            start = i + c.len_utf8().min(text.len() - i);
+        let word: Vec<char> = word.chars().filter(|c| !is_punct(*c)).collect();
+        if word.is_empty() {
+            return text.to_string();
         }
-        String::new()
+        // 去掉标点后的字，以及每个字在原文里结束的字节位置
+        let letters: Vec<(char, usize)> = text
+            .char_indices()
+            .filter(|(_, c)| !is_punct(*c))
+            .map(|(i, c)| (c, i + c.len_utf8()))
+            .collect();
+        let found = (0..=letters.len().saturating_sub(word.len()))
+            .rev()
+            .find(|&start| {
+                letters.len() >= word.len()
+                    && letters[start..start + word.len()]
+                        .iter()
+                        .map(|(c, _)| *c)
+                        .eq(word.iter().copied())
+            });
+        match found {
+            Some(start) => {
+                let end = letters[start + word.len() - 1].1;
+                text[end..].trim_start_matches(is_punct).to_string()
+            }
+            None => text.to_string(),
+        }
     }
 
     /// 中间结果：退掉上次没说定的部分里变了的字，再补上新的。
@@ -856,5 +871,41 @@ mod tests {
         let rest = live.unsent("第一行。换行。第二行。");
         type_into(&mut doc, &live.finalize(Output::Text(rest)));
         assert_eq!(doc, "第一行，\n第二行。");
+    }
+
+    #[test]
+    fn speech_glued_to_an_early_command_without_punctuation_is_kept() {
+        // 审查 R3：说「换行」停一下已经执行，再说「接着说」，云端合成「换行接着说」（没逗号），后半句全丢
+        let mut live = Live::new(false);
+        let mut doc = String::new();
+        type_into(&mut doc, &live.partial("换行"));
+        type_into(&mut doc, &live.early_command(VoiceCommand::NewLine));
+        for text in ["换行接", "换行接着说"] {
+            let rest = live.unsent(text);
+            type_into(&mut doc, &live.partial(&rest));
+        }
+        let rest = live.unsent("换行接着说。");
+        type_into(&mut doc, &live.finalize(Output::Text(rest)));
+        assert_eq!(doc, "\n接着说。");
+    }
+
+    #[test]
+    fn speech_glued_to_an_early_trailing_command_is_kept() {
+        let mut live = Live::new(true);
+        let mut doc = String::new();
+        type_into(&mut doc, &live.partial("先跑测试，发送"));
+        type_into(
+            &mut doc,
+            &live.early_finish(
+                Output::TextThen("先跑测试，".into(), VoiceCommand::Send),
+                "先跑测试，发送",
+            ),
+        );
+        assert_eq!(doc, "先跑测试，\n");
+        let rest = live.unsent("先跑测试发送以后再提交");
+        type_into(&mut doc, &live.partial(&rest));
+        let rest = live.unsent("先跑测试，发送以后再提交。");
+        type_into(&mut doc, &live.finalize(Output::Text(rest)));
+        assert_eq!(doc, "先跑测试，\n以后再提交。");
     }
 }
