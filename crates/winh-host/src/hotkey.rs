@@ -128,6 +128,7 @@ fn record(release: Arc<AtomicBool>, cancel: Arc<AtomicBool>) -> crate::install::
         release,
     };
     let stopped = cancel.clone();
+    let mut typed_any = false;
     engine::run_wetype(source, cancel, |event| {
         if let Event::Speech(speech) = event {
             if speech.final_result && !stopped.load(Ordering::Acquire) {
@@ -135,11 +136,15 @@ fn record(release: Arc<AtomicBool>, cancel: Arc<AtomicBool>) -> crate::install::
                     Output::Text(text) => typist.text(&text, terminal),
                     Output::Command(command) => typist.command(command, terminal),
                 };
+                typed_any |= !keys.is_empty();
                 send_keys(&keys);
             }
         }
         Ok(())
     })?;
+    if !typed_any && !stopped.load(Ordering::Acquire) {
+        crate::sound::play(crate::sound::Cue::Missed, settings.sounds_enabled);
+    }
     Ok(())
 }
 

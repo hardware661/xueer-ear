@@ -9,7 +9,7 @@ const DAYS: [u32; 4] = [1, 7, 30, 90];
 type Switch = (&'static str, fn(&mut Settings) -> &mut bool);
 
 /// 开关类选项，顺序就是菜单顺序。
-const SWITCHES: [Switch; 8] = [
+const SWITCHES: [Switch; 9] = [
     ("去掉口头禅", |s| &mut s.text.strip_fillers),
     ("中文数字转阿拉伯数字", |s| {
         &mut s.text.normalize_numbers
@@ -23,6 +23,7 @@ const SWITCHES: [Switch; 8] = [
     ("快捷键模式（按住右 Alt）", |s| {
         &mut s.hotkey_enabled
     }),
+    ("提示音", |s| &mut s.sounds_enabled),
     ("记录历史", |s| &mut s.history_enabled),
 ];
 
@@ -79,6 +80,7 @@ mod tests {
         assert!(!find(&c, "去掉末尾句号").1);
         assert!(!find(&c, "说「发送」时按回车").1);
         assert!(find(&c, "快捷键模式（按住右 Alt）").1);
+        assert!(find(&c, "提示音").1);
         assert!(find(&c, "保留 7 天历史").1);
         assert!(!find(&c, "保留 30 天历史").1);
         assert!(c.iter().any(|(id, _, _)| *id == OPEN_HISTORY));

@@ -15,6 +15,8 @@ mod install;
 #[cfg(any(windows, test))]
 mod revision;
 #[cfg(windows)]
+mod sound;
+#[cfg(windows)]
 mod status;
 #[cfg(windows)]
 mod terminal;

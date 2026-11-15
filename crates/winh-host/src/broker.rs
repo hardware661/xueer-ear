@@ -298,6 +298,7 @@ fn hotkey_only(
     let mut settings = Settings::load_default().unwrap_or_default();
     settings.hotkey_enabled = true;
     let hotkey = crate::hotkey::Hotkey::start(&settings);
+    crate::sound::play(crate::sound::Cue::Fallback, settings.sounds_enabled);
     status.error(reason.to_string());
     control.ready();
     let mut heartbeat = Instant::now();

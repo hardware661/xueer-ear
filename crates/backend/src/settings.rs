@@ -25,6 +25,8 @@ pub struct Settings {
     pub hotkey_enabled: bool,
     /// Windows 虚拟键码，默认右 Alt（0xA5）
     pub hotkey_vk: u32,
+    /// 晓晓提示音（没听清、系统更新后退回），本地播放
+    pub sounds_enabled: bool,
 }
 
 impl Default for Settings {
@@ -37,6 +39,7 @@ impl Default for Settings {
             history_keep_days: 7,
             hotkey_enabled: true,
             hotkey_vk: HOTKEY_RIGHT_ALT,
+            sounds_enabled: true,
         }
     }
 }
