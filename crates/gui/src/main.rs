@@ -4,6 +4,8 @@ mod app;
 #[cfg(windows)]
 mod menu;
 mod model;
+#[cfg(any(windows, test))]
+mod prefs;
 mod update;
 #[cfg(windows)]
 mod view;

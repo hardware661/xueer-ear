@@ -9,11 +9,12 @@ use windows_sys::Win32::{
 pub const BACKGROUND: u32 = 0x00fffcfa;
 pub const WIDTH: i32 = 400;
 pub const HEADER: i32 = 42;
-pub const HEIGHT: i32 = 530;
+pub const HEIGHT: i32 = 588;
 pub fn body_y(y: i32) -> i32 {
     y
 }
-const GREEN: u32 = 0xff08ad70;
+// 主色：深灰（雪耳黑白灰，原来是绿色）
+const GREEN: u32 = 0xff2c2c2e;
 const LINE: u32 = 0xffe5eaf0;
 const MUTED: u32 = 0xff657388;
 
@@ -209,7 +210,7 @@ pub unsafe fn background(dc: HDC, dpi: u32, enabled: bool, peak: u32, frame: u64
         58.,
         100.,
         100.,
-        if enabled { 0xffedf8f3 } else { 0xfff0f3f7 },
+        if enabled { 0xffe8e8ed } else { 0xfff0f3f7 },
     );
     c.ellipse(162., 70., 76., 76., accent);
     c.rounded(193., 86., 14., 28., 7., 0xffffffff, false);
@@ -239,7 +240,7 @@ pub unsafe fn background(dc: HDC, dpi: u32, enabled: bool, peak: u32, frame: u64
             false,
         );
     }
-    for y in [230., 288., 346., 404., 462.] {
+    for y in [230., 288., 346., 404., 462., 520.] {
         c.line(20., y, 380., y, 1., LINE);
     }
     // Service, source, microphone, silence and keyboard row glyphs.
@@ -292,6 +293,11 @@ pub unsafe fn background(dc: HDC, dpi: u32, enabled: bool, peak: u32, frame: u64
         c.polygon(&points, 0xff273548, false);
     }
     c.rounded(348., 476., 32., 30., 6., LINE, true);
+    // 文字与历史：三行文字 + 一支笔
+    for (i, w) in [14., 10., 12.].iter().enumerate() {
+        c.line(22., 541. + i as f32 * 5., 22. + w, 541. + i as f32 * 5., 1.5, MUTED);
+    }
+    c.line(33., 556., 39., 545., 1.5, MUTED);
 }
 
 pub unsafe fn value_button(dc: HDC, dpi: u32, width: i32, height: i32, pressed: bool) {
@@ -330,7 +336,7 @@ pub unsafe fn menu_row(dc: HDC, dpi: u32, rect: &RECT, hover: bool, checked: boo
             w - 6.,
             h - 4.,
             5.,
-            if hover { 0xffedf3f6 } else { 0xffeef8f2 },
+            if hover { 0xffedf3f6 } else { 0xfff2f2f7 },
             false,
         );
     }
@@ -409,9 +415,9 @@ pub unsafe fn button(
         );
     } else {
         let fill = if pressed {
-            0xffd7eee2
+            0xffdcdce1
         } else if selected {
-            0xffe7f6ee
+            0xffe8e8ed
         } else {
             0xfff0f3f7
         };
@@ -422,7 +428,7 @@ pub unsafe fn button(
             w - 1.,
             h - 1.,
             6.,
-            if selected { 0xffa7d9be } else { LINE },
+            if selected { 0xffaeaeb2 } else { LINE },
             true,
         );
     }

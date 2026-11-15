@@ -63,9 +63,42 @@ const LABEL_SILENCE_VALUE: usize = 217;
 const LABEL_WIN: usize = 218;
 const LABEL_PLUS: usize = 219;
 const LABEL_H: usize = 220;
-const GREEN: u32 = 0x00447916;
+const LABEL_TEXT: usize = 224;
+const LABEL_TEXT_VALUE: usize = 225;
+// COLORREF 是 BGR；深灰，和 view 的主色一致
+const GREEN: u32 = 0x002e2c2c;
 const INK: u32 = 0x00251e18;
 const MUTED: u32 = 0x00776d65;
+
+/// 用记事本打开数据目录里的文件；热词表不存在时先建一个带说明的空表，历史不存在就提示。
+unsafe fn open_data_file(name: &str) -> Result<(), String> {
+    let local = std::env::var_os("LOCALAPPDATA").ok_or("LOCALAPPDATA 不可用")?;
+    let dir = std::path::PathBuf::from(local).join("XueerEar");
+    let path = dir.join(name);
+    if !path.exists() {
+        if name != "hotwords.txt" {
+            return Err("还没有历史记录".to_owned());
+        }
+        std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+        std::fs::write(
+            &path,
+            "# 雪耳热词表：一行一个词，读音像的识别结果会改成这个词。# 开头是注释。\r\n",
+        )
+        .map_err(|e| e.to_string())?;
+    }
+    let result = ShellExecuteW(
+        ptr::null_mut(),
+        wide("open").as_ptr(),
+        wide("notepad.exe").as_ptr(),
+        wide(&format!("\"{}\"", path.display())).as_ptr(),
+        ptr::null(),
+        SW_SHOWNORMAL,
+    );
+    if result as isize <= 32 {
+        return Err(format!("无法打开 {name}"));
+    }
+    Ok(())
+}
 
 fn wide(value: &str) -> Vec<u16> {
     value.encode_utf16().chain(Some(0)).collect()
@@ -371,6 +404,7 @@ impl App {
             (LABEL_MIC_TITLE, "麦克风"),
             (LABEL_SILENCE, "静音收句"),
             (LABEL_SHORTCUT, "唤起快捷键"),
+            (LABEL_TEXT, "文字与历史"),
             (LABEL_PLUS, "+"),
             (LABEL_H, "H"),
             (UPDATE_TITLE, ""),
@@ -387,6 +421,7 @@ impl App {
             (GITHUB, "GitHub · hardware661", BS_OWNERDRAW),
             (LABEL_MIC_VALUE, "系统默认", BS_OWNERDRAW),
             (LABEL_SILENCE_VALUE, "3 秒", BS_OWNERDRAW),
+            (LABEL_TEXT_VALUE, "设置", BS_OWNERDRAW),
             (UPDATE_DOWNLOAD, "下载更新", BS_OWNERDRAW),
             (UPDATE_SKIP, "跳过此版本", BS_OWNERDRAW),
             (UPDATE_CLOSE, "关闭更新提示", BS_OWNERDRAW),
@@ -473,6 +508,8 @@ impl App {
             (LABEL_SHORTCUT, 52, 481, 180, 22, 0),
             (LABEL_PLUS, 326, 480, 18, 22, 3),
             (LABEL_H, 352, 480, 24, 22, 3),
+            (LABEL_TEXT, 52, 539, 130, 22, 0),
+            (LABEL_TEXT_VALUE, 264, 531, 116, 36, 3),
             (UPDATE_TITLE, 28, 107, 216, 22, 4),
             (UPDATE_BODY, 28, 134, 216, 18, 1),
             (UPDATE_DOWNLOAD, 28, 164, 85, 30, 3),
@@ -947,6 +984,7 @@ impl App {
             2 if self.update_visible => self.dismiss_update(false),
             LABEL_MIC_VALUE => self.settings_menu(true),
             LABEL_SILENCE_VALUE => self.settings_menu(false),
+            LABEL_TEXT_VALUE => self.text_menu(),
             EXIT => self.begin(Action::Exit),
             _ => {}
         }
@@ -1043,6 +1081,43 @@ impl App {
         self.refresh();
     }
 
+    /// 文字整理开关、快捷键模式、历史天数；也能打开历史记录和热词表。改完下次说话生效。
+    unsafe fn text_menu(&mut self) {
+        let mut rect = mem::zeroed();
+        GetWindowRect(self.control(LABEL_TEXT_VALUE), &mut rect);
+        let selected = crate::menu::popup(
+            self.hwnd,
+            rect.left,
+            rect.bottom + scale(4, self.dpi),
+            &crate::prefs::choices(&self.settings),
+            self.fonts[3],
+            self.dpi,
+        );
+        if matches!(selected, crate::prefs::OPEN_HISTORY | crate::prefs::OPEN_HOTWORDS) {
+            let name = if selected == crate::prefs::OPEN_HISTORY {
+                "history.jsonl"
+            } else {
+                "hotwords.txt"
+            };
+            if let Err(error) = open_data_file(name) {
+                self.command_error = error;
+                self.refresh();
+            }
+            return;
+        }
+        let Some(candidate) = crate::prefs::toggle(&self.settings, selected) else {
+            return;
+        };
+        match candidate.save_default() {
+            Ok(()) => {
+                self.settings = candidate;
+                self.command_error.clear();
+            }
+            Err(error) => self.command_error = format!("无法保存设置：{error}"),
+        }
+        self.refresh();
+    }
+
     unsafe fn draw_button(&self, draw: &DRAWITEMSTRUCT) {
         let width = draw.rcItem.right - draw.rcItem.left;
         let height = draw.rcItem.bottom - draw.rcItem.top;
@@ -1106,7 +1181,10 @@ impl App {
             view::close_glyph(draw.hDC, self.dpi, draw.rcItem.right, draw.rcItem.bottom);
             return;
         }
-        if matches!(draw.CtlID as usize, LABEL_MIC_VALUE | LABEL_SILENCE_VALUE) {
+        if matches!(
+            draw.CtlID as usize,
+            LABEL_MIC_VALUE | LABEL_SILENCE_VALUE | LABEL_TEXT_VALUE
+        ) {
             view::value_button(
                 draw.hDC,
                 self.dpi,
@@ -1401,8 +1479,10 @@ unsafe extern "system" fn procedure(
                     LABEL_MIC_TITLE,
                     LABEL_SILENCE,
                     LABEL_SHORTCUT,
+                    LABEL_TEXT,
                     LABEL_MIC_VALUE,
                     LABEL_SILENCE_VALUE,
+                    LABEL_TEXT_VALUE,
                     LABEL_WIN,
                     LABEL_PLUS,
                     LABEL_H,
@@ -1438,6 +1518,7 @@ unsafe extern "system" fn procedure(
                 UPDATE_CLOSE,
                 LABEL_MIC_VALUE,
                 LABEL_SILENCE_VALUE,
+                LABEL_TEXT_VALUE,
             ]
             .contains(&(draw.CtlID as usize))
             {

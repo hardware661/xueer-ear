@@ -10,7 +10,7 @@
 - [x] T3 C9：`install.rs` 指纹/路径对不上返回 `Unsupported`；`broker` 认出后不接管 Win+H，只开快捷键模式，状态栏显示原因（原生 Win+H 照常）
 - [x] T4 C11：`hotkey.rs`（只轮询热键状态，不装全局钩子；SendInput Unicode 键入）+ `hotkey_state.rs`（误触 <300ms、组合键取消）+ 音源 `MicrophoneHold`（松开后这句正常收尾）。设置 `hotkey_enabled`（默认开）、`hotkey_vk`（默认右 Alt 0xA5，只允许 F 键/修饰键/CapsLock/ScrollLock）
 - [x] T5 A4：快捷键路径执行指令（`typing.rs`：终端换行用 Shift+Enter、删上一句按字数退格、发送默认关）；Win+H 路径仍原样上屏（那条路的上屏由系统输入面板负责）。Windows 全量 129 个测试通过
-- [ ] T6 设置界面：文字整理开关、历史天数、历史查看
+- [x] T6 控制面板加「文字与历史」一行（`gui/src/prefs.rs` 菜单逻辑 4 个测试）：6 个文字开关、快捷键模式、记录历史、保留 1/7/30/90 天、用记事本打开历史和热词表。窗口高 530→588；主色从绿换成深灰（B6）。截图看过布局；菜单弹出要真机点
 - [ ] T7 B8 晓晓提示音
 - [ ] T8 装到主人电脑 + 自启动；请主人真机验收
 - [ ] T9 nav 登记、公开仓推送和首个 Release（每步先问）
