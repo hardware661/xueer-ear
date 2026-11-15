@@ -13,9 +13,20 @@ pub struct Deferred {
 }
 impl Deferred {
     pub fn push(&mut self, text: &str, final_result: bool) -> Result<(), &'static str> {
-        if text.len() > 16_384 || text.chars().any(char::is_control) {
+        if text.len() > 16_384 {
             return Err("终端听写文字无效");
         }
+        // 云端偶尔带换行等控制字符：换成空格照常上屏，不整次放弃（2026-11-15 真机遇到）
+        let cleaned: String;
+        let text = if text.chars().any(char::is_control) {
+            cleaned = text
+                .chars()
+                .map(|c| if c.is_control() { ' ' } else { c })
+                .collect();
+            cleaned.as_str()
+        } else {
+            text
+        };
         if !final_result && self.items.back().is_some_and(|item| !item.final_result) {
             self.bytes -= self.items.pop_back().unwrap().text.len();
         }
@@ -104,6 +115,13 @@ mod tests {
         document.push_str(&update.insert);
         state.accept(update);
     }
+    #[test]
+    fn control_characters_become_spaces_instead_of_failing() {
+        let mut deferred = Deferred::default();
+        deferred.push("第一行\n第二行\t好", true).unwrap();
+        assert_eq!(deferred.pop().unwrap().text, "第一行 第二行 好");
+    }
+
     #[test]
     fn revises_chinese_number_without_touching_existing_input_or_duplicating_final() {
         let mut r = Revision::default();

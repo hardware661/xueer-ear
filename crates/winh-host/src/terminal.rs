@@ -36,6 +36,24 @@ use windows_sys::Win32::{
 };
 
 static OTHER_INPUT: AtomicU64 = AtomicU64::new(0);
+/// 最近一次被算作「手动输入」的来源，写日志用：高 32 位种类（1 键盘钩子、2 鼠标钩子、3 原始键盘、4 原始鼠标、5 原始输入读取失败），低 32 位键码或鼠标标志
+static LAST_INTERRUPT: AtomicU64 = AtomicU64::new(0);
+fn interrupted(kind: u64, detail: u32) {
+    LAST_INTERRUPT.store(kind << 32 | u64::from(detail), Ordering::Release);
+    OTHER_INPUT.fetch_add(1, Ordering::Release);
+}
+pub fn last_interrupt() -> String {
+    let value = LAST_INTERRUPT.load(Ordering::Acquire);
+    let kind = match value >> 32 {
+        1 => "键盘",
+        2 => "鼠标",
+        3 => "原始键盘",
+        4 => "原始鼠标",
+        5 => "原始输入读取失败",
+        _ => "未知",
+    };
+    format!("{kind} {:#x}", value & 0xffff_ffff)
+}
 static WATCHING: AtomicBool = AtomicBool::new(false);
 static LAST_ALLOWED: AtomicU32 = AtomicU32::new(0);
 static PREVIOUS_ALLOWED: AtomicU32 = AtomicU32::new(0);
@@ -83,23 +101,25 @@ unsafe extern "system" fn raw_input(
             )
         };
         let interrupt = if count == u32::MAX {
-            true
+            Some((5, 0))
         } else if input.header.dwType == RIM_TYPEKEYBOARD {
             let key = unsafe { input.data.keyboard };
-            key.Flags & 1 == 0 && !stop_chord(u32::from(key.VKey))
+            (key.Flags & 1 == 0 && !stop_chord(u32::from(key.VKey)))
+                .then_some((3, u32::from(key.VKey)))
         } else if input.header.dwType == RIM_TYPEMOUSE {
             let flags = unsafe { input.data.mouse.Anonymous.Anonymous.usButtonFlags };
             let editing = flags & 0x0D55 != 0;
-            editing
+            (editing
                 && !MOUSE_PERMITS
                     .lock()
                     .unwrap_or_else(|e| e.into_inner())
-                    .consume(unsafe { GetMessageTime() } as u32, flags & 0x0D55)
+                    .consume(unsafe { GetMessageTime() } as u32, flags & 0x0D55))
+            .then_some((4, u32::from(flags)))
         } else {
-            true
+            Some((5, input.header.dwType))
         };
-        if interrupt {
-            OTHER_INPUT.fetch_add(1, Ordering::Release);
+        if let Some((kind, detail)) = interrupt {
+            interrupted(kind, detail);
         }
     }
     unsafe { DefWindowProcW(window, message, wp, lp) }
@@ -126,7 +146,7 @@ unsafe extern "system" fn keyboard(code: i32, wp: usize, lp: isize) -> isize {
                 GetAsyncKeyState(VK_LWIN as i32) < 0 || GetAsyncKeyState(VK_RWIN as i32) < 0
             };
         if matches!(wp as u32, WM_KEYDOWN | WM_SYSKEYDOWN) && !win && !stop_shortcut {
-            OTHER_INPUT.fetch_add(1, Ordering::Release);
+            interrupted(1, event.vkCode);
         } else {
             allowed(event.time);
         }
@@ -174,7 +194,7 @@ unsafe extern "system" fn mouse(code: i32, wp: usize, lp: isize) -> isize {
                 | WM_MOUSEHWHEEL
         ) && !panel
         {
-            OTHER_INPUT.fetch_add(1, Ordering::Release);
+            interrupted(2, wp as u32);
         } else {
             allowed(event.time);
         }

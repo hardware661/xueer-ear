@@ -105,6 +105,7 @@ fn send(output: &Output, event: &BridgeEvent) -> Result<()> {
 }
 
 struct Active {
+    since: Instant,
     reco: u64,
     generation: u64,
     stop: Arc<AtomicBool>,
@@ -272,7 +273,12 @@ fn start(
             );
         } else {
             if let Err(error) = result {
-                println!("正常结束[{generation}] {error}");
+                // 带上触发来源和已听了几秒，方便对照「说着说着就停了」
+                println!(
+                    "正常结束[{generation}] {error}（来源 {}，{:.1} 秒）",
+                    crate::terminal::last_interrupt(),
+                    started.elapsed().as_secs_f32()
+                );
             }
             status.phase("ready");
         }
@@ -280,6 +286,7 @@ fn start(
         let _ = send(&output, &BridgeEvent::Stopped { reco, generation });
     });
     Active {
+        since: Instant::now(),
         reco,
         generation,
         stop,
@@ -487,7 +494,10 @@ pub fn run() -> Result<()> {
                 BridgeRequest::Stop {
                     reco, generation, ..
                 } => {
-                    println!("停止[{generation}]");
+                    let heard = active
+                        .as_ref()
+                        .map_or(0.0, |a| a.since.elapsed().as_secs_f32());
+                    println!("停止[{generation}] 面板要求停止（本轮 {heard:.1} 秒）");
                     if let Some(active) = active
                         .as_ref()
                         .filter(|a| a.reco == reco && a.generation == generation)
