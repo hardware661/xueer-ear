@@ -16,6 +16,8 @@ tools/win.sh cargo test --workspace                     # 全量，走 Windows �
 tools/win.sh pwsh-script packaging/build-windows.ps1    # 打包
 ```
 
+核对外观不要在屏幕上弹窗，用离屏渲染出 PNG 再看：`xueer-ear-host.exe --panel-render <目录>`（听写面板四种样子）、`xueer-ear.exe --snapshot <目录>`（控制面板和添加热词对话框）。
+
 发布与回滚：无线上部署；GitHub 公开仓推送、打标签、发 Release 每次先问主人。
 
 ## 分层
