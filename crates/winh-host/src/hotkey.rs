@@ -353,7 +353,7 @@ fn record(
                 let text = live.unsent(&speech.text);
                 let keys = if speech.final_result {
                     pending_command = None;
-                    live.finalize(post.finalize(&text, crate::broker::now_ms()))
+                    live.finalize_from(&text, post.finalize(&text, crate::broker::now_ms()))
                 } else {
                     // 整句只有指令词，或者句尾单独一小句是指令（「今天吃什么，发送」）：
                     // 记下来，停一小会儿没再说别的就提前执行

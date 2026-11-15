@@ -321,8 +321,18 @@ impl Live {
 
     /// 定稿：把屏幕上没说定的那一截整个换成整理后的文字，或者擦掉后执行指令。
     pub fn finalize(&mut self, output: Output) -> Vec<Key> {
+        let raw = match &output {
+            Output::Text(text) | Output::TextThen(text, _) => text.clone(),
+            Output::Command(_) => String::new(),
+        };
+        self.finalize_from(&raw, output)
+    }
+
+    /// 同上，带上云端给的原话 `raw`（整理前）。主人中途动过键盘鼠标时，屏幕上是原话，
+    /// 只能按原话的字数往后接，不能拿整理后的文字对齐（「百分之五十」整理成「50%」后字数变了，审查 R5）。
+    pub fn finalize_from(&mut self, raw: &str, output: Output) -> Vec<Key> {
         if self.frozen.is_some() {
-            return self.finalize_frozen(output);
+            return self.finalize_frozen(raw, output);
         }
         let erase = self.revision.pending_graphemes();
         self.revision.clear();
@@ -346,18 +356,28 @@ impl Live {
         keys
     }
 
-    /// 冻结状态下的定稿：不退格、不替换。文字只补还没上屏的尾巴；会删东西的指令不执行。
-    fn finalize_frozen(&mut self, output: Output) -> Vec<Key> {
+    /// 冻结状态下的定稿：不退格、不替换，按原话补上还没上屏的尾巴；会删东西的指令不执行。
+    fn finalize_frozen(&mut self, raw: &str, output: Output) -> Vec<Key> {
         let keys = match output {
-            Output::Text(text) | Output::TextThen(text, _) => {
-                let text = self.separated(&clean(&text));
+            Output::Text(_) => {
+                let text = self.separated(&clean(raw));
                 self.append_only(&text)
             }
-            Output::Command(VoiceCommand::NewLine) => {
-                self.typist.command(VoiceCommand::NewLine, self.terminal)
+            Output::TextThen(_, command) => {
+                // 原话去掉句尾那一小句指令
+                let body = raw.trim_end_matches(is_punct);
+                let cut = body.rfind(is_punct).map_or(0, |i| {
+                    i + body[i..].chars().next().map_or(0, char::len_utf8)
+                });
+                let text = self.separated(&clean(&raw[..cut]));
+                let mut keys = self.append_only(&text);
+                if matches!(command, VoiceCommand::NewLine | VoiceCommand::Send) {
+                    keys.extend(self.typist.command(command, self.terminal));
+                }
+                keys
             }
-            Output::Command(VoiceCommand::Send) => {
-                self.typist.command(VoiceCommand::Send, self.terminal)
+            Output::Command(command @ (VoiceCommand::NewLine | VoiceCommand::Send)) => {
+                self.typist.command(command, self.terminal)
             }
             Output::Command(_) => vec![],
         };
@@ -907,5 +927,39 @@ mod tests {
         let rest = live.unsent("先跑测试，发送以后再提交。");
         type_into(&mut doc, &live.finalize(Output::Text(rest)));
         assert_eq!(doc, "先跑测试，\n以后再提交。");
+    }
+
+    #[test]
+    fn frozen_sentence_keeps_words_when_the_final_text_was_tidied() {
+        // 审查 R5：屏幕上是原话「我有百分之五十的」，中途点了鼠标；定稿整理成「我有50%的把握。」，
+        // 按字数对齐只补了「。」，「把握」丢了
+        let mut live = Live::new(false);
+        let mut doc = String::new();
+        type_into(&mut doc, &live.partial("我有百分之五十的"));
+        live.user_touched();
+        type_into(
+            &mut doc,
+            &live.finalize_from(
+                "我有百分之五十的把握。",
+                Output::Text("我有50%的把握。".into()),
+            ),
+        );
+        assert_eq!(doc, "我有百分之五十的把握。");
+    }
+
+    #[test]
+    fn frozen_sentence_still_runs_a_trailing_newline() {
+        let mut live = Live::new(false);
+        let mut doc = String::new();
+        type_into(&mut doc, &live.partial("第一行"));
+        live.user_touched();
+        type_into(
+            &mut doc,
+            &live.finalize_from(
+                "第一行，换行",
+                Output::TextThen("第一行，".into(), VoiceCommand::NewLine),
+            ),
+        );
+        assert_eq!(doc, "第一行，\n");
     }
 }
