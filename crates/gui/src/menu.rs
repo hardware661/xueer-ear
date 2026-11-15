@@ -12,6 +12,8 @@ struct Item {
     font: HFONT,
     dpi: u32,
     checked: bool,
+    /// 命令号 0 且没有文字的项画成一条细线
+    separator: bool,
 }
 fn scale(value: i32, dpi: u32) -> i32 {
     (value * dpi as i32 + 48) / 96
@@ -37,6 +39,7 @@ pub unsafe fn popup(
                 font,
                 dpi,
                 checked: *checked,
+                separator: text.is_empty(),
             })
         })
         .collect::<Vec<_>>();
@@ -44,7 +47,11 @@ pub unsafe fn popup(
         let mut info: MENUITEMINFOW = mem::zeroed();
         info.cbSize = mem::size_of::<MENUITEMINFOW>() as u32;
         info.fMask = MIIM_FTYPE | MIIM_ID | MIIM_DATA | MIIM_STRING | MIIM_STATE;
-        info.fType = MFT_OWNERDRAW;
+        info.fType = if item.separator {
+            MFT_OWNERDRAW | MFT_SEPARATOR
+        } else {
+            MFT_OWNERDRAW
+        };
         info.wID = *id as u32;
         info.fState = if *checked { MFS_CHECKED } else { MFS_UNCHECKED };
         info.dwItemData = (&**item as *const Item) as usize;
@@ -72,6 +79,11 @@ pub unsafe fn measure(hwnd: HWND, value: *mut MEASUREITEMSTRUCT) -> bool {
         return false;
     }
     let item = &*(value.itemData as *const Item);
+    if item.separator {
+        value.itemHeight = scale(9, item.dpi) as u32;
+        value.itemWidth = scale(170, item.dpi) as u32;
+        return true;
+    }
     let dc = GetDC(hwnd);
     let previous = SelectObject(dc, item.font);
     let mut size = mem::zeroed();
@@ -98,6 +110,19 @@ pub unsafe fn draw(value: &DRAWITEMSTRUCT) -> bool {
     let brush = CreateSolidBrush(0x00fdfdfd);
     FillRect(value.hDC, &value.rcItem, brush);
     DeleteObject(brush);
+    if item.separator {
+        let line = CreateSolidBrush(0x00f0eae5);
+        let middle = (value.rcItem.top + value.rcItem.bottom) / 2;
+        let rect = windows_sys::Win32::Foundation::RECT {
+            left: value.rcItem.left + scale(12, item.dpi),
+            top: middle,
+            right: value.rcItem.right - scale(12, item.dpi),
+            bottom: middle + 1,
+        };
+        FillRect(value.hDC, &rect, line);
+        DeleteObject(line);
+        return true;
+    }
     crate::view::menu_row(value.hDC, item.dpi, &value.rcItem, selected, item.checked);
     SetBkMode(value.hDC, TRANSPARENT as i32);
     SetTextColor(value.hDC, 0x00382f27);

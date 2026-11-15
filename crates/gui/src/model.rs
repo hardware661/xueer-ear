@@ -24,15 +24,6 @@ pub struct Status {
 }
 
 impl Status {
-    pub fn backend_label(&self) -> &'static str {
-        match self.backend.as_str() {
-            "wetype" => "输入法识别",
-            "wechat" => "微信识别",
-            "windows" => "Windows 原生",
-            _ => "识别",
-        }
-    }
-
     pub fn read(path: &Path) -> Result<Self, String> {
         let file = File::open(path).map_err(|e| e.to_string())?;
         if file.metadata().map_err(|e| e.to_string())?.len() > MAX_STATUS_BYTES {
@@ -54,11 +45,7 @@ impl Status {
 
     pub fn headline(&self, now_ms: u64, alive: bool, ready: bool) -> &'static str {
         if self.backend == "windows" || self.phase == "stopped" {
-            return if ready {
-                "等待状态"
-            } else {
-                "Windows 原生"
-            };
+            return if ready { "等待状态" } else { "未开启" };
         }
         if self.phase == "error" {
             return "出现错误";
@@ -103,7 +90,6 @@ mod tests {
             ..Status::default()
         };
         assert_eq!(status.headline(2000, true, true), "识别中");
-        assert_eq!(status.backend_label(), "输入法识别");
         assert_eq!(status.headline(2000, false, true), "服务未就绪");
         assert_eq!(status.headline(2000, true, false), "服务未就绪");
         assert_eq!(status.headline(16_001, true, true), "状态未更新");
@@ -111,9 +97,10 @@ mod tests {
         assert_eq!(status.headline(2000, true, true), "静音暂停");
         status.phase = "reconnecting".into();
         assert_eq!(status.headline(2000, true, true), "正在重连");
+        status.phase = "error".into();
+        assert_eq!(status.headline(2000, true, true), "出现错误");
         status.backend = "windows".into();
-        assert_eq!(status.backend_label(), "Windows 原生");
-        assert_eq!(status.headline(100_000, false, false), "Windows 原生");
+        assert_eq!(status.headline(100_000, false, false), "未开启");
         assert_eq!(status.headline(100_000, true, true), "等待状态");
     }
 
@@ -123,7 +110,7 @@ mod tests {
             std::env::temp_dir().join(format!("wechat-gui-status-{}.json", std::process::id()));
         std::fs::write(&path, r#"{"backend":"wechat","phase":"armed","microphone":"Test microphone","peak":21218,"partials":2,"finals":1,"last_error":"","pid":42,"updated_ms":123}"#).unwrap();
         let status = Status::read(&path).unwrap();
-        assert_eq!(status.backend_label(), "微信识别");
+        assert_eq!(status.backend, "wechat");
         assert_eq!(status.microphone, "Test microphone");
         assert_eq!(status.pid, 42);
         assert_eq!(status.peak, 21_218);

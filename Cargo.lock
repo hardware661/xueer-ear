@@ -1007,6 +1007,8 @@ dependencies = [
  "windows-sys 0.61.2",
  "xueer-ear-audio",
  "xueer-ear-backend",
+ "xueer-ear-history",
+ "xueer-ear-textflow",
 ]
 
 [[package]]

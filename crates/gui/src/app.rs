@@ -54,37 +54,51 @@ const APP_TITLE: usize = 221;
 const LABEL_STATUS: usize = 203;
 const LABEL_ERROR: usize = 206;
 const LABEL_SERVICE: usize = 208;
-const LABEL_SOURCE: usize = 209;
 const LABEL_MIC_TITLE: usize = 210;
 const LABEL_SILENCE: usize = 211;
-const LABEL_SHORTCUT: usize = 212;
+const LABEL_HOTKEY: usize = 212;
 const LABEL_MIC_VALUE: usize = 216;
 const LABEL_SILENCE_VALUE: usize = 217;
-const LABEL_WIN: usize = 218;
-const LABEL_PLUS: usize = 219;
-const LABEL_H: usize = 220;
 const LABEL_TEXT: usize = 224;
 const LABEL_TEXT_VALUE: usize = 225;
+const LABEL_HOTKEY_VALUE: usize = 226;
+const LABEL_HOTWORDS: usize = 227;
+const LABEL_HOTWORDS_VALUE: usize = 228;
+const LABEL_HISTORY: usize = 229;
+const LABEL_HISTORY_VALUE: usize = 230;
+/// 右边带小箭头、点了出菜单的那几个按钮
+const VALUE_BUTTONS: [usize; 6] = [
+    LABEL_HOTKEY_VALUE,
+    LABEL_MIC_VALUE,
+    LABEL_SILENCE_VALUE,
+    LABEL_HOTWORDS_VALUE,
+    LABEL_HISTORY_VALUE,
+    LABEL_TEXT_VALUE,
+];
+/// 热词表最大多少字节（和后台读它时的上限一致）
+const HOTWORDS_LIMIT: u64 = 256 * 1024;
+const HOTWORDS_HEADER: &str = "# 雪耳热词表：一行一个词，读音像的识别结果会改成这个词。\r\n# 固定的错法写成「错=对」，例如 Cloud Code=Claude Code。# 开头是注释。\r\n";
 // COLORREF 是 BGR；深灰，和 view 的主色一致
 const GREEN: u32 = 0x002e2c2c;
 const INK: u32 = 0x00251e18;
 const MUTED: u32 = 0x00776d65;
 
+fn data_dir() -> Result<PathBuf, String> {
+    std::env::var_os("LOCALAPPDATA")
+        .map(|root| PathBuf::from(root).join("XueerEar"))
+        .ok_or_else(|| "LOCALAPPDATA 不可用".to_owned())
+}
+
 /// 用记事本打开数据目录里的文件；热词表不存在时先建一个带说明的空表，历史不存在就提示。
 unsafe fn open_data_file(name: &str) -> Result<(), String> {
-    let local = std::env::var_os("LOCALAPPDATA").ok_or("LOCALAPPDATA 不可用")?;
-    let dir = std::path::PathBuf::from(local).join("XueerEar");
+    let dir = data_dir()?;
     let path = dir.join(name);
     if !path.exists() {
         if name != "hotwords.txt" {
             return Err("还没有历史记录".to_owned());
         }
         std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-        std::fs::write(
-            &path,
-            "# 雪耳热词表：一行一个词，读音像的识别结果会改成这个词。# 开头是注释。\r\n",
-        )
-        .map_err(|e| e.to_string())?;
+        std::fs::write(&path, HOTWORDS_HEADER).map_err(|e| e.to_string())?;
     }
     let result = ShellExecuteW(
         ptr::null_mut(),
@@ -98,6 +112,79 @@ unsafe fn open_data_file(name: &str) -> Result<(), String> {
         return Err(format!("无法打开 {name}"));
     }
     Ok(())
+}
+
+/// 热词表的内容；不存在返回空，太大或读不了返回错误。
+fn read_hotwords() -> Result<String, String> {
+    let path = data_dir()?.join("hotwords.txt");
+    match std::fs::metadata(&path) {
+        Err(_) => Ok(String::new()),
+        Ok(meta) if meta.len() > HOTWORDS_LIMIT => Err("热词表太大了，请先删掉一些".to_owned()),
+        Ok(_) => std::fs::read_to_string(&path).map_err(|e| format!("无法读取热词表：{e}")),
+    }
+}
+
+/// 往热词表加一行。返回 false 表示表里已经有了。
+fn save_hotword(line: &str) -> Result<bool, String> {
+    let dir = data_dir()?;
+    let mut file = read_hotwords()?;
+    if file.is_empty() {
+        file = HOTWORDS_HEADER.to_owned();
+    }
+    let Some(updated) = xueer_ear_textflow::add_hotword_line(&file, line) else {
+        return Ok(false);
+    };
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let temp = dir.join(format!("hotwords.{}.tmp", std::process::id()));
+    std::fs::write(&temp, updated)
+        .and_then(|()| std::fs::rename(&temp, dir.join("hotwords.txt")))
+        .map_err(|e| format!("无法保存热词表：{e}"))?;
+    Ok(true)
+}
+
+/// 最近说过的几句（新的在前）。读不了就当没有。
+fn recent_history(count: usize) -> Vec<String> {
+    let Ok(dir) = data_dir() else {
+        return Vec::new();
+    };
+    xueer_ear_history::History::new(dir.join("history.jsonl"), Default::default())
+        .recent(count)
+        .map(|entries| entries.into_iter().map(|entry| entry.text).collect())
+        .unwrap_or_default()
+}
+
+/// 把一段文字放进剪贴板。
+unsafe fn copy_text(owner: HWND, text: &str) -> Result<(), String> {
+    use windows_sys::Win32::System::{
+        DataExchange::{CloseClipboard, EmptyClipboard, OpenClipboard, SetClipboardData},
+        Memory::{GMEM_MOVEABLE, GlobalAlloc, GlobalLock, GlobalUnlock},
+    };
+    const CF_UNICODETEXT: u32 = 13;
+    let units = wide(text);
+    if OpenClipboard(owner) == 0 {
+        return Err("剪贴板正被别的程序占用".to_owned());
+    }
+    let memory = GlobalAlloc(GMEM_MOVEABLE, units.len() * 2);
+    let mut copied = false;
+    if !memory.is_null() {
+        let target = GlobalLock(memory) as *mut u16;
+        if !target.is_null() {
+            ptr::copy_nonoverlapping(units.as_ptr(), target, units.len());
+            GlobalUnlock(memory);
+            EmptyClipboard();
+            // 成功后内存归剪贴板所有
+            copied = !SetClipboardData(CF_UNICODETEXT, memory as HANDLE).is_null();
+        }
+        if !copied {
+            GlobalFree(memory);
+        }
+    }
+    CloseClipboard();
+    if copied {
+        Ok(())
+    } else {
+        Err("无法复制".to_owned())
+    }
 }
 
 fn wide(value: &str) -> Vec<u16> {
@@ -283,7 +370,15 @@ struct App {
     healthy: bool,
     busy: Option<Action>,
     pending_exit: bool,
+    /// 改了要重启服务才生效的设置：先停，停完再开
+    pending_start: bool,
     command_error: String,
+    /// 「已复制」这类一句话提示，过几秒自己消失
+    notice: Option<(String, std::time::Instant)>,
+    /// 热词表的修改时间和「N 个」摘要，文件变了才重读
+    hotwords_seen: Option<(Option<std::time::SystemTime>, String)>,
+    /// 离屏拍照核对外观：不建托盘图标、不查更新
+    snapshot: bool,
     sender: mpsc::Sender<Completed>,
     receiver: mpsc::Receiver<Completed>,
     tray_ok: bool,
@@ -339,7 +434,11 @@ impl App {
             healthy: false,
             busy: None,
             pending_exit: false,
+            pending_start: false,
             command_error: settings_error,
+            notice: None,
+            hotwords_seen: None,
+            snapshot: false,
             sender,
             receiver,
             tray_ok: false,
@@ -373,10 +472,7 @@ impl App {
             wide(text).as_ptr(),
             WS_CHILD
                 | WS_VISIBLE
-                | if matches!(
-                    id,
-                    LABEL_STATUS | LABEL_ERROR | LABEL_WIN | LABEL_PLUS | LABEL_H
-                ) {
+                | if matches!(id, LABEL_STATUS | LABEL_ERROR) {
                     SS_CENTER
                 } else {
                     SS_LEFT
@@ -400,27 +496,27 @@ impl App {
             (LABEL_STATUS, "正在读取状态"),
             (LABEL_ERROR, ""),
             (LABEL_SERVICE, "后台服务"),
-            (LABEL_SOURCE, "识别来源"),
+            (LABEL_HOTKEY, "快捷键"),
             (LABEL_MIC_TITLE, "麦克风"),
             (LABEL_SILENCE, "静音收句"),
-            (LABEL_SHORTCUT, "唤起快捷键"),
-            (LABEL_TEXT, "文字与历史"),
-            (LABEL_PLUS, "+"),
-            (LABEL_H, "H"),
+            (LABEL_HOTWORDS, "热词"),
+            (LABEL_HISTORY, "历史"),
+            (LABEL_TEXT, "更多设置"),
             (UPDATE_TITLE, ""),
             (UPDATE_BODY, ""),
         ] {
             self.label(id, text);
         }
         for (id, text, style) in [
-            (START, "输入法识别", BS_OWNERDRAW),
-            (STOP, "Windows 原生", BS_OWNERDRAW),
             (TOGGLE, "开启后台服务", BS_OWNERDRAW),
             (MINIMIZE, "最小化", BS_OWNERDRAW),
             (CLOSE, "关闭窗口", BS_OWNERDRAW),
             (GITHUB, "GitHub · hardware661", BS_OWNERDRAW),
             (LABEL_MIC_VALUE, "系统默认", BS_OWNERDRAW),
             (LABEL_SILENCE_VALUE, "3 秒", BS_OWNERDRAW),
+            (LABEL_HOTKEY_VALUE, "右 Alt", BS_OWNERDRAW),
+            (LABEL_HOTWORDS_VALUE, "添加", BS_OWNERDRAW),
+            (LABEL_HISTORY_VALUE, "最近 7 天", BS_OWNERDRAW),
             (LABEL_TEXT_VALUE, "设置", BS_OWNERDRAW),
             (UPDATE_DOWNLOAD, "下载更新", BS_OWNERDRAW),
             (UPDATE_SKIP, "跳过此版本", BS_OWNERDRAW),
@@ -453,8 +549,10 @@ impl App {
         SendMessageW(self.hwnd, WM_CHANGEUISTATE, 1 | (3 << 16), 0);
         self.tray(NIM_ADD);
         SetTimer(self.hwnd, 1, 750, None);
-        SetTimer(self.hwnd, 3, 6 * 60 * 60 * 1000, None);
-        SetTimer(self.hwnd, 4, 3000, None);
+        if !self.snapshot {
+            SetTimer(self.hwnd, 3, 6 * 60 * 60 * 1000, None);
+            SetTimer(self.hwnd, 4, 3000, None);
+        }
         self.refresh();
         Ok(())
     }
@@ -498,18 +596,18 @@ impl App {
             (LABEL_ERROR, 20, 217, inner, 12, 1),
             (LABEL_SERVICE, 52, 249, 230, 22, 0),
             (TOGGLE, 336, 245, 44, 28, 3),
-            (LABEL_SOURCE, 52, 307, 110, 22, 0),
-            (START, 172, 300, 104, 34, 3),
-            (STOP, 277, 300, 103, 34, 3),
+            (LABEL_HOTKEY, 52, 307, 130, 22, 0),
+            (LABEL_HOTKEY_VALUE, 264, 299, 116, 36, 3),
             (LABEL_MIC_TITLE, 52, 365, 130, 22, 0),
             (LABEL_MIC_VALUE, 212, 357, 168, 36, 3),
             (LABEL_SILENCE, 52, 423, 130, 22, 0),
             (LABEL_SILENCE_VALUE, 264, 415, 116, 36, 3),
-            (LABEL_SHORTCUT, 52, 481, 180, 22, 0),
-            (LABEL_PLUS, 326, 480, 18, 22, 3),
-            (LABEL_H, 352, 480, 24, 22, 3),
-            (LABEL_TEXT, 52, 539, 130, 22, 0),
-            (LABEL_TEXT_VALUE, 264, 531, 116, 36, 3),
+            (LABEL_HOTWORDS, 52, 481, 130, 22, 0),
+            (LABEL_HOTWORDS_VALUE, 264, 473, 116, 36, 3),
+            (LABEL_HISTORY, 52, 539, 130, 22, 0),
+            (LABEL_HISTORY_VALUE, 264, 531, 116, 36, 3),
+            (LABEL_TEXT, 52, 597, 130, 22, 0),
+            (LABEL_TEXT_VALUE, 264, 589, 116, 36, 3),
             (UPDATE_TITLE, 28, 107, 216, 22, 4),
             (UPDATE_BODY, 28, 134, 216, 18, 1),
             (UPDATE_DOWNLOAD, 28, 164, 85, 30, 3),
@@ -555,6 +653,9 @@ impl App {
     }
 
     unsafe fn tray(&mut self, action: u32) {
+        if self.snapshot {
+            return;
+        }
         let mut data: NOTIFYICONDATAW = mem::zeroed();
         data.cbSize = mem::size_of::<NOTIFYICONDATAW>() as u32;
         data.hWnd = self.hwnd;
@@ -562,24 +663,7 @@ impl App {
         data.uFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP;
         data.uCallbackMessage = TRAY;
         data.hIcon = self.icon;
-        let tip = format!(
-            "雪耳 · {} · {}",
-            self.status
-                .as_ref()
-                .map_or("语音输入", Status::backend_label),
-            if self.busy.is_some() {
-                "正在切换"
-            } else {
-                self.status.as_ref().map_or(
-                    if self.ready {
-                        "等待状态"
-                    } else {
-                        "Windows 原生"
-                    },
-                    |s| s.headline(now_ms(), self.healthy, self.ready),
-                )
-            }
-        );
+        let tip = format!("雪耳 · {}", self.headline());
         if action == NIM_MODIFY && tip == self.tray_tip {
             return;
         }
@@ -591,6 +675,51 @@ impl App {
         if action == NIM_ADD {
             self.tray_ok = success;
         }
+    }
+
+    /// 大字状态：正在切换 > 操作失败 > 后台服务报的阶段
+    fn headline(&self) -> &'static str {
+        if let Some(action) = self.busy {
+            match action {
+                Action::Start => "正在开启",
+                Action::Stop => "正在关闭",
+                Action::Exit => "正在退出",
+            }
+        } else if !self.command_error.is_empty() {
+            "操作失败"
+        } else {
+            self.status.as_ref().map_or(
+                if self.ready {
+                    "等待状态"
+                } else {
+                    "未开启"
+                },
+                |s| s.headline(now_ms(), self.healthy, self.ready),
+            )
+        }
+    }
+
+    /// 在状态下面显示一句话提示，过几秒自己消失
+    unsafe fn say(&mut self, text: &str) {
+        self.command_error.clear();
+        self.notice = Some((text.to_owned(), std::time::Instant::now()));
+        self.refresh();
+    }
+
+    /// 「热词」那一行右边显示的字；热词表文件变了才重读
+    fn hotword_summary(&mut self) -> String {
+        let modified = data_dir()
+            .ok()
+            .and_then(|dir| std::fs::metadata(dir.join("hotwords.txt")).ok())
+            .and_then(|meta| meta.modified().ok());
+        if let Some((seen, summary)) = &self.hotwords_seen {
+            if *seen == modified {
+                return summary.clone();
+            }
+        }
+        let summary = crate::prefs::hotword_summary(&read_hotwords().unwrap_or_default());
+        self.hotwords_seen = Some((modified, summary.clone()));
+        summary
     }
 
     unsafe fn refresh(&mut self) {
@@ -605,24 +734,7 @@ impl App {
             self.status = Some(status);
         }
         self.healthy = self.status.as_ref().is_some_and(|s| alive(s.pid));
-        let headline = if let Some(action) = self.busy {
-            match action {
-                Action::Start => "正在启用",
-                Action::Stop => "正在恢复 Windows",
-                Action::Exit => "正在退出",
-            }
-        } else if !self.command_error.is_empty() {
-            "操作失败"
-        } else {
-            self.status.as_ref().map_or(
-                if self.ready {
-                    "等待状态"
-                } else {
-                    "Windows 原生"
-                },
-                |s| s.headline(now_ms(), self.healthy, self.ready),
-            )
-        };
+        let headline = self.headline();
         self.set_text(LABEL_STATUS, headline);
         let microphone = self
             .settings
@@ -641,6 +753,24 @@ impl App {
             LABEL_SILENCE_VALUE,
             &format!("{} 秒", self.settings.silence_seconds),
         );
+        self.set_text(
+            LABEL_HOTKEY_VALUE,
+            &crate::prefs::key_name(self.settings.hotkey_vk),
+        );
+        let hotwords = self.hotword_summary();
+        self.set_text(LABEL_HOTWORDS_VALUE, &hotwords);
+        self.set_text(
+            LABEL_HISTORY_VALUE,
+            &crate::prefs::history_summary(&self.settings),
+        );
+        if self
+            .notice
+            .as_ref()
+            .is_some_and(|(_, at)| at.elapsed() >= std::time::Duration::from_secs(4))
+        {
+            self.notice = None;
+        }
+        // 状态下面那一行：出错原因（红字）优先，其次是「已复制」这类提示（灰字）
         let error = if !self.command_error.is_empty() {
             self.command_error.as_str()
         } else {
@@ -649,14 +779,16 @@ impl App {
                 .filter(|s| s.phase == "error")
                 .map_or("", |s| s.last_error.as_str())
         };
-        self.set_text(LABEL_ERROR, &error.chars().take(180).collect::<String>());
+        let line = match &self.notice {
+            Some((text, _)) if error.is_empty() => text.as_str(),
+            _ => error,
+        };
+        self.set_text(LABEL_ERROR, &line.chars().take(180).collect::<String>());
         let available = self.busy.is_none();
         let mut buttons_changed = previous.1 != self.installed;
-        for id in [START, STOP, TOGGLE] {
-            if (IsWindowEnabled(self.control(id)) != 0) != available {
-                EnableWindow(self.control(id), available as i32);
-                buttons_changed = true;
-            }
+        if (IsWindowEnabled(self.control(TOGGLE)) != 0) != available {
+            EnableWindow(self.control(TOGGLE), available as i32);
+            buttons_changed = true;
         }
         self.set_text(
             TOGGLE,
@@ -698,9 +830,7 @@ impl App {
             InvalidateRect(self.hwnd, &rect, 0);
         }
         if buttons_changed {
-            for id in [START, STOP, TOGGLE] {
-                InvalidateRect(self.control(id), ptr::null(), 0);
-            }
+            InvalidateRect(self.control(TOGGLE), ptr::null(), 0);
         }
         self.tray(if self.tray_ok { NIM_MODIFY } else { NIM_ADD });
     }
@@ -735,9 +865,15 @@ impl App {
                 Ok(()) => self.command_error.clear(),
                 Err(error) => {
                     self.command_error = error;
+                    self.pending_start = false;
                     self.show();
                 }
             }
+        }
+        if self.pending_start && self.busy.is_none() && !self.pending_exit {
+            self.pending_start = false;
+            self.begin(Action::Start);
+            return;
         }
         if self.pending_exit && self.busy.is_none() {
             self.pending_exit = false;
@@ -905,15 +1041,14 @@ impl App {
         AppendMenuW(menu, MF_SEPARATOR, 0, ptr::null());
         AppendMenuW(
             menu,
-            MF_STRING | disabled | if self.installed { MF_GRAYED } else { 0 },
-            START,
-            wide("启用输入法识别").as_ptr(),
-        );
-        AppendMenuW(
-            menu,
-            MF_STRING | disabled | if !self.installed { MF_GRAYED } else { 0 },
-            STOP,
-            wide("Windows 原生").as_ptr(),
+            MF_STRING | disabled,
+            TOGGLE,
+            wide(if self.installed {
+                "关闭后台服务"
+            } else {
+                "开启后台服务"
+            })
+            .as_ptr(),
         );
         AppendMenuW(menu, MF_SEPARATOR, 0, ptr::null());
         AppendMenuW(menu, MF_STRING | disabled, EXIT, wide("退出").as_ptr());
@@ -981,6 +1116,9 @@ impl App {
             2 if self.update_visible => self.dismiss_update(false),
             LABEL_MIC_VALUE => self.settings_menu(true),
             LABEL_SILENCE_VALUE => self.settings_menu(false),
+            LABEL_HOTKEY_VALUE => self.hotkey_menu(),
+            LABEL_HOTWORDS_VALUE => self.hotwords_menu(),
+            LABEL_HISTORY_VALUE => self.history_menu(),
             LABEL_TEXT_VALUE => self.text_menu(),
             EXIT => self.begin(Action::Exit),
             _ => {}
@@ -1068,54 +1206,107 @@ impl App {
         } else if let Some(seconds) = [1, 2, 3, 5, 10].get(selected as usize - 1001) {
             candidate.silence_seconds = *seconds;
         }
+        self.apply(candidate);
+    }
+
+    /// 在某个按钮下面弹菜单，返回选中的命令号（没选是 0）
+    unsafe fn popup_under(&self, button: usize, choices: &[(usize, String, bool)]) -> usize {
+        let mut rect = mem::zeroed();
+        GetWindowRect(self.control(button), &mut rect);
+        crate::menu::popup(
+            self.hwnd,
+            rect.left,
+            rect.bottom + scale(4, self.dpi),
+            choices,
+            self.fonts[3],
+            self.dpi,
+        )
+    }
+
+    /// 保存设置。改的是要重启后台服务才生效的项，而服务正开着，就自动停一下再开。
+    unsafe fn apply(&mut self, candidate: xueer_ear_backend::settings::Settings) {
         match candidate.save_default() {
             Ok(()) => {
+                let restart = crate::prefs::needs_restart(&self.settings, &candidate);
                 self.settings = candidate;
                 self.command_error.clear();
+                if restart && self.installed && self.busy.is_none() {
+                    self.pending_start = true;
+                    self.begin(Action::Stop);
+                    return;
+                }
             }
             Err(error) => self.command_error = format!("无法保存设置：{error}"),
         }
         self.refresh();
     }
 
-    /// 文字整理开关、快捷键模式、历史天数；也能打开历史记录和热词表。改完下次说话生效。
-    unsafe fn text_menu(&mut self) {
-        let mut rect = mem::zeroed();
-        GetWindowRect(self.control(LABEL_TEXT_VALUE), &mut rect);
-        let selected = crate::menu::popup(
-            self.hwnd,
-            rect.left,
-            rect.bottom + scale(4, self.dpi),
-            &crate::prefs::choices(&self.settings),
-            self.fonts[3],
-            self.dpi,
+    /// 换快捷键。后台服务自己会发现设置变了，不用重启。
+    unsafe fn hotkey_menu(&mut self) {
+        let selected = self.popup_under(
+            LABEL_HOTKEY_VALUE,
+            &crate::prefs::key_choices(&self.settings),
         );
-        if matches!(
-            selected,
-            crate::prefs::OPEN_HISTORY | crate::prefs::OPEN_HOTWORDS
-        ) {
-            let name = if selected == crate::prefs::OPEN_HISTORY {
-                "history.jsonl"
-            } else {
-                "hotwords.txt"
-            };
-            if let Err(error) = open_data_file(name) {
-                self.command_error = error;
-                self.refresh();
-            }
-            return;
+        if let Some(candidate) = crate::prefs::pick_key(&self.settings, selected) {
+            self.apply(candidate);
         }
-        let Some(candidate) = crate::prefs::toggle(&self.settings, selected) else {
-            return;
+    }
+
+    /// 热词：弹小对话框加一个，或者用记事本打开整张表。
+    unsafe fn hotwords_menu(&mut self) {
+        let choices = [
+            (crate::prefs::ADD_HOTWORD, "添加热词…".to_owned(), false),
+            (crate::prefs::OPEN_HOTWORDS, "打开热词表".to_owned(), false),
+        ];
+        match self.popup_under(LABEL_HOTWORDS_VALUE, &choices) {
+            crate::prefs::ADD_HOTWORD => {
+                let Some(line) = crate::hotword_dialog::ask(self.hwnd, self.fonts[3], self.dpi)
+                else {
+                    return;
+                };
+                match save_hotword(&line) {
+                    Ok(true) => self.say(&format!("已添加：{}", line.replace('=', " → "))),
+                    Ok(false) => self.say("热词表里已经有了"),
+                    Err(error) => {
+                        self.command_error = error;
+                        self.refresh();
+                    }
+                }
+            }
+            crate::prefs::OPEN_HOTWORDS => {
+                if let Err(error) = open_data_file("hotwords.txt") {
+                    self.command_error = error;
+                    self.refresh();
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// 历史：列最近说过的几句，点一句就复制；也能用记事本打开全部。
+    unsafe fn history_menu(&mut self) {
+        let texts = recent_history(crate::prefs::HISTORY_SHOWN);
+        let selected =
+            self.popup_under(LABEL_HISTORY_VALUE, &crate::prefs::history_choices(&texts));
+        let result = if selected == crate::prefs::OPEN_HISTORY {
+            open_data_file("history.jsonl")
+        } else if let Some(text) = crate::prefs::history_pick(&texts, selected) {
+            copy_text(self.hwnd, text).map(|()| self.say("已复制，可以粘贴了"))
+        } else {
+            Ok(())
         };
-        match candidate.save_default() {
-            Ok(()) => {
-                self.settings = candidate;
-                self.command_error.clear();
-            }
-            Err(error) => self.command_error = format!("无法保存设置：{error}"),
+        if let Err(error) = result {
+            self.command_error = error;
+            self.refresh();
         }
-        self.refresh();
+    }
+
+    /// 更多设置：文字整理开关、提示音、接管 Win+H、历史保留天数、一次最长听多久。
+    unsafe fn text_menu(&mut self) {
+        let selected = self.popup_under(LABEL_TEXT_VALUE, &crate::prefs::choices(&self.settings));
+        if let Some(candidate) = crate::prefs::toggle(&self.settings, selected) {
+            self.apply(candidate);
+        }
     }
 
     unsafe fn draw_button(&self, draw: &DRAWITEMSTRUCT) {
@@ -1181,10 +1372,7 @@ impl App {
             view::close_glyph(draw.hDC, self.dpi, draw.rcItem.right, draw.rcItem.bottom);
             return;
         }
-        if matches!(
-            draw.CtlID as usize,
-            LABEL_MIC_VALUE | LABEL_SILENCE_VALUE | LABEL_TEXT_VALUE
-        ) {
+        if VALUE_BUTTONS.contains(&(draw.CtlID as usize)) {
             view::value_button(
                 draw.hDC,
                 self.dpi,
@@ -1265,8 +1453,6 @@ impl App {
             true
         } else if draw.CtlID == UPDATE_SKIP as u32 {
             false
-        } else if draw.CtlID == STOP as u32 {
-            !self.installed
         } else {
             self.installed
         };
@@ -1469,23 +1655,21 @@ unsafe extern "system" fn procedure(
             SetTextColor(
                 dc,
                 if lparam as HWND == app.control(LABEL_ERROR) {
-                    0x003f39bd
+                    // 出错是红字；「已复制」这类提示是灰字
+                    let failed = !app.command_error.is_empty()
+                        || app.status.as_ref().is_some_and(|s| s.phase == "error");
+                    if failed { 0x003f39bd } else { MUTED }
                 } else if [
                     APP_TITLE,
                     UPDATE_TITLE,
                     LABEL_STATUS,
                     LABEL_SERVICE,
-                    LABEL_SOURCE,
+                    LABEL_HOTKEY,
                     LABEL_MIC_TITLE,
                     LABEL_SILENCE,
-                    LABEL_SHORTCUT,
+                    LABEL_HOTWORDS,
+                    LABEL_HISTORY,
                     LABEL_TEXT,
-                    LABEL_MIC_VALUE,
-                    LABEL_SILENCE_VALUE,
-                    LABEL_TEXT_VALUE,
-                    LABEL_WIN,
-                    LABEL_PLUS,
-                    LABEL_H,
                 ]
                 .iter()
                 .any(|&id| lparam as HWND == app.control(id))
@@ -1506,21 +1690,18 @@ unsafe extern "system" fn procedure(
             if crate::menu::draw(draw) {
                 return 1;
             }
-            if [
-                START,
-                STOP,
-                TOGGLE,
-                MINIMIZE,
-                CLOSE,
-                GITHUB,
-                UPDATE_DOWNLOAD,
-                UPDATE_SKIP,
-                UPDATE_CLOSE,
-                LABEL_MIC_VALUE,
-                LABEL_SILENCE_VALUE,
-                LABEL_TEXT_VALUE,
-            ]
-            .contains(&(draw.CtlID as usize))
+            let id = draw.CtlID as usize;
+            if VALUE_BUTTONS.contains(&id)
+                || [
+                    TOGGLE,
+                    MINIMIZE,
+                    CLOSE,
+                    GITHUB,
+                    UPDATE_DOWNLOAD,
+                    UPDATE_SKIP,
+                    UPDATE_CLOSE,
+                ]
+                .contains(&id)
             {
                 app.draw_button(draw);
                 return 1;
@@ -1633,6 +1814,90 @@ pub fn quit() -> Result<(), String> {
     }
 }
 
+/// 注册窗口类并建好控制面板窗口（还没显示）。`offscreen` 用于拍照核对外观：放到屏幕外、不抢焦点。
+unsafe fn open_window(app: &mut App, offscreen: bool) -> HWND {
+    let module = GetModuleHandleW(ptr::null());
+    let class_name = wide(CLASS);
+    let class = WNDCLASSW {
+        style: CS_HREDRAW | CS_VREDRAW,
+        lpfnWndProc: Some(procedure),
+        hInstance: module,
+        hIcon: app.icon,
+        hCursor: LoadCursorW(ptr::null_mut(), IDC_ARROW),
+        hbrBackground: ptr::null_mut(),
+        lpszClassName: class_name.as_ptr(),
+        ..mem::zeroed()
+    };
+    if RegisterClassW(&class) == 0 {
+        return ptr::null_mut();
+    }
+    let style = WS_POPUP | WS_SYSMENU | WS_MINIMIZEBOX | WS_CLIPCHILDREN;
+    let work = work_area(ptr::null_mut());
+    let dpi = fitted_dpi(GetDpiForSystem().max(96), work);
+    let (width, height) = (scale(view::WIDTH, dpi), scale(view::HEIGHT, dpi));
+    let (x, y) = if offscreen {
+        (-32000, -32000)
+    } else {
+        (
+            work.left + ((work.right - work.left) - width) / 2,
+            work.top + ((work.bottom - work.top) - height) / 2,
+        )
+    };
+    let hwnd = CreateWindowExW(
+        if offscreen {
+            WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE
+        } else {
+            0
+        },
+        class_name.as_ptr(),
+        wide(APP_NAME).as_ptr(),
+        style,
+        x,
+        y,
+        width,
+        height,
+        ptr::null_mut(),
+        ptr::null_mut(),
+        module,
+        (app as *mut App).cast(),
+    );
+    if hwnd.is_null() {
+        return hwnd;
+    }
+    SetWindowPos(
+        hwnd,
+        ptr::null_mut(),
+        0,
+        0,
+        0,
+        0,
+        SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED,
+    );
+    use windows_sys::Win32::Graphics::Dwm::*;
+    let margins = windows_sys::Win32::UI::Controls::MARGINS {
+        cxLeftWidth: 1,
+        cxRightWidth: 1,
+        cyTopHeight: 1,
+        cyBottomHeight: 1,
+    };
+    DwmExtendFrameIntoClientArea(hwnd, &margins);
+    let caption = 0x00fcf7f2_u32;
+    let rounded = 2_u32;
+    DwmSetWindowAttribute(
+        hwnd,
+        DWMWA_CAPTION_COLOR as u32,
+        (&caption as *const u32).cast(),
+        4,
+    );
+    DwmSetWindowAttribute(
+        hwnd,
+        DWMWA_WINDOW_CORNER_PREFERENCE as u32,
+        (&rounded as *const u32).cast(),
+        4,
+    );
+    hwnd
+}
+
 pub fn run() {
     unsafe {
         SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
@@ -1650,78 +1915,10 @@ pub fn run() {
             return;
         }
         let mut app = Box::new(App::new());
-        let module = GetModuleHandleW(ptr::null());
-        let class_name = wide(CLASS);
-        let class = WNDCLASSW {
-            style: CS_HREDRAW | CS_VREDRAW,
-            lpfnWndProc: Some(procedure),
-            hInstance: module,
-            hIcon: app.icon,
-            hCursor: LoadCursorW(ptr::null_mut(), IDC_ARROW),
-            hbrBackground: ptr::null_mut(),
-            lpszClassName: class_name.as_ptr(),
-            ..mem::zeroed()
-        };
-        if RegisterClassW(&class) == 0 {
-            return;
-        }
-        let style = WS_POPUP | WS_SYSMENU | WS_MINIMIZEBOX | WS_CLIPCHILDREN;
-        let work = work_area(ptr::null_mut());
-        let dpi = fitted_dpi(GetDpiForSystem().max(96), work);
-        let rect = RECT {
-            left: 0,
-            top: 0,
-            right: scale(view::WIDTH, dpi),
-            bottom: scale(view::HEIGHT, dpi),
-        };
-        let hwnd = CreateWindowExW(
-            0,
-            class_name.as_ptr(),
-            wide(APP_NAME).as_ptr(),
-            style,
-            work.left + ((work.right - work.left) - (rect.right - rect.left)) / 2,
-            work.top + ((work.bottom - work.top) - (rect.bottom - rect.top)) / 2,
-            rect.right - rect.left,
-            rect.bottom - rect.top,
-            ptr::null_mut(),
-            ptr::null_mut(),
-            module,
-            (&mut *app as *mut App).cast(),
-        );
+        let hwnd = open_window(&mut app, false);
         if hwnd.is_null() {
             return;
         }
-        SetWindowPos(
-            hwnd,
-            ptr::null_mut(),
-            0,
-            0,
-            0,
-            0,
-            SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_FRAMECHANGED,
-        );
-        use windows_sys::Win32::Graphics::Dwm::*;
-        let margins = windows_sys::Win32::UI::Controls::MARGINS {
-            cxLeftWidth: 1,
-            cxRightWidth: 1,
-            cyTopHeight: 1,
-            cyBottomHeight: 1,
-        };
-        DwmExtendFrameIntoClientArea(hwnd, &margins);
-        let caption = 0x00fcf7f2_u32;
-        let rounded = 2_u32;
-        DwmSetWindowAttribute(
-            hwnd,
-            DWMWA_CAPTION_COLOR as u32,
-            (&caption as *const u32).cast(),
-            4,
-        );
-        DwmSetWindowAttribute(
-            hwnd,
-            DWMWA_WINDOW_CORNER_PREFERENCE as u32,
-            (&rounded as *const u32).cast(),
-            4,
-        );
         // 开机自启：不弹窗，只在托盘，并自动开启后台服务
         if std::env::args_os().any(|arg| arg == "--autostart") {
             PostMessageW(hwnd, WM_COMMAND, START, 0);
@@ -1735,5 +1932,80 @@ pub fn run() {
                 DispatchMessageW(&message);
             }
         }
+    }
+}
+
+/// 处理一小会儿消息，让窗口把自己画完
+unsafe fn settle(milliseconds: u64) {
+    let until = std::time::Instant::now() + std::time::Duration::from_millis(milliseconds);
+    let mut message: MSG = mem::zeroed();
+    while std::time::Instant::now() < until {
+        while PeekMessageW(&mut message, ptr::null_mut(), 0, 0, PM_REMOVE) != 0 {
+            TranslateMessage(&message);
+            DispatchMessageW(&message);
+        }
+        thread::sleep(std::time::Duration::from_millis(15));
+    }
+}
+
+/// 把一个窗口现在的样子存成 PNG
+unsafe fn capture(window: HWND, path: &std::path::Path) -> Result<(), String> {
+    use windows_sys::Win32::Graphics::GdiPlus as gp;
+    #[link(name = "user32")]
+    unsafe extern "system" {
+        fn PrintWindow(window: HWND, dc: HDC, flags: u32) -> i32;
+    }
+    let mut rect: RECT = mem::zeroed();
+    GetWindowRect(window, &mut rect);
+    let (width, height) = (rect.right - rect.left, rect.bottom - rect.top);
+    let screen = GetDC(ptr::null_mut());
+    let dc = CreateCompatibleDC(screen);
+    let bitmap = CreateCompatibleBitmap(screen, width, height);
+    let old = SelectObject(dc, bitmap);
+    // 2 = PW_RENDERFULLCONTENT：连同圆角和子控件一起画
+    let printed = PrintWindow(window, dc, 2) != 0;
+    SelectObject(dc, old);
+    let mut image = ptr::null_mut();
+    let mut result = Err("无法截取窗口".to_owned());
+    if printed && gp::GdipCreateBitmapFromHBITMAP(bitmap, ptr::null_mut(), &mut image) == 0 {
+        // PNG 编码器
+        let png = windows_sys::core::GUID::from_u128(0x557cf406_1a04_11d3_9a73_0000f81ef32e);
+        let name = wide(&path.to_string_lossy());
+        if gp::GdipSaveImageToFile(image.cast(), name.as_ptr(), &png, ptr::null()) == 0 {
+            result = Ok(());
+        }
+        gp::GdipDisposeImage(image.cast());
+    }
+    DeleteObject(bitmap);
+    DeleteDC(dc);
+    ReleaseDC(ptr::null_mut(), screen);
+    result
+}
+
+/// 离屏把控制面板和「添加热词」对话框各拍一张 PNG 到 `dir`（核对外观用）。
+/// 窗口建在屏幕外、不抢焦点、不建托盘图标，不会打扰正在用电脑的人。
+pub fn snapshot(dir: &std::path::Path) -> Result<(), String> {
+    unsafe {
+        SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
+        let mut app = Box::new(App::new());
+        app.snapshot = true;
+        let hwnd = open_window(&mut app, true);
+        if hwnd.is_null() {
+            return Err("无法创建控制面板".to_owned());
+        }
+        ShowWindow(hwnd, SW_SHOWNOACTIVATE);
+        settle(900);
+        let panel = capture(hwnd, &dir.join("control-panel.png"));
+        let dialog = crate::hotword_dialog::offscreen(hwnd, app.fonts[3], app.dpi);
+        let asked = if dialog.is_null() {
+            Err("无法创建对话框".to_owned())
+        } else {
+            settle(400);
+            let result = capture(dialog, &dir.join("hotword-dialog.png"));
+            DestroyWindow(dialog);
+            result
+        };
+        DestroyWindow(hwnd);
+        panel.and(asked)
     }
 }

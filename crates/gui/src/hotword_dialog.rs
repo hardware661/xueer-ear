@@ -1,0 +1,317 @@
+//! 「添加热词」小对话框：两格——正确的写法、常被听成什么（可不填）。
+//! 回车添加、Esc 取消；填得不对就在下面用红字说哪里不对，不关窗口。
+#![allow(unsafe_op_in_unsafe_fn)]
+use std::{mem, ptr};
+use windows_sys::Win32::{
+    Foundation::{HWND, LPARAM, LRESULT, RECT, WPARAM},
+    Graphics::Gdi::{
+        GetStockObject, HDC, HFONT, InvalidateRect, SetBkColor, SetTextColor, WHITE_BRUSH,
+    },
+    System::LibraryLoader::GetModuleHandleW,
+    UI::{
+        HiDpi::AdjustWindowRectExForDpi,
+        Input::KeyboardAndMouse::{EnableWindow, SetFocus},
+        WindowsAndMessaging::*,
+    },
+};
+
+const CLASS: &str = "XueerEar.HotwordDialog";
+const ADD: usize = 1; // IDOK：回车
+const CANCEL: usize = 2; // IDCANCEL：Esc
+const WORD: usize = 301;
+const HEARD: usize = 302;
+const HINT: usize = 303;
+const EM_SETLIMITTEXT: u32 = 0x00C5;
+const EM_SETCUEBANNER: u32 = 0x1501;
+const ES_AUTOHSCROLL: u32 = 0x0080;
+const BS_DEFPUSHBUTTON: u32 = 0x0001;
+/// 客户区大小（96 DPI）
+const WIDTH: i32 = 340;
+const HEIGHT: i32 = 206;
+
+struct State {
+    done: bool,
+    line: Option<String>,
+}
+
+fn wide(value: &str) -> Vec<u16> {
+    value.encode_utf16().chain(Some(0)).collect()
+}
+
+fn scale(value: i32, dpi: u32) -> i32 {
+    (value * dpi as i32 + 48) / 96
+}
+
+unsafe fn text_of(dialog: HWND, id: usize) -> String {
+    let control = GetDlgItem(dialog, id as i32);
+    let mut buffer = [0_u16; 128];
+    let len = GetWindowTextW(control, buffer.as_mut_ptr(), buffer.len() as i32).max(0);
+    String::from_utf16_lossy(&buffer[..len as usize])
+}
+
+unsafe extern "system" fn procedure(
+    hwnd: HWND,
+    message: u32,
+    wparam: WPARAM,
+    lparam: LPARAM,
+) -> LRESULT {
+    if message == WM_NCCREATE {
+        let creation = &*(lparam as *const CREATESTRUCTW);
+        SetWindowLongPtrW(hwnd, GWLP_USERDATA, creation.lpCreateParams as isize);
+    }
+    let raw = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut State;
+    if raw.is_null() {
+        return DefWindowProcW(hwnd, message, wparam, lparam);
+    }
+    let state = &mut *raw;
+    match message {
+        WM_COMMAND => {
+            match wparam & 0xffff {
+                ADD => {
+                    match crate::prefs::hotword_line(&text_of(hwnd, WORD), &text_of(hwnd, HEARD)) {
+                        Ok(line) => {
+                            state.line = Some(line);
+                            state.done = true;
+                        }
+                        Err(reason) => {
+                            let hint = GetDlgItem(hwnd, HINT as i32);
+                            SetWindowTextW(hint, wide(reason).as_ptr());
+                            InvalidateRect(hint, ptr::null(), 1);
+                            SetFocus(GetDlgItem(hwnd, WORD as i32));
+                        }
+                    }
+                }
+                CANCEL => state.done = true,
+                _ => {}
+            }
+            0
+        }
+        WM_CLOSE => {
+            state.done = true;
+            0
+        }
+        WM_CTLCOLORSTATIC => {
+            let dc = wparam as HDC;
+            SetBkColor(dc, 0x00ffffff);
+            let hint = lparam as HWND == GetDlgItem(hwnd, HINT as i32);
+            SetTextColor(dc, if hint { 0x003f39bd } else { 0x00251e18 });
+            GetStockObject(WHITE_BRUSH) as isize
+        }
+        WM_NCDESTROY => {
+            SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);
+            DefWindowProcW(hwnd, message, wparam, lparam)
+        }
+        _ => DefWindowProcW(hwnd, message, wparam, lparam),
+    }
+}
+
+/// 建好对话框并显示。`at` 给了就放在那个屏幕坐标（离屏核对外观用），否则居中在父窗口上。
+unsafe fn open(
+    parent: HWND,
+    font: HFONT,
+    dpi: u32,
+    state: *mut State,
+    at: Option<(i32, i32)>,
+) -> HWND {
+    let module = GetModuleHandleW(ptr::null());
+    let class_name = wide(CLASS);
+    let class = WNDCLASSW {
+        lpfnWndProc: Some(procedure),
+        hInstance: module,
+        hCursor: LoadCursorW(ptr::null_mut(), IDC_ARROW),
+        hbrBackground: GetStockObject(WHITE_BRUSH),
+        lpszClassName: class_name.as_ptr(),
+        ..mem::zeroed()
+    };
+    // 第二次打开时类已经注册过，失败不要紧
+    RegisterClassW(&class);
+    let style = WS_POPUP | WS_CAPTION | WS_SYSMENU;
+    let extended = WS_EX_DLGMODALFRAME
+        | if at.is_some() {
+            WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE
+        } else {
+            0
+        };
+    let mut frame = RECT {
+        left: 0,
+        top: 0,
+        right: scale(WIDTH, dpi),
+        bottom: scale(HEIGHT, dpi),
+    };
+    AdjustWindowRectExForDpi(&mut frame, style, 0, extended, dpi);
+    let (width, height) = (frame.right - frame.left, frame.bottom - frame.top);
+    let (x, y) = at.unwrap_or_else(|| {
+        let mut owner: RECT = mem::zeroed();
+        GetWindowRect(parent, &mut owner);
+        (
+            owner.left + (owner.right - owner.left - width) / 2,
+            owner.top + (owner.bottom - owner.top - height) / 2,
+        )
+    });
+    let dialog = CreateWindowExW(
+        extended,
+        class_name.as_ptr(),
+        wide("添加热词").as_ptr(),
+        style,
+        x,
+        y,
+        width,
+        height,
+        parent,
+        ptr::null_mut(),
+        module,
+        state.cast(),
+    );
+    if dialog.is_null() {
+        return dialog;
+    }
+    let tab = WS_CHILD | WS_VISIBLE | WS_TABSTOP;
+    // （类名, 文字, 样式, 扩展样式, 控件号, x, y, 宽, 高）
+    let controls: [(&str, &str, u32, u32, usize, i32, i32, i32, i32); 7] = [
+        (
+            "STATIC",
+            "正确的写法",
+            WS_CHILD | WS_VISIBLE,
+            0,
+            0,
+            22,
+            18,
+            296,
+            20,
+        ),
+        (
+            "EDIT",
+            "",
+            tab | ES_AUTOHSCROLL,
+            WS_EX_CLIENTEDGE,
+            WORD,
+            22,
+            42,
+            296,
+            28,
+        ),
+        (
+            "STATIC",
+            "常被听成",
+            WS_CHILD | WS_VISIBLE,
+            0,
+            0,
+            22,
+            82,
+            296,
+            20,
+        ),
+        (
+            "EDIT",
+            "",
+            tab | ES_AUTOHSCROLL,
+            WS_EX_CLIENTEDGE,
+            HEARD,
+            22,
+            106,
+            296,
+            28,
+        ),
+        (
+            "STATIC",
+            "",
+            WS_CHILD | WS_VISIBLE,
+            0,
+            HINT,
+            22,
+            140,
+            296,
+            18,
+        ),
+        ("BUTTON", "取消", tab, 0, CANCEL, 148, 164, 80, 30),
+        (
+            "BUTTON",
+            "添加",
+            tab | BS_DEFPUSHBUTTON,
+            0,
+            ADD,
+            238,
+            164,
+            80,
+            30,
+        ),
+    ];
+    for (class, text, style, extended, id, x, y, w, h) in controls {
+        let control = CreateWindowExW(
+            extended,
+            wide(class).as_ptr(),
+            wide(text).as_ptr(),
+            style,
+            scale(x, dpi),
+            scale(y, dpi),
+            scale(w, dpi),
+            scale(h, dpi),
+            dialog,
+            id as HMENU,
+            module,
+            ptr::null(),
+        );
+        SendMessageW(control, WM_SETFONT, font as usize, 0);
+    }
+    for (id, cue) in [
+        (WORD, "例如 Claude Code"),
+        (HEARD, "例如 Cloud Code，可不填"),
+    ] {
+        let edit = GetDlgItem(dialog, id as i32);
+        SendMessageW(edit, EM_SETLIMITTEXT, 40, 0);
+        SendMessageW(edit, EM_SETCUEBANNER, 1, wide(cue).as_ptr() as isize);
+    }
+    ShowWindow(
+        dialog,
+        if at.is_some() {
+            SW_SHOWNOACTIVATE
+        } else {
+            SW_SHOW
+        },
+    );
+    dialog
+}
+
+/// 弹出对话框等主人填。返回要加进热词表的一行（一个词，或「错=对」）；取消返回 None。
+pub unsafe fn ask(parent: HWND, font: HFONT, dpi: u32) -> Option<String> {
+    let mut state = Box::new(State {
+        done: false,
+        line: None,
+    });
+    let dialog = open(parent, font, dpi, &mut *state, None);
+    if dialog.is_null() {
+        return None;
+    }
+    EnableWindow(parent, 0);
+    SetFocus(GetDlgItem(dialog, WORD as i32));
+    let mut message: MSG = mem::zeroed();
+    while !state.done {
+        let got = GetMessageW(&mut message, ptr::null_mut(), 0, 0);
+        if got <= 0 {
+            if got == 0 {
+                // 程序要退出了：把退出消息还回去，让外层循环也收到
+                PostQuitMessage(message.wParam as i32);
+            }
+            break;
+        }
+        if IsDialogMessageW(dialog, &message) == 0 {
+            TranslateMessage(&message);
+            DispatchMessageW(&message);
+        }
+    }
+    // 先把父窗口恢复再销毁对话框，焦点才会回到父窗口
+    EnableWindow(parent, 1);
+    SetForegroundWindow(parent);
+    DestroyWindow(dialog);
+    state.line.take()
+}
+
+/// 离屏建一个对话框拍照用（不抢焦点、不在屏幕里）；返回窗口句柄，用完 DestroyWindow。
+pub unsafe fn offscreen(parent: HWND, font: HFONT, dpi: u32) -> HWND {
+    // 只拍照、不交互，状态留给进程退出时回收
+    let state = Box::into_raw(Box::new(State {
+        done: false,
+        line: None,
+    }));
+    open(parent, font, dpi, state, Some((-32000, -32000)))
+}

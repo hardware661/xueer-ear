@@ -110,6 +110,11 @@ impl Settings {
         self.save(&Self::path()?)
     }
 
+    /// 设置文件的修改时间（没有这个文件就是 None），用来发现设置被改了
+    pub fn modified_default() -> Option<std::time::SystemTime> {
+        std::fs::metadata(Self::path().ok()?).ok()?.modified().ok()
+    }
+
     fn path() -> Result<PathBuf> {
         let local = std::env::var_os("LOCALAPPDATA")
             .filter(|value| !value.is_empty())

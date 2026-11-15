@@ -9,7 +9,7 @@ use windows_sys::Win32::{
 pub const BACKGROUND: u32 = 0x00fffcfa;
 pub const WIDTH: i32 = 400;
 pub const HEADER: i32 = 42;
-pub const HEIGHT: i32 = 588;
+pub const HEIGHT: i32 = 646;
 pub fn body_y(y: i32) -> i32 {
     y
 }
@@ -154,43 +154,6 @@ impl Canvas {
             gp::GdipDeletePen(pen);
         }
     }
-    unsafe fn mic(&self, x: f32, y: f32, size: f32, color: u32) {
-        self.rounded(
-            x + size * 0.34,
-            y,
-            size * 0.32,
-            size * 0.58,
-            size * 0.16,
-            color,
-            false,
-        );
-        self.arc(
-            x + size * 0.18,
-            y + size * 0.23,
-            size * 0.64,
-            size * 0.54,
-            0.,
-            180.,
-            size * 0.065,
-            color,
-        );
-        self.line(
-            x + size * 0.5,
-            y + size * 0.77,
-            x + size * 0.5,
-            y + size * 0.96,
-            size * 0.065,
-            color,
-        );
-        self.line(
-            x + size * 0.32,
-            y + size * 0.97,
-            x + size * 0.68,
-            y + size * 0.97,
-            size * 0.065,
-            color,
-        );
-    }
 }
 impl Drop for Canvas {
     fn drop(&mut self) {
@@ -240,10 +203,10 @@ pub unsafe fn background(dc: HDC, dpi: u32, enabled: bool, peak: u32, frame: u64
             false,
         );
     }
-    for y in [230., 288., 346., 404., 462., 520.] {
+    for y in [230., 288., 346., 404., 462., 520., 578.] {
         c.line(20., y, 380., y, 1., LINE);
     }
-    // Service, source, microphone, silence and keyboard row glyphs.
+    // 每行左边的小图标：服务、快捷键、麦克风、静音收句、热词、历史、更多设置
     let gear = (0..48)
         .map(|i| {
             let a = i as f32 * std::f32::consts::TAU / 48.;
@@ -253,58 +216,57 @@ pub unsafe fn background(dc: HDC, dpi: u32, enabled: bool, peak: u32, frame: u64
         .collect::<Vec<_>>();
     c.polygon(&gear, MUTED, true);
     c.arc(27., 256., 6., 6., 0., 360., 1.5, MUTED);
-    for (i, h) in [8., 14., 20., 12., 6.].iter().enumerate() {
-        c.line(
-            22. + i as f32 * 4.,
-            317. - h / 2.,
-            22. + i as f32 * 4.,
-            317. + h / 2.,
-            1.5,
-            MUTED,
-        );
-    }
-    c.rounded(27., 365., 6., 11., 3., MUTED, true);
-    c.arc(24., 369., 12., 12., 0., 180., 1.5, MUTED);
-    c.line(30., 381., 30., 385., 1.5, MUTED);
-    c.line(27., 385., 33., 385., 1.5, MUTED);
-    c.arc(21., 424., 18., 18., 0., 360., 1.5, MUTED);
-    c.line(30., 427., 30., 433., 1.5, MUTED);
-    c.line(30., 433., 34., 435., 1.5, MUTED);
-    c.rounded(20., 484., 20., 14., 2.5, MUTED, true);
+    // 快捷键：一块小键盘
+    c.rounded(20., 310., 20., 14., 2.5, MUTED, true);
     for row in 0..2 {
         for col in 0..5 {
             c.ellipse(
                 23. + col as f32 * 3.5,
-                487. + row as f32 * 3.5,
+                313. + row as f32 * 3.5,
                 1.3,
                 1.3,
                 MUTED,
             );
         }
     }
-    c.line(25., 495., 35., 495., 1.3, MUTED);
-    c.rounded(284., 476., 36., 30., 6., LINE, true);
-    for points in [
-        vec![(293., 485.), (300., 484.), (300., 490.), (293., 490.)],
-        vec![(302., 483.7), (311., 482.), (311., 490.), (302., 490.)],
-        vec![(293., 492.), (300., 492.), (300., 498.), (293., 496.8)],
-        vec![(302., 492.), (311., 492.), (311., 500.), (302., 498.5)],
-    ] {
-        c.polygon(&points, 0xff273548, false);
-    }
-    c.rounded(348., 476., 32., 30., 6., LINE, true);
-    // 文字与历史：三行文字 + 一支笔
-    for (i, w) in [14., 10., 12.].iter().enumerate() {
+    c.line(25., 321., 35., 321., 1.3, MUTED);
+    // 麦克风
+    c.rounded(27., 365., 6., 11., 3., MUTED, true);
+    c.arc(24., 369., 12., 12., 0., 180., 1.5, MUTED);
+    c.line(30., 381., 30., 385., 1.5, MUTED);
+    c.line(27., 385., 33., 385., 1.5, MUTED);
+    // 静音收句：钟
+    c.arc(21., 424., 18., 18., 0., 360., 1.5, MUTED);
+    c.line(30., 427., 30., 433., 1.5, MUTED);
+    c.line(30., 433., 34., 435., 1.5, MUTED);
+    // 热词：书签
+    c.polygon(
+        &[
+            (24., 482.),
+            (36., 482.),
+            (36., 500.),
+            (30., 495.),
+            (24., 500.),
+        ],
+        MUTED,
+        true,
+    );
+    // 历史：三行字
+    for (i, w) in [18., 12., 15.].iter().enumerate() {
         c.line(
-            22.,
-            541. + i as f32 * 5.,
-            22. + w,
-            541. + i as f32 * 5.,
+            21.,
+            544. + i as f32 * 5.5,
+            21. + w,
+            544. + i as f32 * 5.5,
             1.5,
             MUTED,
         );
     }
-    c.line(33., 556., 39., 545., 1.5, MUTED);
+    // 更多设置：两条滑杆
+    for (y, knob) in [(603., 26.), (611., 34.)] {
+        c.line(21., y, 39., y, 1.5, MUTED);
+        c.ellipse(knob - 2.5, y - 2.5, 5., 5., MUTED);
+    }
 }
 
 pub unsafe fn value_button(dc: HDC, dpi: u32, width: i32, height: i32, pressed: bool) {

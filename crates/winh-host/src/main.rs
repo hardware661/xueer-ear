@@ -17,6 +17,8 @@ mod panel;
 #[cfg(any(windows, test))]
 mod recovery;
 #[cfg(any(windows, test))]
+mod reload;
+#[cfg(any(windows, test))]
 mod revision;
 #[cfg(windows)]
 mod sound;

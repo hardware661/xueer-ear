@@ -8,6 +8,7 @@ use crate::{
     dictation::{Dictation, Effect, Input, Panel},
     panel::{self, Click, Look, PanelHandle},
     recovery,
+    reload::KeyWatch,
     status::Status,
     typing::{Key, Live},
 };
@@ -57,11 +58,10 @@ impl Hotkey {
         if !settings.hotkey_enabled {
             return None;
         }
-        let vk = settings.hotkey_vk as i32;
+        let vk = settings.hotkey_vk;
         let stop = Arc::new(AtomicBool::new(false));
         let worker_stop = stop.clone();
         let worker = thread::spawn(move || poll_loop(vk, &worker_stop, &status));
-        println!("快捷键听写已开启：点一下 {vk:#x} 打开面板说话");
         Some(Self {
             stop,
             worker: Some(worker),
@@ -94,7 +94,12 @@ impl Session {
     }
 }
 
-fn poll_loop(vk: i32, stop: &AtomicBool, status: &Status) {
+fn poll_loop(vk: u32, stop: &AtomicBool, status: &Status) {
+    println!("快捷键听写已开启：点一下 {vk:#x} 打开面板说话");
+    // 控制面板里换了快捷键，这里每秒看一眼设置文件，变了就换，不用重启服务
+    let mut watch = KeyWatch::new(vk, Settings::modified_default());
+    let mut checked = Instant::now();
+    let mut vk = vk as i32;
     let (clicks_tx, clicks) = mpsc::channel();
     let panel = panel::spawn(clicks_tx);
     let mut state = Dictation::new(HOLD_THRESHOLD);
@@ -108,6 +113,21 @@ fn poll_loop(vk: i32, stop: &AtomicBool, status: &Status) {
         if session.as_ref().is_some_and(|s| s.worker.is_finished()) {
             let _ = session.take().unwrap().worker.join();
             inputs.push(Input::SessionEnded);
+        }
+        // 只在没在听写、旧键也松开时换键
+        if session.is_none()
+            && !was_held
+            && state.panel() == Panel::Hidden
+            && checked.elapsed() >= Duration::from_secs(1)
+        {
+            checked = now;
+            let changed = watch.check(Settings::modified_default(), || {
+                Settings::load_default().ok().map(|s| s.hotkey_vk)
+            });
+            if let Some(new) = changed {
+                println!("快捷键改成 {new:#x}");
+                vk = new as i32;
+            }
         }
         let held = pressed(vk);
         if held && !was_held && is_alt(vk) {
@@ -260,7 +280,8 @@ fn record(
             // 或者超过「最长听写时间」（主人 2026-11-15：说着说着停顿一下就断了，要能一直说）
             // 蓝麦克风=在听；识别出新字的那一阵子显示波浪（只认真的出字，咳嗽、敲桌子不算）
             Event::Activity(phase) => {
-                status.phase(phase);
+                // 一句说完（paused）后其实还在接着听，控制面板上照样显示「聆听中」
+                status.phase(if phase == "paused" { "armed" } else { phase });
                 panel.set(if matches!(phase, "connecting" | "reconnecting") {
                     Look::Connecting
                 } else {
