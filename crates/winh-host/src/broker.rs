@@ -77,9 +77,22 @@ impl Backend {
     }
 }
 
+/// 读设置。设置文件坏了（手改错、写到一半）不悄悄用默认值顶上（审查 R14）：
+/// 记一行日志，返回错误让调用方告诉主人；这次先按默认值跑。
+pub(crate) fn settings() -> (Settings, Option<String>) {
+    match Settings::load_default() {
+        Ok(settings) => (settings, None),
+        Err(error) => {
+            let reason = format!("设置文件读不了，这次先用默认设置：{error}");
+            eprintln!("{reason}");
+            (Settings::default(), Some(reason))
+        }
+    }
+}
+
 /// 每次唤起 Win+H 重新读设置和热词，改完下次生效（和麦克风、静音时间一致）。
 pub(crate) fn postprocess() -> Postprocess {
-    let settings = Settings::load_default().unwrap_or_default();
+    let settings = settings().0;
     let dir = std::env::var_os("LOCALAPPDATA")
         .map(|local| PathBuf::from(local).join("XueerEar"))
         .unwrap_or_default();
@@ -302,7 +315,10 @@ fn hotkey_only(
     status: &Status,
     fallback: Option<&str>,
 ) -> Result<()> {
-    let mut settings = Settings::load_default().unwrap_or_default();
+    let (mut settings, broken) = settings();
+    if let Some(reason) = &broken {
+        status.error(reason.clone());
+    }
     settings.hotkey_enabled = true;
     let hotkey = crate::hotkey::Hotkey::start(&settings, status.clone());
     match fallback {
@@ -311,7 +327,8 @@ fn hotkey_only(
             crate::sound::play(crate::sound::Cue::Fallback, settings.sounds_enabled);
             status.error(reason.to_string());
         }
-        None => status.phase("ready"),
+        None if broken.is_none() => status.phase("ready"),
+        None => {}
     }
     control.ready();
     let mut heartbeat = Instant::now();
@@ -385,7 +402,7 @@ pub fn run() -> Result<()> {
         env!("CARGO_PKG_VERSION"),
         ".dll"
     )));
-    if !Settings::load_default().unwrap_or_default().winh_enabled && verification_file.is_none() {
+    if !settings().0.winh_enabled && verification_file.is_none() {
         println!("不接管 Win+H（设置里没开），只开快捷键听写。");
         return hotkey_only(&control, &status, None);
     }
@@ -421,10 +438,7 @@ pub fn run() -> Result<()> {
     });
     println!("已接入原生 Win+H；按 Ctrl+C 退出并恢复。");
     // 快捷键模式和 Win+H 并行可用；broker 退出时随 drop 停掉
-    let _hotkey = crate::hotkey::Hotkey::start(
-        &Settings::load_default().unwrap_or_default(),
-        status.clone(),
-    );
+    let _hotkey = crate::hotkey::Hotkey::start(&settings().0, status.clone());
     status.phase("ready");
     control.ready();
     let mut active: Option<Active> = None;

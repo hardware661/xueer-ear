@@ -248,7 +248,14 @@ fn begin(panel: PanelHandle, status: Status, previous: Option<Session>) -> Sessi
                 panel.notice(recovery::message(kind));
                 status.error(format!("{}（{error}）", recovery::message(kind)));
             }
-            Ok(()) => status.phase("ready"),
+            Ok(()) => match crate::broker::settings().1 {
+                // 设置文件坏了：面板提示几秒，控制面板显示原因，直到下一轮开始（审查 R14）
+                Some(reason) => {
+                    panel.notice("设置文件坏了，用的是默认设置");
+                    status.error(reason);
+                }
+                None => status.phase("ready"),
+            },
         }
     });
     Session {
@@ -272,7 +279,8 @@ fn record(
 ) -> crate::install::Result<()> {
     let mut seen_sent = 0;
     let mut seen_touched = 0;
-    let settings = Settings::load_default().unwrap_or_default();
+    // 设置文件坏了就先用默认值听写，这一轮结束时再提示（开头提示会被「在听」的样子马上盖掉）
+    let settings = crate::broker::settings().0;
     let post = crate::broker::postprocess();
     let mut live = Live::new(foreground_is_terminal());
     live.set_terminal_newline(settings.text.terminal_newline);
