@@ -110,7 +110,7 @@ fn poll_loop(vk: u32, stop: &AtomicBool, status: &Status) {
     let mut state = Dictation::new(HOLD_THRESHOLD);
     let mut session: Option<Session> = None;
     let mut was_held = false;
-    let mut was_escape = false;
+    let mut escape_key = EscapeKey::default();
     let mut was_enter = false;
     while !stop.load(Ordering::Acquire) {
         let now = Instant::now();
@@ -162,11 +162,12 @@ fn poll_loop(vk: u32, stop: &AtomicBool, status: &Status) {
             }
         }
         was_enter = enter;
-        let escape = pressed(i32::from(VK_ESCAPE));
-        if escape && !was_escape && state.panel() != Panel::Hidden {
+        // 面板开着时把 Esc 登记成雪耳自己的热键：这一下 Esc 只给雪耳，不会再发给前台程序
+        // （审查 R10：原来只是轮询，Esc 同时打断了 Claude Code 里正在跑的任务）。面板收起就还回去。
+        escape_key.hold(state.panel() != Panel::Hidden);
+        if escape_key.pressed() && state.panel() != Panel::Hidden {
             inputs.push(Input::Close);
         }
-        was_escape = escape;
         while let Ok(click) = clicks.try_recv() {
             match click {
                 Click::Mic => inputs.push(Input::MicClick),
@@ -454,6 +455,77 @@ fn owner_input(hotkey: i32, panel: usize) -> bool {
             )
             && pressed(key)
     })
+}
+
+/// 面板开着时独占 Esc（RegisterHotKey，只登记这一个键，不装键盘钩子）。
+/// 热键消息发到轮询线程自己的消息队列，`pressed` 取走。
+#[derive(Default)]
+struct EscapeKey {
+    held: bool,
+    /// 登记失败退回轮询时，上一次看到的 Esc 状态
+    fallback_down: bool,
+}
+
+const ESCAPE_HOTKEY_ID: i32 = 0x5845; // 'XE'
+
+impl EscapeKey {
+    fn hold(&mut self, want: bool) {
+        use windows_sys::Win32::UI::Input::KeyboardAndMouse::{RegisterHotKey, UnregisterHotKey};
+        if want == self.held {
+            return;
+        }
+        unsafe {
+            if want {
+                // 别的程序已经占了 Esc 时登记会失败，那就退回轮询（Esc 会同时发给前台程序）
+                self.held = RegisterHotKey(
+                    std::ptr::null_mut(),
+                    ESCAPE_HOTKEY_ID,
+                    0x4000, // MOD_NOREPEAT
+                    u32::from(VK_ESCAPE),
+                ) != 0;
+                if !self.held {
+                    self.fallback_down = pressed(i32::from(VK_ESCAPE));
+                }
+            } else {
+                UnregisterHotKey(std::ptr::null_mut(), ESCAPE_HOTKEY_ID);
+                self.held = false;
+            }
+        }
+    }
+
+    /// 自从上次问过，Esc 有没有被按下
+    fn pressed(&mut self) -> bool {
+        use windows_sys::Win32::UI::WindowsAndMessaging::{
+            MSG, PM_REMOVE, PeekMessageW, WM_HOTKEY,
+        };
+        if !self.held {
+            let down = pressed(i32::from(VK_ESCAPE));
+            let edge = down && !self.fallback_down;
+            self.fallback_down = down;
+            return edge;
+        }
+        let mut hit = false;
+        unsafe {
+            let mut message: MSG = std::mem::zeroed();
+            while PeekMessageW(
+                &mut message,
+                std::ptr::null_mut(),
+                WM_HOTKEY,
+                WM_HOTKEY,
+                PM_REMOVE,
+            ) != 0
+            {
+                hit |= message.wParam as i32 == ESCAPE_HOTKEY_ID;
+            }
+        }
+        hit
+    }
+}
+
+impl Drop for EscapeKey {
+    fn drop(&mut self) {
+        self.hold(false);
+    }
 }
 
 fn is_alt(vk: i32) -> bool {
