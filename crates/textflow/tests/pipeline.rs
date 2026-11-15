@@ -57,3 +57,25 @@ fn terminal_join_uses_space_between_latin_sentences() {
     );
     assert_eq!(join_for_terminal(&["换行\n测试", "好"]), "换行 测试，好");
 }
+
+#[test]
+fn trailing_command_after_text_is_split_out() {
+    let o = Options::default();
+    assert_eq!(
+        process("这句是错的，删掉上一句。", &o),
+        Output::TextThen("这句是错的，".into(), VoiceCommand::DeleteLastSentence)
+    );
+    assert_eq!(
+        process("第一行，换行", &o),
+        Output::TextThen("第一行，".into(), VoiceCommand::NewLine)
+    );
+    // 指令词不在句末单独一小句的，照样是普通文字
+    assert_eq!(
+        process("这里要换行吗", &o),
+        Output::Text("这里要换行吗".into())
+    );
+    assert_eq!(
+        process("撤销这次提交", &o),
+        Output::Text("撤销这次提交".into())
+    );
+}

@@ -123,7 +123,9 @@ impl Live {
         if matched == 0 {
             return text.to_string();
         }
-        text[cut..].to_string()
+        // 发走部分后面紧跟的标点也算发走了的那句的，别单独留在新输入框开头
+        let rest = text[cut..].trim_start_matches(is_punct);
+        rest.to_string()
     }
 
     /// 中间结果：退掉上次没说定的部分里变了的字，再补上新的。
@@ -164,6 +166,11 @@ impl Live {
         keys.extend(match output {
             Output::Text(text) => self.typist.text(&clean(&text), self.terminal),
             Output::Command(command) => self.typist.command(command, self.terminal),
+            Output::TextThen(text, command) => {
+                let mut keys = self.typist.text(&clean(&text), self.terminal);
+                keys.extend(self.typist.command(command, self.terminal));
+                keys
+            }
         });
         keys
     }
@@ -276,10 +283,11 @@ mod tests {
         live.user_sent();
         doc.clear();
         // 云端随后送来同一句的定稿：不该再打一遍
+        // 剩下的只有标点：不打，免得发完的输入框里留一个「。」
         let raw = live.unsent("这句话非常好。");
-        assert_eq!(raw, "。");
+        assert_eq!(raw, "");
         type_into(&mut doc, &live.finalize(Output::Text(raw)));
-        assert_eq!(doc, "。");
+        assert_eq!(doc, "");
     }
 
     #[test]
@@ -296,7 +304,7 @@ mod tests {
         assert_eq!(doc, "然后接着说");
         let raw = live.unsent("先发这句，然后接着说。");
         type_into(&mut doc, &live.finalize(Output::Text(raw)));
-        assert_eq!(doc, "，然后接着说。");
+        assert_eq!(doc, "然后接着说。");
         // 定稿之后前缀作废，下一句照常
         assert_eq!(live.unsent("下一句"), "下一句");
     }
@@ -371,6 +379,20 @@ mod tests {
         let keys = live.finalize(Output::Command(VoiceCommand::NewLine));
         type_into(&mut doc, &keys);
         assert_eq!(doc, "第一句。\n");
+    }
+
+    #[test]
+    fn delete_last_sentence_said_at_the_end_removes_the_text_before_it() {
+        let mut live = Live::new(false);
+        let mut doc = String::from("上一句。");
+        live.finalize(Output::Text(String::new()));
+        type_into(&mut doc, &live.partial("这句是错的删掉上一句"));
+        let keys = live.finalize(Output::TextThen(
+            "这句是错的，".into(),
+            VoiceCommand::DeleteLastSentence,
+        ));
+        type_into(&mut doc, &keys);
+        assert_eq!(doc, "上一句。");
     }
 
     #[test]

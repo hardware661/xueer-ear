@@ -49,7 +49,7 @@ impl Postprocess {
             return event;
         }
         let text = match self.finalize(&event.text, now_ms) {
-            Output::Text(text) => text,
+            Output::Text(text) | Output::TextThen(text, _) => text,
             Output::Command(_) => event.text,
         };
         SpeechEvent {
@@ -62,7 +62,7 @@ impl Postprocess {
     /// 是文字且非空时写一条历史；历史写失败只打日志，不影响上屏。
     pub fn finalize(&self, text: &str, now_ms: u64) -> Output {
         let output = process(text, &self.options);
-        if let Output::Text(text) = &output {
+        if let Output::Text(text) | Output::TextThen(text, _) = &output {
             if !text.is_empty() {
                 let entry = Entry {
                     at_ms: now_ms,

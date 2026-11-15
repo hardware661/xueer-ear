@@ -30,6 +30,8 @@ impl Default for Options {
 pub enum Output {
     Text(String),
     Command(VoiceCommand),
+    /// 一句话末尾单独一小句是指令（「这句是错的，删掉上一句」）：先打文字，再执行指令
+    TextThen(String, VoiceCommand),
 }
 
 /// 顺序：口癖 → 指令 → 热词 → 数字 → 标点。
@@ -44,13 +46,32 @@ pub fn process(text: &str, options: &Options) -> Output {
     if let Some(command) = parse_command(&text, &options.commands) {
         return Output::Command(command);
     }
-    let text = options.hotwords.apply(&text);
+    if let Some((head, command)) = split_trailing_command(&text, &options.commands) {
+        return Output::TextThen(tidy(head, options), command);
+    }
+    Output::Text(tidy(&text, options))
+}
+
+fn tidy(text: &str, options: &Options) -> String {
+    let text = options.hotwords.apply(text);
     let text = if options.normalize_numbers {
         normalize_numbers(&text)
     } else {
         text
     };
-    Output::Text(apply_punctuation(&text, &options.punct))
+    apply_punctuation(&text, &options.punct)
+}
+
+/// 最后一个逗号/句号之后那一小句如果整句是指令，就拆成（前面的文字, 指令）。
+fn split_trailing_command<'a>(
+    text: &'a str,
+    options: &CommandOptions,
+) -> Option<(&'a str, VoiceCommand)> {
+    let body = text.trim_end_matches(['。', '！', '？', '!', '?', '.', '，', ',']);
+    let cut = body.rfind(['，', ',', '。', '；', ';', '！', '？'])?;
+    let separator = body[cut..].chars().next()?.len_utf8();
+    let command = parse_command(&body[cut + separator..], options)?;
+    Some((&text[..cut + separator], command))
 }
 
 /// 终端整段输入：把连续几句拼成一段。句子之间已有句末标点就直接接上，
