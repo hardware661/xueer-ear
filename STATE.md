@@ -7,7 +7,7 @@
 
 - [x] F1 结论：**不是故障**。Win+H 的面板永远是微软那个（设计如此：只换底下的识别，不换面板）。service.log（14:03:20 起）里三次唤起都由雪耳接受：[1] PCM peak≤34、上传 0，就是没录到说话就停了；[2] 识别出 partial 但停止时没出定稿；[3] 正常出定稿并记进历史。托盘左键只是打开面板，不会改变接管状态。后续可做：面板看不出是谁在识别，计划里 B6「听写时托盘耳朵抖动」能补这个提示（没做）
 - [x] F2 nav 登记：oracle-infra `0abcd74`（services.yaml repo+external 服务、owner-access app-auth）已 push.sh 同步；hub 06:14 书签私密 21→22，登录 nav.hdwde.com 可见「雪耳」→ GitHub 仓
-- [x] F3 GitHub 私有仓 https://github.com/hardware661/xueer-ear 已建，main 推到 `712e1f2`（推前 gitleaks 33 个提交无泄漏）；转公开、打标签、发 Release 仍每次先问
+- [x] F3 GitHub 私有仓 https://github.com/hardware661/xueer-ear 已建，main 推到 `712e1f2`（推前 gitleaks 33 个提交无泄漏）；第一次 CI 因 cargo fmt 检查失败，格式化后 `671b7cb` 的 CI（Windows 测试 + MSVC 静态构建 + 双包）通过。转公开、打标签、发 Release 仍每次先问
 
 ## 2026-11-15 第三轮 · 剩下的全做（Claude；主人原话："我觉得没有什么不安全的 很正常的需求 你可以继续做"）
 
