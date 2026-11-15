@@ -4,6 +4,8 @@ mod broker;
 mod control;
 #[cfg(any(windows, test))]
 mod input_guard;
+#[cfg(any(windows, test))]
+mod hotkey_state;
 #[cfg(windows)]
 mod install;
 #[cfg(any(windows, test))]

@@ -24,6 +24,12 @@ pub use wetype::run as run_wetype;
 
 pub enum Source {
     Microphone(Option<String>),
+    /// 快捷键模式：按住时录音，`release` 置位后停止采音，但让当前这句正常收尾出定稿
+    /// （`stop` 则是取消，会丢掉没定稿的部分）。
+    MicrophoneHold {
+        device: Option<String>,
+        release: Arc<AtomicBool>,
+    },
     Wave(PathBuf),
     WaveHold(PathBuf),
 }
@@ -145,6 +151,13 @@ fn produce(
             let mut microphone = Microphone::open(device.as_deref())?;
             turns_ready(&ready_sender, Some(microphone.device.clone()))?;
             while !stop.load(Ordering::Acquire) {
+                microphone.poll(&mut accept)?;
+            }
+        }
+        Source::MicrophoneHold { device, release } => {
+            let mut microphone = Microphone::open(device.as_deref())?;
+            turns_ready(&ready_sender, Some(microphone.device.clone()))?;
+            while !stop.load(Ordering::Acquire) && !release.load(Ordering::Acquire) {
                 microphone.poll(&mut accept)?;
             }
         }
