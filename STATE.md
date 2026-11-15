@@ -8,7 +8,7 @@
 **做法**：按风险从低到高排，每步做完就提交并在这里打勾；被掐了，下一个接手的人从第一个没勾的继续。读代码只 grep 定位、读小片段。
 
 - [x] R1 README 重写（中文、不提上游）、assets 说明
-- [ ] R2 B6 图标：手画 SVG 兽耳
+- [x] R2 B6 图标：手画 SVG 兽耳（深灰底、白耳、笑脸弧线），PNG 1024 和 ICO 七帧从 SVG 重新生成，16 像素下看过能认出
 - [x] R3 C12 更新检查：核对过，已经查 `hardware661/xueer-ear` 的 Releases（`crates/gui/src/update.rs`），每 6 小时一次，不用改；「上游有新版」提示没做（要加第二个查询地址，放后面）
 - [ ] R4 设置：textflow / history 的配置文件（%LOCALAPPDATA%\XueerEar）
 - [ ] R5 把 textflow 接到定稿文字上屏前、history 接到上屏后（只改出字那一处）

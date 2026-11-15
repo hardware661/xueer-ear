@@ -1,6 +1,6 @@
 # 图标与常量
 
-`app-icon.svg` 是图标源文件，`app-icon.png` 和 `app-icon.ico` 由它渲染。ICO 含 16、24、32、48、64、128、256 像素七帧。界面、任务栏和托盘共用这一套。
+`app-icon.svg` 是图标源文件（深灰圆角底、一对白色兽耳、下方一道声波，手画矢量），`app-icon.png` 和 `app-icon.ico` 由它渲染。ICO 含 16、24、32、48、64、128、256 像素七帧。界面、任务栏和托盘共用这一套。
 
 `github-mark.svg` 来自 [Primer Octicons](https://github.com/primer/octicons/blob/main/icons/mark-github-16.svg)，PNG 和 ICO 是同一个矢量图换格式；许可见 `LICENSE-octicons.txt`。
 
