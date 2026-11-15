@@ -4,8 +4,10 @@
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum VoiceCommand {
     NewLine,
+    /// 删掉雪耳刚打的上一句。「删除」「撤销」「撤回」都是它（主人 2026-11-15：应该是同一个功能）
     DeleteLastSentence,
-    Undo,
+    /// 删掉这次听写里雪耳打的全部内容
+    DeleteAll,
     /// 按回车。默认关闭，免得在终端里把半截话发给 AI。
     Send,
 }
@@ -17,6 +19,11 @@ pub struct CommandOptions {
 
 const WORDS: &[(&str, VoiceCommand)] = &[
     ("换行", VoiceCommand::NewLine),
+    ("删除", VoiceCommand::DeleteLastSentence),
+    ("删掉", VoiceCommand::DeleteLastSentence),
+    ("删了", VoiceCommand::DeleteLastSentence),
+    ("撤销", VoiceCommand::DeleteLastSentence),
+    ("撤回", VoiceCommand::DeleteLastSentence),
     ("删掉上一句", VoiceCommand::DeleteLastSentence),
     ("删除上一句", VoiceCommand::DeleteLastSentence),
     ("删掉上一句话", VoiceCommand::DeleteLastSentence),
@@ -25,8 +32,12 @@ const WORDS: &[(&str, VoiceCommand)] = &[
     ("删除上句话", VoiceCommand::DeleteLastSentence),
     ("删掉上一行", VoiceCommand::DeleteLastSentence),
     ("删除上一行", VoiceCommand::DeleteLastSentence),
-    ("撤销", VoiceCommand::Undo),
-    ("撤回", VoiceCommand::Undo),
+    ("全部删除", VoiceCommand::DeleteAll),
+    ("全部删掉", VoiceCommand::DeleteAll),
+    ("全都删除", VoiceCommand::DeleteAll),
+    ("全都删掉", VoiceCommand::DeleteAll),
+    ("全删了", VoiceCommand::DeleteAll),
+    ("清空", VoiceCommand::DeleteAll),
     ("发送", VoiceCommand::Send),
 ];
 

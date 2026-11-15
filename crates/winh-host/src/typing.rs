@@ -10,22 +10,50 @@ pub enum Key {
     Enter,
     /// 终端里换行不发送（Claude Code 文档：Ctrl+J 在所有终端都是换行；模拟的 Shift+Enter 在 Windows Terminal 里被当成回车发出去了）
     CtrlJ,
-    CtrlZ,
     /// 退格若干次
     Backspace(usize),
 }
 
-/// 记住本次快捷键会话里已经上屏的句子，用来执行「删掉上一句」和终端里的句间分隔。
+/// 这次听写里雪耳已经上屏的东西，一条一条记着，用来往回删和在终端里补句间分隔。
 #[derive(Default)]
 pub struct Typist {
-    sentences: Vec<String>,
+    typed: Vec<Typed>,
+}
+
+enum Typed {
+    Sentence(String),
+    /// 语音「换行」打出来的那个换行
+    NewLine,
+}
+
+impl Typed {
+    /// 删掉它要退格几次
+    fn width(&self) -> usize {
+        match self {
+            Self::Sentence(text) => text.chars().count(),
+            Self::NewLine => 1,
+        }
+    }
 }
 
 impl Typist {
+    /// 当前这一行里的上一句（换行之后是空的）
+    fn previous(&self) -> &str {
+        match self.typed.last() {
+            Some(Typed::Sentence(text)) => text,
+            _ => "",
+        }
+    }
+
+    /// 主人自己按 Enter 把内容发走了：之前打的都不在输入框里了
+    pub fn forget(&mut self) {
+        self.typed.clear();
+    }
+
     /// 上屏一句定稿文字。终端里：换行换成空格，和上一句之间用 `join_for_terminal` 的规则补分隔。
     pub fn text(&mut self, text: &str, terminal: bool) -> Vec<Key> {
         let typed = if terminal {
-            let previous = self.sentences.last().map_or("", String::as_str);
+            let previous = self.previous();
             let joined = xueer_ear_textflow::join_for_terminal(&[previous, text]);
             joined[previous.len()..].to_string()
         } else {
@@ -34,38 +62,44 @@ impl Typist {
         if typed.is_empty() {
             return vec![];
         }
-        self.sentences.push(typed.clone());
+        self.typed.push(Typed::Sentence(typed.clone()));
         vec![Key::Text(typed)]
     }
 
     pub fn command(&mut self, command: VoiceCommand, terminal: bool) -> Vec<Key> {
         match command {
             VoiceCommand::NewLine => {
-                self.sentences.clear();
+                self.typed.push(Typed::NewLine);
                 // 终端里 Enter 就是发送，用 Ctrl+J 换行（2026-11-15 主人真机：Shift+Enter 被发送出去了）
                 vec![if terminal { Key::CtrlJ } else { Key::Enter }]
             }
-            VoiceCommand::DeleteLastSentence => self
-                .sentences
-                .pop()
-                .map(|s| vec![Key::Backspace(s.chars().count())])
-                .unwrap_or_default(),
-            // 终端里 Ctrl+Z 是「挂起前台程序」，绝不能发（2026-11-15 把主人的 Claude Code 挂起了）；
-            // 终端里的撤销 = 删掉雪耳刚打的上一句
-            VoiceCommand::Undo if terminal => self
-                .sentences
-                .pop()
-                .map(|s| vec![Key::Backspace(s.chars().count())])
-                .unwrap_or_default(),
-            VoiceCommand::Undo => {
-                self.sentences.pop();
-                vec![Key::CtrlZ]
+            // 删掉上一句；它前面紧挨着的换行也一起删，这样能一路删回上一行
+            // （主人 2026-11-15：换行之后只能删第二行）。不发 Ctrl+Z：终端里那是挂起前台程序。
+            VoiceCommand::DeleteLastSentence => {
+                let mut count = 0;
+                while matches!(self.typed.last(), Some(Typed::NewLine)) {
+                    count += self.typed.pop().map_or(0, |t| t.width());
+                }
+                count += self.typed.pop().map_or(0, |t| t.width());
+                backspaces(count)
+            }
+            VoiceCommand::DeleteAll => {
+                let count = self.typed.drain(..).map(|t| t.width()).sum();
+                backspaces(count)
             }
             VoiceCommand::Send => {
-                self.sentences.clear();
+                self.typed.clear();
                 vec![Key::Enter]
             }
         }
+    }
+}
+
+fn backspaces(count: usize) -> Vec<Key> {
+    if count == 0 {
+        vec![]
+    } else {
+        vec![Key::Backspace(count)]
     }
 }
 
@@ -98,7 +132,7 @@ impl Live {
     pub fn user_sent(&mut self) {
         let shown = self.revision.pending().to_string();
         self.revision.clear();
-        self.typist.sentences.clear();
+        self.typist.forget();
         if !shown.is_empty() {
             let previous = self.sent.take().unwrap_or_default();
             self.sent = Some(previous + &shown);
@@ -187,7 +221,7 @@ impl Live {
         if !self.terminal || text.is_empty() {
             return text.to_string();
         }
-        let previous = self.typist.sentences.last().map_or("", String::as_str);
+        let previous = self.typist.previous();
         let joined = xueer_ear_textflow::join_for_terminal(&[previous, text]);
         joined[previous.len()..].to_string()
     }
@@ -273,7 +307,6 @@ mod tests {
                     }
                 }
                 Key::Enter | Key::CtrlJ => doc.push('\n'),
-                Key::CtrlZ => {}
             }
         }
     }
@@ -438,17 +471,58 @@ mod tests {
         assert_eq!(t.command(VoiceCommand::Send, true), [Key::Enter]);
         // 发出去以后不能再删
         assert_eq!(t.command(VoiceCommand::DeleteLastSentence, true), []);
-        assert_eq!(t.command(VoiceCommand::Undo, false), [Key::CtrlZ]);
+        // 撤销就是删掉上一句（主人 2026-11-15：两个应该是同一个功能），不发 Ctrl+Z
+        let mut t = Typist::default();
+        t.text("写错了", false);
+        assert_eq!(
+            t.command(VoiceCommand::DeleteLastSentence, false),
+            [Key::Backspace(3)]
+        );
     }
 
     #[test]
-    fn undo_in_a_terminal_never_sends_ctrl_z() {
-        // 终端里 Ctrl+Z 是挂起前台程序（2026-11-15 把主人的 Claude Code 挂起了）
+    fn delete_reaches_back_across_a_spoken_newline() {
+        // 主人：「发了 12345，然后换行之后，就只能删除第二行的东西了」
+        for terminal in [true, false] {
+            let mut t = Typist::default();
+            let mut doc = String::new();
+            type_into(&mut doc, &t.text("12345。", terminal));
+            type_into(&mut doc, &t.command(VoiceCommand::NewLine, terminal));
+            type_into(&mut doc, &t.text("好。", terminal));
+            assert_eq!(doc, "12345。\n好。");
+            type_into(
+                &mut doc,
+                &t.command(VoiceCommand::DeleteLastSentence, terminal),
+            );
+            assert_eq!(doc, "12345。\n");
+            // 再删一次：换行和上一行那句一起删掉
+            type_into(
+                &mut doc,
+                &t.command(VoiceCommand::DeleteLastSentence, terminal),
+            );
+            assert_eq!(doc, "");
+            assert_eq!(t.command(VoiceCommand::DeleteLastSentence, terminal), []);
+        }
+    }
+
+    #[test]
+    fn terminal_text_after_a_newline_starts_clean() {
+        // 换行后的第一句前面不该补「，」
         let mut t = Typist::default();
-        t.text("第一句", true);
-        t.text("第二句", true);
-        assert_eq!(t.command(VoiceCommand::Undo, true), [Key::Backspace(4)]);
-        assert_eq!(t.command(VoiceCommand::Undo, true), [Key::Backspace(3)]);
-        assert_eq!(t.command(VoiceCommand::Undo, true), []);
+        t.text("第一行", true);
+        t.command(VoiceCommand::NewLine, true);
+        assert_eq!(t.text("第二行", true), [Key::Text("第二行".into())]);
+    }
+
+    #[test]
+    fn delete_all_removes_everything_typed_this_session() {
+        let mut t = Typist::default();
+        let mut doc = String::from("手打的");
+        type_into(&mut doc, &t.text("第一句。", false));
+        type_into(&mut doc, &t.command(VoiceCommand::NewLine, false));
+        type_into(&mut doc, &t.text("第二句🙂", false));
+        type_into(&mut doc, &t.command(VoiceCommand::DeleteAll, false));
+        assert_eq!(doc, "手打的");
+        assert_eq!(t.command(VoiceCommand::DeleteAll, false), []);
     }
 }

@@ -423,11 +423,6 @@ fn send_keys(keys: &[Key]) {
                 inputs.extend(tap(u16::from(b'J')));
                 inputs.push(key(VK_CONTROL, 0, KEYEVENTF_KEYUP));
             }
-            Key::CtrlZ => {
-                inputs.push(key(VK_CONTROL, 0, 0));
-                inputs.extend(tap(u16::from(b'Z')));
-                inputs.push(key(VK_CONTROL, 0, KEYEVENTF_KEYUP));
-            }
             Key::Backspace(count) => {
                 for _ in 0..*count {
                     inputs.extend(tap(VK_BACK));
