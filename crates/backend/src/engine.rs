@@ -49,6 +49,8 @@ pub enum Event {
         samples: u64,
         peak: u32,
         rms: f64,
+        /// 自动增益的倍数（1 = 没放大）
+        gain: f32,
         pieces: u32,
         responses: usize,
         partials: usize,
@@ -67,6 +69,8 @@ struct Signal {
     samples: AtomicU64,
     peak: AtomicU32,
     square: AtomicU64,
+    /// 自动增益当前的倍数 ×10（没开增益时是 10）
+    gain_tenths: AtomicU32,
 }
 impl Signal {
     fn accept(&self, pcm: &[i16]) {
@@ -86,6 +90,7 @@ impl Signal {
             samples,
             peak: self.peak.swap(0, Ordering::Relaxed),
             rms: (self.square.load(Ordering::Relaxed) as f64 / samples.max(1) as f64).sqrt(),
+            gain: self.gain_tenths.load(Ordering::Relaxed).max(10) as f32 / 10.,
             pieces,
             responses,
             partials,
@@ -142,9 +147,25 @@ fn produce(
     let settings = Settings::load_default()?;
     let mut turns = AudioTurns::new(sender, settings.silence_seconds)?;
     let ready_sender = turns.sender.clone();
+    // 麦克风离嘴远时声音太小，云端会直接认不出字：送去断句和识别前先自动放大。
+    // 录好的 WAV 不放大（测试用的是正常音量）。面板上的音量条看的是放大前的原始声音。
+    let mut gain = matches!(
+        &source,
+        Source::Microphone(_) | Source::MicrophoneHold { .. }
+    )
+    .then(xueer_ear_audio::gain::Gain::default);
     let mut accept = |pcm: &[i16]| -> Result<()> {
         signal.accept(pcm);
-        turns.accept(pcm)
+        match gain.as_mut() {
+            Some(gain) => {
+                let louder = gain.process(pcm);
+                signal
+                    .gain_tenths
+                    .store((gain.current() * 10.).round() as u32, Ordering::Relaxed);
+                turns.accept(&louder)
+            }
+            None => turns.accept(pcm),
+        }
     };
     match source {
         Source::Microphone(device) => {

@@ -200,7 +200,7 @@ fn start(
                         }
                         return Ok(());
                     }
-                    Event::Progress { samples, peak, rms, pieces, responses, partials, finals } => {
+                    Event::Progress { samples, peak, rms, pieces, responses, partials, finals, .. } => {
                         if !stopping.load(Ordering::Acquire) { if let Some(target)=terminal.as_mut() { target.poll(&stopping)?; } }
                         status.progress(peak, partials, finals);
                         if last_log.elapsed() >= Duration::from_secs(if started.elapsed().as_secs() < 10 { 1 } else { 15 }) {

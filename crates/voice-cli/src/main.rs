@@ -124,7 +124,7 @@ fn run() -> Result<(), Box<dyn Error + Send + Sync>> {
                     Event::Started => println!("mic_session=ready"),
                     Event::Activity(phase) => println!("activity={phase}"),
                     Event::Input { name, muted, volume } => println!("device={name} muted={muted:?} volume={volume:?}"),
-                    Event::Progress { samples, peak, rms, pieces, responses, partials, finals } => println!("samples={samples} peak={peak} rms={rms:.1} uploaded={pieces} responses={responses} partials={partials} finals={finals}"),
+                    Event::Progress { samples, peak, rms, gain, pieces, responses, partials, finals } => println!("samples={samples} peak={peak} rms={rms:.1} gain={gain:.1} uploaded={pieces} responses={responses} partials={partials} finals={finals}"),
                     Event::Speech(_) => (),
                 }
                 Ok(())

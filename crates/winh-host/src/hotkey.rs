@@ -270,6 +270,8 @@ fn record(
     let mut last_text = Instant::now();
     let mut last_heard = String::new();
     let max_listen = Duration::from_secs(u64::from(settings.max_listen_minutes) * 60);
+    // 这一句里说话的最大音量和最后的增益，一句说完写一行日志（只记数字，不记内容）
+    let (mut loudest, mut last_gain) = (0_u32, 1_f32);
     let result = engine::run_wetype(source, cancel, |event| {
         if stopped.load(Ordering::Acquire) {
             return Ok(());
@@ -282,6 +284,10 @@ fn record(
             Event::Activity(phase) => {
                 // 一句说完（paused）后其实还在接着听，控制面板上照样显示「聆听中」
                 status.phase(if phase == "paused" { "armed" } else { phase });
+                if phase == "paused" {
+                    println!("一句说完：原始峰值 {loudest}，自动放大 {last_gain:.1} 倍");
+                    loudest = 0;
+                }
                 panel.set(if matches!(phase, "connecting" | "reconnecting") {
                     Look::Connecting
                 } else {
@@ -290,10 +296,13 @@ fn record(
             }
             Event::Progress {
                 peak,
+                gain,
                 partials,
                 finals,
                 ..
             } => {
+                loudest = loudest.max(peak);
+                last_gain = gain;
                 status.progress(peak, partials, finals);
                 panel.level(peak);
                 if last_text.elapsed() >= WAVE_HOLD {
