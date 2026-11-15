@@ -50,6 +50,13 @@ impl Typist {
                 .pop()
                 .map(|s| vec![Key::Backspace(s.chars().count())])
                 .unwrap_or_default(),
+            // 终端里 Ctrl+Z 是「挂起前台程序」，绝不能发（2026-11-15 把主人的 Claude Code 挂起了）；
+            // 终端里的撤销 = 删掉雪耳刚打的上一句
+            VoiceCommand::Undo if terminal => self
+                .sentences
+                .pop()
+                .map(|s| vec![Key::Backspace(s.chars().count())])
+                .unwrap_or_default(),
             VoiceCommand::Undo => {
                 self.sentences.pop();
                 vec![Key::CtrlZ]
@@ -432,5 +439,16 @@ mod tests {
         // 发出去以后不能再删
         assert_eq!(t.command(VoiceCommand::DeleteLastSentence, true), []);
         assert_eq!(t.command(VoiceCommand::Undo, false), [Key::CtrlZ]);
+    }
+
+    #[test]
+    fn undo_in_a_terminal_never_sends_ctrl_z() {
+        // 终端里 Ctrl+Z 是挂起前台程序（2026-11-15 把主人的 Claude Code 挂起了）
+        let mut t = Typist::default();
+        t.text("第一句", true);
+        t.text("第二句", true);
+        assert_eq!(t.command(VoiceCommand::Undo, true), [Key::Backspace(4)]);
+        assert_eq!(t.command(VoiceCommand::Undo, true), [Key::Backspace(3)]);
+        assert_eq!(t.command(VoiceCommand::Undo, true), []);
     }
 }

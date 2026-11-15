@@ -19,7 +19,14 @@ const WORDS: &[(&str, VoiceCommand)] = &[
     ("换行", VoiceCommand::NewLine),
     ("删掉上一句", VoiceCommand::DeleteLastSentence),
     ("删除上一句", VoiceCommand::DeleteLastSentence),
+    ("删掉上一句话", VoiceCommand::DeleteLastSentence),
+    ("删除上一句话", VoiceCommand::DeleteLastSentence),
+    ("删掉上句话", VoiceCommand::DeleteLastSentence),
+    ("删除上句话", VoiceCommand::DeleteLastSentence),
+    ("删掉上一行", VoiceCommand::DeleteLastSentence),
+    ("删除上一行", VoiceCommand::DeleteLastSentence),
     ("撤销", VoiceCommand::Undo),
+    ("撤回", VoiceCommand::Undo),
     ("发送", VoiceCommand::Send),
 ];
 
