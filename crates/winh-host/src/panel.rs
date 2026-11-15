@@ -342,9 +342,9 @@ impl Window {
 const PANEL_FILL: u32 = 0xfff2f2f5;
 const INNER_EAR: u32 = 0xfff1d9df;
 const MUTED: u32 = 0xff8e8e93;
-/// 在听、在说话：深灰（主人不喜欢蓝色）
-const BLUE: u32 = 0xff3a3a3c;
-const HALO: u32 = 0x263a3a3c;
+/// 在听和出字用同一种中灰圆底（主人：麦克风太淡、波浪太深，综合成一种）
+const ACCENT: u32 = 0xff8e8e93;
+const HALO: u32 = 0x268e8e93;
 const GREY_FILL: u32 = 0xffe5e5ea;
 
 unsafe fn paint(
@@ -416,20 +416,24 @@ unsafe fn paint_graphics(g: *mut gp::GpGraphics, scale: f32, look: Look, level: 
             INNER_EAR,
             0,
         );
-        // 中间：浅灰麦克风=在听、还没听到说话；深灰底白波浪=正在出字（主人：没说话时麦克风应该是淡灰）
+        // 中间：同一种中灰圆底，没开口时是白麦克风，出字时是白波浪
         let (cx, cy) = (WIDTH / 2., BODY_TOP + body_h / 2.);
         match look {
             Look::Speaking => {
                 let r = 24. + 6. * level;
                 ellipse(g, cx - r, cy - r, r * 2., r * 2., HALO);
-                ellipse(g, cx - 22., cy - 22., 44., 44., BLUE);
+                ellipse(g, cx - 22., cy - 22., 44., 44., ACCENT);
                 wave(g, cx, cy, level, phase);
             }
             Look::Connecting => {
                 let r = 24. + 6. * (0.25 + 0.25 * phase.sin().abs());
                 ellipse(g, cx - r, cy - r, r * 2., r * 2., HALO);
-                ellipse(g, cx - 22., cy - 22., 44., 44., GREY_FILL);
-                mic(g, cx - 9., cy - 12., 18., MUTED);
+                ellipse(g, cx - 22., cy - 22., 44., 44., ACCENT);
+                mic(g, cx - 9., cy - 12., 18., 0xffffffff);
+            }
+            Look::Listening => {
+                ellipse(g, cx - 22., cy - 22., 44., 44., ACCENT);
+                mic(g, cx - 9., cy - 12., 18., 0xffffffff);
             }
             _ => {
                 ellipse(g, cx - 22., cy - 22., 44., 44., GREY_FILL);
