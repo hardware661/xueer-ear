@@ -1,7 +1,7 @@
-# 图标与协议常量
+# 图标与常量
 
-`app-icon.svg` 是微win的可编辑扁平图标源文件：绿色圆角方块、白色麦克风及右下角微信双气泡。`app-icon.png` 和 `app-icon.ico` 从 SVG 渲染并封装，ICO 包含16、24、32、48、64、128、256像素帧。界面、任务栏和托盘共用该图。
+`app-icon.svg` 是图标源文件，`app-icon.png` 和 `app-icon.ico` 由它渲染。ICO 含 16、24、32、48、64、128、256 像素七帧。界面、任务栏和托盘共用这一套。
 
-`github-mark.svg` 来自 [Primer Octicons](https://github.com/primer/octicons/blob/main/icons/mark-github-16.svg)，PNG/ICO 是相同矢量图的格式封装；许可见 `LICENSE-octicons.txt`。
+`github-mark.svg` 来自 [Primer Octicons](https://github.com/primer/octicons/blob/main/icons/mark-github-16.svg)，PNG 和 ICO 是同一个矢量图换格式；许可见 `LICENSE-octicons.txt`。
 
-`wetype-bootstrap.bin` 与 `wetype-sign-salt.bin` 是独立协议实现使用的固定客户端常量，不包含用户设备身份或会话凭据。匿名身份由程序首次运行时随机生成，仅保存在本机应用数据目录。
+`wetype-bootstrap.bin` 和 `wetype-sign-salt.bin` 是识别客户端用的固定常量，不含设备身份或凭据。匿名身份在程序第一次运行时随机生成，只存在本机数据目录。
