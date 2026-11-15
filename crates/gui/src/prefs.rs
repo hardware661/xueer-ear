@@ -5,11 +5,19 @@ pub const OPEN_HISTORY: usize = 1100;
 pub const OPEN_HOTWORDS: usize = 1101;
 const BASE: usize = 1110;
 const DAYS: [u32; 4] = [1, 7, 30, 90];
+/// 可选的快捷键（虚拟键码）；都是单独按不会打出字的键
+const KEYS: [(&str, u32); 5] = [
+    ("右 Alt", 0xA5),
+    ("右 Ctrl", 0xA3),
+    ("CapsLock", 0x14),
+    ("F8", 0x77),
+    ("F9", 0x78),
+];
 
 type Switch = (&'static str, fn(&mut Settings) -> &mut bool);
 
 /// 开关类选项，顺序就是菜单顺序。
-const SWITCHES: [Switch; 9] = [
+const SWITCHES: [Switch; 10] = [
     ("去掉口头禅", |s| &mut s.text.strip_fillers),
     ("中文数字转阿拉伯数字", |s| {
         &mut s.text.normalize_numbers
@@ -20,9 +28,10 @@ const SWITCHES: [Switch; 9] = [
         &mut s.text.fullwidth_punct_in_cjk
     }),
     ("说「发送」时按回车", |s| &mut s.text.allow_send),
-    ("快捷键模式（按住右 Alt）", |s| {
+    ("快捷键听写（雪耳面板）", |s| {
         &mut s.hotkey_enabled
     }),
+    ("同时接管 Win+H", |s| &mut s.winh_enabled),
     ("提示音", |s| &mut s.sounds_enabled),
     ("记录历史", |s| &mut s.history_enabled),
 ];
@@ -42,6 +51,12 @@ pub fn choices(s: &Settings) -> Vec<(usize, String, bool)> {
             s.history_enabled && s.history_keep_days == *days,
         )
     }));
+    let key_base = BASE + SWITCHES.len() + DAYS.len();
+    out.extend(
+        KEYS.iter()
+            .enumerate()
+            .map(|(i, (name, vk))| (key_base + i, format!("快捷键：{name}"), s.hotkey_vk == *vk)),
+    );
     out.push((OPEN_HISTORY, "查看历史记录".to_owned(), false));
     out.push((OPEN_HOTWORDS, "编辑热词表".to_owned(), false));
     out
@@ -54,9 +69,11 @@ pub fn toggle(s: &Settings, id: usize) -> Option<Settings> {
     if let Some((_, field)) = SWITCHES.get(index) {
         let value = field(&mut next);
         *value = !*value;
-    } else {
-        next.history_keep_days = *DAYS.get(index - SWITCHES.len())?;
+    } else if let Some(days) = DAYS.get(index - SWITCHES.len()) {
+        next.history_keep_days = *days;
         next.history_enabled = true;
+    } else {
+        next.hotkey_vk = KEYS.get(index - SWITCHES.len() - DAYS.len())?.1;
     }
     Some(next)
 }
@@ -79,7 +96,10 @@ mod tests {
         assert!(find(&c, "中文数字转阿拉伯数字").1);
         assert!(!find(&c, "去掉末尾句号").1);
         assert!(!find(&c, "说「发送」时按回车").1);
-        assert!(find(&c, "快捷键模式（按住右 Alt）").1);
+        assert!(find(&c, "快捷键听写（雪耳面板）").1);
+        assert!(!find(&c, "同时接管 Win+H").1);
+        assert!(find(&c, "快捷键：右 Alt").1);
+        assert!(!find(&c, "快捷键：右 Ctrl").1);
         assert!(find(&c, "提示音").1);
         assert!(find(&c, "保留 7 天历史").1);
         assert!(!find(&c, "保留 30 天历史").1);
@@ -91,7 +111,11 @@ mod tests {
     fn each_switch_flips_only_itself() {
         let s = Settings::default();
         for (id, text, on) in choices(&s) {
-            if id == OPEN_HISTORY || id == OPEN_HOTWORDS || text.starts_with("保留") {
+            if id == OPEN_HISTORY
+                || id == OPEN_HOTWORDS
+                || text.starts_with("保留")
+                || text.starts_with("快捷键：")
+            {
                 continue;
             }
             let next = toggle(&s, id).unwrap_or_else(|| panic!("{text}"));
@@ -113,6 +137,16 @@ mod tests {
         assert!(!toggle(&s, off).unwrap().history_enabled);
         assert!(toggle(&s, OPEN_HISTORY).is_none());
         assert!(toggle(&s, 9999).is_none());
+    }
+
+    #[test]
+    fn hotkey_choice() {
+        let s = Settings::default();
+        let id = find(&choices(&s), "快捷键：F8").0;
+        let next = toggle(&s, id).unwrap();
+        assert_eq!(next.hotkey_vk, 0x77);
+        assert!(find(&choices(&next), "快捷键：F8").1);
+        assert!(!find(&choices(&next), "快捷键：右 Alt").1);
     }
 
     #[test]
