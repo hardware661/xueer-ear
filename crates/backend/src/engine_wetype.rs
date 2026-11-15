@@ -254,7 +254,19 @@ pub fn run(
             }
             Ok(Audio::End) => {
                 if let Some(ended) = turn.take() {
-                    let part = ended.finish(&stop, &mut counts, &mut output)?;
+                    // 收句等最终结果时断线（最容易超时的几秒）：和说话中途断线一样，重连、整句重发、再收一次（审查 R8）
+                    let mut sink_failed = false;
+                    let finished = ended.finish(&stop, &mut counts, &mut |event| {
+                        output(event).inspect_err(|_| sink_failed = true)
+                    });
+                    let part = match finished {
+                        Ok(part) => part,
+                        Err(error) if sink_failed => return Err(error),
+                        Err(error) => match reconnect(&stop, &mut replay, error, &mut output)? {
+                            Some(again) => again.finish(&stop, &mut counts, &mut output)?,
+                            None => String::new(),
+                        },
+                    };
                     if text.len() + part.len() > (1 << 20) {
                         return Err("dictation text exceeds limit".into());
                     }
