@@ -80,6 +80,8 @@ struct Session {
     cancel: Arc<AtomicBool>,
     /// 主人自己按 Enter 的次数（轮询线程加，听写线程读），用来去掉已发走的文字
     sent: Arc<std::sync::atomic::AtomicU32>,
+    /// 主人动了键盘或鼠标的次数（点别处、打字）：听写线程看到变化就不再往回改字
+    touched: Arc<std::sync::atomic::AtomicU32>,
     worker: JoinHandle<()>,
 }
 
@@ -118,6 +120,12 @@ fn poll_loop(vk: i32, stop: &AtomicBool) {
             inputs.push(Input::KeyUp);
         }
         was_held = held;
+        // 主人自己动了键盘或鼠标（不是热键、Esc，也不是点雪耳面板）：通知这轮听写别再往回改字
+        if let Some(s) = &session {
+            if owner_input(vk, panel.hwnd()) {
+                s.touched.fetch_add(1, Ordering::AcqRel);
+            }
+        }
         // 主人自己按 Enter（我们注入 Enter 时会先置 INJECTING，不算）
         let enter = pressed(i32::from(VK_RETURN));
         if enter && !was_enter && !INJECTING.load(Ordering::Acquire) {
@@ -177,10 +185,18 @@ fn begin(panel: PanelHandle) -> Session {
     let release = Arc::new(AtomicBool::new(false));
     let cancel = Arc::new(AtomicBool::new(false));
     let sent = Arc::new(std::sync::atomic::AtomicU32::new(0));
+    let touched = Arc::new(std::sync::atomic::AtomicU32::new(0));
+    let worker_touched = touched.clone();
     let (worker_release, worker_cancel, worker_sent) =
         (release.clone(), cancel.clone(), sent.clone());
     let worker = thread::spawn(move || {
-        if let Err(error) = record(worker_release, worker_cancel, worker_sent, &panel) {
+        if let Err(error) = record(
+            worker_release,
+            worker_cancel,
+            worker_sent,
+            worker_touched,
+            &panel,
+        ) {
             eprintln!("快捷键听写失败：{error}");
         }
     });
@@ -188,6 +204,7 @@ fn begin(panel: PanelHandle) -> Session {
         release,
         cancel,
         sent,
+        touched,
         worker,
     }
 }
@@ -198,9 +215,11 @@ fn record(
     release: Arc<AtomicBool>,
     cancel: Arc<AtomicBool>,
     sent: Arc<std::sync::atomic::AtomicU32>,
+    touched: Arc<std::sync::atomic::AtomicU32>,
     panel: &PanelHandle,
 ) -> crate::install::Result<()> {
     let mut seen_sent = 0;
+    let mut seen_touched = 0;
     let settings = Settings::load_default().unwrap_or_default();
     let post = crate::broker::postprocess();
     let mut live = Live::new(foreground_is_terminal());
@@ -247,6 +266,12 @@ fn record(
                     seen_sent = now_sent;
                     live.user_sent();
                 }
+                // 主人动了键盘或鼠标：这句不再往回改字，只往后接
+                let now_touched = touched.load(Ordering::Acquire);
+                if now_touched != seen_touched {
+                    seen_touched = now_touched;
+                    live.user_touched();
+                }
                 let text = live.unsent(&speech.text);
                 let keys = if speech.final_result {
                     live.finalize(post.finalize(&text, crate::broker::now_ms()))
@@ -264,6 +289,63 @@ fn record(
         crate::sound::play(crate::sound::Cue::Missed, settings.sounds_enabled);
     }
     Ok(())
+}
+
+/// 正在往前台发我们自己的按键：这期间看到的按键状态不是主人的
+static TYPING: AtomicBool = AtomicBool::new(false);
+
+/// 系统记的「最近一次输入」时间。SendInput 注入的也算，所以每次我们自己发完键就记一下，
+/// 之后这个值再变，才可能是主人动的。
+static LAST_SEEN_INPUT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+
+fn last_input_tick() -> u32 {
+    use windows_sys::Win32::UI::Input::KeyboardAndMouse::{GetLastInputInfo, LASTINPUTINFO};
+    let mut info = LASTINPUTINFO {
+        cbSize: size_of::<LASTINPUTINFO>() as u32,
+        dwTime: 0,
+    };
+    unsafe {
+        GetLastInputInfo(&mut info);
+    }
+    info.dwTime
+}
+
+fn remember_own_input() {
+    LAST_SEEN_INPUT.store(last_input_tick(), Ordering::Release);
+}
+
+/// 主人是不是刚动了键盘或鼠标键。条件：系统的输入时间变了，并且此刻真有键按着——
+/// 鼠标左/右/中键（点在雪耳面板上的不算），或者热键、Esc、修饰键以外的任意键盘键。
+/// 只看「此刻有没有键按着」，不记录按的是什么；光移动鼠标不算。
+fn owner_input(hotkey: i32, panel: usize) -> bool {
+    use windows_sys::Win32::Foundation::POINT;
+    use windows_sys::Win32::UI::WindowsAndMessaging::{GetCursorPos, WindowFromPoint};
+    if TYPING.load(Ordering::Acquire) || INJECTING.load(Ordering::Acquire) {
+        return false;
+    }
+    let tick = last_input_tick();
+    if LAST_SEEN_INPUT.swap(tick, Ordering::AcqRel) == tick {
+        return false;
+    }
+    let mouse = [0x01, 0x02, 0x04].into_iter().any(pressed);
+    if mouse {
+        let mut point = POINT { x: 0, y: 0 };
+        let on_panel = unsafe {
+            GetCursorPos(&mut point);
+            WindowFromPoint(point) as usize == panel && panel != 0
+        };
+        return !on_panel;
+    }
+    // 0x08 退格起到 0xFE；跳过热键、Esc、Enter（回车另有处理）、各种 Shift/Ctrl/Alt/Win、
+    // 以及我们自己注入用的 0xE7（Unicode 包）和 0xE8（菜单遮罩）
+    (0x08..=0xFE).any(|key: i32| {
+        key != hotkey
+            && !matches!(
+                key,
+                0x0D | 0x10 | 0x11 | 0x12 | 0x1B | 0x5B | 0x5C | 0xA0..=0xA5 | 0xE7 | 0xE8
+            )
+            && pressed(key)
+    })
 }
 
 fn is_alt(vk: i32) -> bool {
@@ -407,6 +489,7 @@ fn send_keys(keys: &[Key]) {
         if matches!(k, Key::Text(_) | Key::Backspace(_)) {
             flush(&mut inputs);
             if send_to_qt(k) {
+                remember_own_input();
                 continue;
             }
         }
@@ -444,6 +527,8 @@ fn flush(inputs: &mut Vec<INPUT>) {
     if has_enter {
         INJECTING.store(true, Ordering::Release);
     }
+    // 我们自己发键的这一小段时间，轮询线程不把按键算成主人的（退格是真的 VK_BACK，会被看到）
+    TYPING.store(true, Ordering::Release);
     let sent = unsafe {
         SendInput(
             inputs.len() as u32,
@@ -451,6 +536,10 @@ fn flush(inputs: &mut Vec<INPUT>) {
             size_of::<INPUT>() as i32,
         )
     };
+    // 等目标程序把这批键处理掉、键都抬起来，再记下输入时间并放开
+    thread::sleep(Duration::from_millis(20));
+    remember_own_input();
+    TYPING.store(false, Ordering::Release);
     if has_enter {
         // 轮询每 15 ms 看一次键，等它看过我们自己发的 Enter 再清标记
         thread::sleep(Duration::from_millis(60));

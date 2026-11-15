@@ -112,6 +112,9 @@ pub struct Live {
     last_rewrite: Option<std::time::Instant>,
     /// 主人按 Enter 时屏幕上那截还没说定的文字（已经被发走了），这句后续结果要去掉它
     sent: Option<String>,
+    /// 主人在这句说到一半时动了键盘或鼠标：光标可能已经不在原处，这句剩下的时间只往后接字。
+    /// 值是冻结时这句已经上屏的字数。
+    frozen: Option<usize>,
 }
 
 /// 退格改字离上次屏幕变化至少隔这么久
@@ -125,6 +128,7 @@ impl Live {
             terminal,
             last_rewrite: None,
             sent: None,
+            frozen: None,
         }
     }
 
@@ -137,6 +141,28 @@ impl Live {
             let previous = self.sent.take().unwrap_or_default();
             self.sent = Some(previous + &shown);
         }
+    }
+
+    /// 主人自己动了键盘或鼠标（点了别处、打了字、选了文字）。雪耳改字靠「退格再重打」，
+    /// 不知道光标在哪时再退格就会删错地方，所以这句剩下的时间只往后接字，之前打的也不再往回删。
+    pub fn user_touched(&mut self) {
+        if self.frozen.is_none() {
+            self.frozen = Some(self.revision.pending_graphemes());
+        }
+        self.typist.forget();
+    }
+
+    /// 冻结后：按字数跳过已经上屏的部分，只把多出来的字接上。
+    fn append_only(&mut self, text: &str) -> Vec<Key> {
+        use unicode_segmentation::UnicodeSegmentation;
+        let shown = self.frozen.unwrap_or(0);
+        let graphemes: Vec<&str> = text.graphemes(true).collect();
+        if graphemes.len() <= shown {
+            return vec![];
+        }
+        let extra: String = graphemes[shown..].concat();
+        self.frozen = Some(graphemes.len());
+        vec![Key::Text(extra)]
     }
 
     /// 去掉这句里已经被 Enter 发走的开头，只剩还没上屏的部分。
@@ -178,6 +204,9 @@ impl Live {
     /// 其间的修订先攒着（下一次或定稿时一起改），免得云端频繁修订时屏幕来回删写、一直闪。
     pub fn partial_at(&mut self, text: &str, now: std::time::Instant) -> Vec<Key> {
         let text = self.separated(&clean(text));
+        if self.frozen.is_some() {
+            return self.append_only(&text);
+        }
         let Ok(update) = self.revision.prepare(&text, false) else {
             return vec![];
         };
@@ -199,6 +228,9 @@ impl Live {
 
     /// 定稿：把屏幕上没说定的那一截整个换成整理后的文字，或者擦掉后执行指令。
     pub fn finalize(&mut self, output: Output) -> Vec<Key> {
+        if self.frozen.is_some() {
+            return self.finalize_frozen(output);
+        }
         let erase = self.revision.pending_graphemes();
         self.revision.clear();
         // 这句结束了，发走的前缀只对这句有效
@@ -213,6 +245,27 @@ impl Live {
                 keys
             }
         });
+        keys
+    }
+
+    /// 冻结状态下的定稿：不退格、不替换。文字只补还没上屏的尾巴；会删东西的指令不执行。
+    fn finalize_frozen(&mut self, output: Output) -> Vec<Key> {
+        let keys = match output {
+            Output::Text(text) | Output::TextThen(text, _) => {
+                let text = self.separated(&clean(&text));
+                self.append_only(&text)
+            }
+            Output::Command(VoiceCommand::NewLine) => {
+                self.typist.command(VoiceCommand::NewLine, self.terminal)
+            }
+            Output::Command(VoiceCommand::Send) => {
+                self.typist.command(VoiceCommand::Send, self.terminal)
+            }
+            Output::Command(_) => vec![],
+        };
+        self.revision.clear();
+        self.sent = None;
+        self.frozen = None;
         keys
     }
 
@@ -309,6 +362,60 @@ mod tests {
                 Key::Enter | Key::CtrlJ => doc.push('\n'),
             }
         }
+    }
+
+    #[test]
+    fn after_the_owner_touches_keys_nothing_is_erased_only_appended() {
+        // 主人中途点了别处或自己打了字：雪耳不知道光标在哪，再退格就会删错地方
+        let t0 = std::time::Instant::now();
+        let ms = |n| t0 + std::time::Duration::from_millis(n);
+        let mut live = Live::new(false);
+        let mut doc = String::new();
+        type_into(&mut doc, &live.partial_at("今天天器", ms(0)));
+        live.user_touched();
+        // 云端改了前面的字：不退格，只把多出来的字接上
+        let keys = live.partial_at("今天天气很好", ms(400));
+        assert!(keys.iter().all(|k| matches!(k, Key::Text(_))), "{keys:?}");
+        type_into(&mut doc, &keys);
+        assert_eq!(doc, "今天天器很好");
+        // 定稿也不替换，只补还没上屏的尾巴
+        let keys = live.finalize(Output::Text("今天天气很好。".into()));
+        assert!(keys.iter().all(|k| matches!(k, Key::Text(_))), "{keys:?}");
+        type_into(&mut doc, &keys);
+        assert_eq!(doc, "今天天器很好。");
+    }
+
+    #[test]
+    fn touching_keys_only_freezes_the_current_sentence() {
+        let t0 = std::time::Instant::now();
+        let ms = |n| t0 + std::time::Duration::from_millis(n);
+        let mut live = Live::new(false);
+        let mut doc = String::new();
+        type_into(&mut doc, &live.partial_at("第一句", ms(0)));
+        live.user_touched();
+        type_into(&mut doc, &live.finalize(Output::Text("第一句。".into())));
+        // 下一句恢复正常的边说边改
+        type_into(&mut doc, &live.partial_at("第二剧", ms(1000)));
+        type_into(&mut doc, &live.partial_at("第二句话", ms(1400)));
+        assert_eq!(doc, "第一句。第二句话");
+    }
+
+    #[test]
+    fn commands_after_touching_do_not_backspace() {
+        // 动过键鼠后「删除」也不能退格：不知道光标在哪
+        let mut live = Live::new(false);
+        let mut doc = String::new();
+        type_into(&mut doc, &live.finalize(Output::Text("上一句。".into())));
+        type_into(&mut doc, &live.partial("删除"));
+        live.user_touched();
+        let keys = live.finalize(Output::Command(VoiceCommand::DeleteLastSentence));
+        assert!(keys.is_empty(), "{keys:?}");
+        // 「换行」这种不删东西的指令照常执行
+        live.user_touched();
+        assert_eq!(
+            live.finalize(Output::Command(VoiceCommand::NewLine)),
+            [Key::Enter]
+        );
     }
 
     #[test]

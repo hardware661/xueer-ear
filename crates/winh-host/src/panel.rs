@@ -79,6 +79,11 @@ impl PanelHandle {
         self.post();
     }
 
+    /// 面板窗口句柄（还没建好时是 0），用来判断鼠标是不是点在面板上
+    pub fn hwnd(&self) -> usize {
+        *self.hwnd.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
     /// 只有外观真的变了才刷新（轮询线程每 15 ms 调一次）
     pub fn set_if_changed(&self, look: Look) {
         let changed = {
