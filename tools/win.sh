@@ -21,8 +21,7 @@ if [ "${1:-}" = pwsh-script ]; then
 \$env:XUEER_EAR_ISCC = 'D:\devtool\InnoSetup6\ISCC.exe'
 # GUI 清单要求 highestAvailable；测试进程按调用者权限跑，免得 cargo test 报 740
 \$env:__COMPAT_LAYER = 'RunAsInvoker'
-& '$WIN_MIRROR\\${script//\//\\}' $*
-exit \$LASTEXITCODE
+& '$WIN_MIRROR\\${script//\//\\}' $* ; exit \$LASTEXITCODE
 " 2>&1 | tr -d '\r'
 fi
 
