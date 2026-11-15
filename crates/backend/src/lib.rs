@@ -147,16 +147,42 @@ impl Session {
             }
             Ok(Message::Close(_)) | Err(tungstenite::Error::ConnectionClosed) => Ok(false),
             Ok(_) => Ok(true),
-            Err(tungstenite::Error::Io(error))
-                if matches!(
-                    error.kind(),
-                    io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
-                ) =>
-            {
-                Ok(true)
-            }
+            Err(tungstenite::Error::Io(error)) if read_timed_out(&error) => Ok(true),
             Err(error) => Err(error.into()),
         }
+    }
+}
+
+/// 短读超时到期时，Windows 偶尔不报 TimedOut，而是报「重叠 I/O 操作在进行中」(997)
+/// 或「操作已取消」(995)：Rust 的 socket 带 WSA_FLAG_OVERLAPPED，超时取消会和数据到达赛跑。
+/// 这两种都只是「这次没读到」，连接没断（2026-11-15 真机遇到 997，整句丢失）。
+pub(crate) fn read_timed_out(error: &io::Error) -> bool {
+    matches!(
+        error.kind(),
+        io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
+    ) || (cfg!(windows) && matches!(error.raw_os_error(), Some(995 | 997)))
+}
+
+#[cfg(test)]
+mod read_timeout_tests {
+    use super::read_timed_out;
+    use std::io;
+
+    #[test]
+    fn timeouts_and_windows_pending_reads_are_not_fatal() {
+        assert!(read_timed_out(&io::Error::from(io::ErrorKind::WouldBlock)));
+        assert!(read_timed_out(&io::Error::from(io::ErrorKind::TimedOut)));
+        assert_eq!(
+            read_timed_out(&io::Error::from_raw_os_error(997)),
+            cfg!(windows)
+        );
+        assert_eq!(
+            read_timed_out(&io::Error::from_raw_os_error(995)),
+            cfg!(windows)
+        );
+        assert!(!read_timed_out(&io::Error::from(
+            io::ErrorKind::ConnectionReset
+        )));
     }
 }
 

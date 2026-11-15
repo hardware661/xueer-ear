@@ -1,7 +1,6 @@
 use crate::Result;
 use std::{
     collections::BTreeMap,
-    io,
     net::{TcpStream, ToSocketAddrs},
     time::Duration,
 };
@@ -73,14 +72,7 @@ impl Transport {
                 Err("WeType speech connection closed".into())
             }
             Ok(_) => Ok(None),
-            Err(tungstenite::Error::Io(e))
-                if matches!(
-                    e.kind(),
-                    io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
-                ) =>
-            {
-                Ok(None)
-            }
+            Err(tungstenite::Error::Io(e)) if crate::read_timed_out(&e) => Ok(None),
             Err(e) => Err(e.into()),
         }
     }
