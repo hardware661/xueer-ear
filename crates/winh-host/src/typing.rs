@@ -71,7 +71,11 @@ pub struct Live {
     revision: Revision,
     typist: Typist,
     terminal: bool,
+    last_rewrite: Option<std::time::Instant>,
 }
+
+/// 退格改字离上次屏幕变化至少隔这么久
+const REWRITE_GAP: std::time::Duration = std::time::Duration::from_millis(250);
 
 impl Live {
     pub fn new(terminal: bool) -> Self {
@@ -79,15 +83,33 @@ impl Live {
             revision: Revision::default(),
             typist: Typist::default(),
             terminal,
+            last_rewrite: None,
         }
     }
 
     /// 中间结果：退掉上次没说定的部分里变了的字，再补上新的。
     pub fn partial(&mut self, text: &str) -> Vec<Key> {
+        self.partial_at(text, std::time::Instant::now())
+    }
+
+    /// 同上，带时间。只往后加字的立刻打；要退格改前面的字，离上次屏幕变化至少隔 `REWRITE_GAP`，
+    /// 其间的修订先攒着（下一次或定稿时一起改），免得云端频繁修订时屏幕来回删写、一直闪。
+    pub fn partial_at(&mut self, text: &str, now: std::time::Instant) -> Vec<Key> {
         let text = self.separated(&clean(text));
         let Ok(update) = self.revision.prepare(&text, false) else {
             return vec![];
         };
+        // 要退格改字时，离上次屏幕变化（打字或改字）不到 REWRITE_GAP 就先不动
+        if update.erase > 0
+            && self
+                .last_rewrite
+                .is_some_and(|at| now.duration_since(at) < REWRITE_GAP)
+        {
+            return vec![];
+        }
+        if update.erase > 0 || !update.insert.is_empty() {
+            self.last_rewrite = Some(now);
+        }
         let keys = edit(update.erase, &update.insert);
         self.revision.accept(update);
         keys
@@ -198,12 +220,40 @@ mod tests {
     }
 
     #[test]
+    fn live_rewrites_are_throttled_but_appends_flow() {
+        let t0 = std::time::Instant::now();
+        let ms = |n| t0 + std::time::Duration::from_millis(n);
+        let mut live = Live::new(false);
+        let mut doc = String::new();
+        type_into(&mut doc, &live.partial_at("今天", ms(0)));
+        // 只往后加字：马上打
+        type_into(&mut doc, &live.partial_at("今天天", ms(40)));
+        assert_eq!(doc, "今天天");
+        // 要改前面的字：离上次改不到 250 ms 就先不动，免得屏幕来回删写
+        assert!(live.partial_at("今天田", ms(80)).is_empty());
+        let keys = live.partial_at("今天天气", ms(120));
+        assert!(keys.iter().all(|k| matches!(k, Key::Text(_))), "{keys:?}");
+        type_into(&mut doc, &keys);
+        assert_eq!(doc, "今天天气");
+        type_into(&mut doc, &live.partial_at("今天天器很", ms(500)));
+        assert_eq!(doc, "今天天器很");
+        // 定稿永远照写
+        type_into(
+            &mut doc,
+            &live.finalize(Output::Text("今天天气很好".into())),
+        );
+        assert_eq!(doc, "今天天气很好");
+    }
+
+    #[test]
     fn live_partials_revise_only_the_tail() {
+        let t0 = std::time::Instant::now();
+        let ms = |n| t0 + std::time::Duration::from_millis(n);
         let mut live = Live::new(false);
         let mut doc = String::from("原有内容");
-        type_into(&mut doc, &live.partial("今天"));
-        type_into(&mut doc, &live.partial("今天天气"));
-        type_into(&mut doc, &live.partial("今天天器很好"));
+        type_into(&mut doc, &live.partial_at("今天", ms(0)));
+        type_into(&mut doc, &live.partial_at("今天天气", ms(300)));
+        type_into(&mut doc, &live.partial_at("今天天器很好", ms(600)));
         assert_eq!(doc, "原有内容今天天器很好");
         type_into(
             &mut doc,

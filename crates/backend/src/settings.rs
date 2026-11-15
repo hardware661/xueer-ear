@@ -27,6 +27,8 @@ pub struct Settings {
     pub winh_enabled: bool,
     /// Windows 虚拟键码，默认右 Alt（0xA5）
     pub hotkey_vk: u32,
+    /// 快捷键听写一次最长听多少分钟（停顿不会结束，到点才自动停）；主人 2026-11-15 要「特别特别长」
+    pub max_listen_minutes: u32,
     /// 晓晓提示音（没听清、系统更新后退回），本地播放
     pub sounds_enabled: bool,
 }
@@ -43,6 +45,7 @@ impl Default for Settings {
             winh_enabled: false,
             hotkey_vk: HOTKEY_RIGHT_ALT,
             sounds_enabled: true,
+            max_listen_minutes: 30,
         }
     }
 }
@@ -90,6 +93,9 @@ impl Settings {
         }
         // 只允许 F1～F24、左右 Ctrl/Alt/Shift、CapsLock、ScrollLock 这类不会打出字的键
         let allowed = matches!(self.hotkey_vk, 0x14 | 0x91 | 0x70..=0x87 | 0xA0..=0xA5);
+        if !(1..=240).contains(&self.max_listen_minutes) {
+            return Err("最长听写时间需在 1～240 分钟之间".into());
+        }
         if !allowed {
             return Err("快捷键只能用 F1～F24、左右 Ctrl/Alt/Shift、CapsLock 或 ScrollLock".into());
         }
@@ -246,6 +252,12 @@ mod tests {
         settings.history_keep_days = 7;
         assert!(settings.hotkey_enabled);
         assert!(!settings.winh_enabled);
+        assert_eq!(settings.max_listen_minutes, 30);
+        settings.max_listen_minutes = 0;
+        assert!(settings.validate().is_err());
+        settings.max_listen_minutes = 241;
+        assert!(settings.validate().is_err());
+        settings.max_listen_minutes = 30;
         assert_eq!(settings.hotkey_vk, HOTKEY_RIGHT_ALT);
         for vk in [0x41, 0x0D, 0x20] {
             settings.hotkey_vk = vk;

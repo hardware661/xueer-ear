@@ -174,8 +174,8 @@ fn begin(panel: PanelHandle) -> Session {
     }
 }
 
-/// 录一轮音：中间结果边说边打到光标处，定稿换成整理后的文字或执行指令。
-/// 停顿到「静音收句」秒数就自己结束这一轮（面板变灰）。
+/// 录一轮音：中间结果边说边打到光标处，每句定稿换成整理后的文字或执行指令。
+/// 停顿只收句不结束；主人再点一下 / 点麦克风 / Esc，或到「最长听写时间」才结束（面板变灰）。
 fn record(
     release: Arc<AtomicBool>,
     cancel: Arc<AtomicBool>,
@@ -190,16 +190,25 @@ fn record(
     };
     let stopped = cancel.clone();
     let mut typed_any = false;
+    let started = Instant::now();
+    let max_listen = Duration::from_secs(u64::from(settings.max_listen_minutes) * 60);
     engine::run_wetype(source, cancel, |event| {
         if stopped.load(Ordering::Acquire) {
             return Ok(());
         }
         match event {
-            Event::Activity("recognizing") | Event::Activity("armed") => panel.set(Look::Listening),
+            // 停顿只是一句说完（定稿上屏），不结束：一直听到主人再点一下、点麦克风、Esc，
+            // 或者超过「最长听写时间」（主人 2026-11-15：说着说着停顿一下就断了，要能一直说）
+            Event::Activity("armed")
+            | Event::Activity("recognizing")
+            | Event::Activity("paused") => panel.set(Look::Listening),
             Event::Activity("connecting") => panel.set(Look::Connecting),
-            // 一句说完、静音收句：这一轮结束，面板变灰等下一次点
-            Event::Activity("paused") => release.store(true, Ordering::Release),
-            Event::Progress { peak, .. } => panel.level(peak),
+            Event::Progress { peak, .. } => {
+                panel.level(peak);
+                if started.elapsed() >= max_listen {
+                    release.store(true, Ordering::Release);
+                }
+            }
             Event::Speech(speech) => {
                 let keys = if speech.final_result {
                     live.finalize(post.finalize(&speech.text, crate::broker::now_ms()))

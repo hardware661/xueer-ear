@@ -5,6 +5,8 @@ pub const OPEN_HISTORY: usize = 1100;
 pub const OPEN_HOTWORDS: usize = 1101;
 const BASE: usize = 1110;
 const DAYS: [u32; 4] = [1, 7, 30, 90];
+/// 快捷键听写一次最长听多久（分钟）
+const LISTEN: [u32; 4] = [10, 30, 60, 120];
 /// 可选的快捷键（虚拟键码）；都是单独按不会打出字的键
 const KEYS: [(&str, u32); 5] = [
     ("右 Alt", 0xA5),
@@ -57,6 +59,14 @@ pub fn choices(s: &Settings) -> Vec<(usize, String, bool)> {
             .enumerate()
             .map(|(i, (name, vk))| (key_base + i, format!("快捷键：{name}"), s.hotkey_vk == *vk)),
     );
+    let listen_base = key_base + KEYS.len();
+    out.extend(LISTEN.iter().enumerate().map(|(i, minutes)| {
+        (
+            listen_base + i,
+            format!("一次最长听 {minutes} 分钟"),
+            s.max_listen_minutes == *minutes,
+        )
+    }));
     out.push((OPEN_HISTORY, "查看历史记录".to_owned(), false));
     out.push((OPEN_HOTWORDS, "编辑热词表".to_owned(), false));
     out
@@ -72,8 +82,10 @@ pub fn toggle(s: &Settings, id: usize) -> Option<Settings> {
     } else if let Some(days) = DAYS.get(index - SWITCHES.len()) {
         next.history_keep_days = *days;
         next.history_enabled = true;
+    } else if let Some((_, vk)) = KEYS.get(index - SWITCHES.len() - DAYS.len()) {
+        next.hotkey_vk = *vk;
     } else {
-        next.hotkey_vk = KEYS.get(index - SWITCHES.len() - DAYS.len())?.1;
+        next.max_listen_minutes = *LISTEN.get(index - SWITCHES.len() - DAYS.len() - KEYS.len())?;
     }
     Some(next)
 }
@@ -115,6 +127,7 @@ mod tests {
                 || id == OPEN_HOTWORDS
                 || text.starts_with("保留")
                 || text.starts_with("快捷键：")
+                || text.starts_with("一次最长听")
             {
                 continue;
             }
@@ -137,6 +150,14 @@ mod tests {
         assert!(!toggle(&s, off).unwrap().history_enabled);
         assert!(toggle(&s, OPEN_HISTORY).is_none());
         assert!(toggle(&s, 9999).is_none());
+    }
+
+    #[test]
+    fn listen_length_choice() {
+        let s = Settings::default();
+        assert!(find(&choices(&s), "一次最长听 30 分钟").1);
+        let id = find(&choices(&s), "一次最长听 120 分钟").0;
+        assert_eq!(toggle(&s, id).unwrap().max_listen_minutes, 120);
     }
 
     #[test]
