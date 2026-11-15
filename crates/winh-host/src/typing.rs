@@ -37,10 +37,12 @@ enum Typed {
 }
 
 impl Typed {
-    /// 删掉它要退格几次
+    /// 删掉它要退格几次：按字形数（和中间结果改字的算法一致，审查 R11）。
+    /// 编辑框里一次退格删一个字形，组合表情（👨‍👩‍👧）按 char 数会多删前面的字。
     fn width(&self) -> usize {
+        use unicode_segmentation::UnicodeSegmentation;
         match self {
-            Self::Sentence(text) => text.chars().count(),
+            Self::Sentence(text) => text.graphemes(true).count(),
             Self::NewLine => 1,
         }
     }
@@ -1023,6 +1025,17 @@ mod tests {
         assert_eq!(
             live.finalize(Output::Command(VoiceCommand::NewLine)),
             [Key::CtrlJ]
+        );
+    }
+
+    #[test]
+    fn deleting_a_sentence_counts_emoji_as_one_character_like_revisions_do() {
+        // 审查 R11：Typist 按 char 计退格（👨‍👩‍👧 算 5 个），中间结果的改字按字形计（算 1 个），两边不一致
+        let mut t = Typist::default();
+        t.text("👨‍👩‍👧好", false);
+        assert_eq!(
+            t.command(VoiceCommand::DeleteLastSentence, false),
+            [Key::Backspace(2)]
         );
     }
 }
