@@ -107,7 +107,8 @@ end;
 
 // 桥接 DLL 文件名带版本号，升级后旧版本的会留在安装目录（审查 R13）。
 // Keep = 要留下的文件名（升级时是这一版的，卸载时为空 = 全删）。
-// 删不掉（还被系统加载着）的标记成重启后删除，不影响安装和卸载。
+// 还被系统进程加载着的删不掉，跳过：下次升级或重启后再删。不用 RestartReplace：
+// 它要写机器级注册表，这个安装器按当前用户装、没有管理员权限，调用会直接报错中断（1.0.1 实测）。
 procedure RemoveOldBridges(const Keep: String);
 var
   Found: TFindRec;
@@ -119,8 +120,10 @@ begin
       if CompareText(Found.Name, Keep) <> 0 then
       begin
         Path := ExpandConstant('{app}\') + Found.Name;
-        if not DeleteFile(Path) then
-          RestartReplace(Path, '');
+        if DeleteFile(Path) then
+          Log('Removed old bridge: ' + Found.Name)
+        else
+          Log('Old bridge still in use, left for later: ' + Found.Name);
       end;
     until not FindNext(Found);
   finally

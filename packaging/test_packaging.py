@@ -75,6 +75,8 @@ class PackagingTests(unittest.TestCase):
         # 升级时（装完文件后）和卸载时都要清
         self.assertRegex(script, r"CurStepChanged[\s\S]*ssPostInstall[\s\S]*RemoveOldBridges")
         self.assertRegex(script, r"CurUninstallStepChanged[\s\S]*usPostUninstall[\s\S]*RemoveOldBridges")
+        # 按当前用户装、没有管理员权限：RestartReplace 会抛异常，把整个清理中断（1.0.1 实测）
+        self.assertNotIn("RestartReplace(", script)
 
     def test_missing_remote_installer_never_publishes_draft(self):
         with tempfile.TemporaryDirectory() as root:
