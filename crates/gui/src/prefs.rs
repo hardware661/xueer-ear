@@ -167,7 +167,7 @@ pub fn hotword_choices(s: &Settings) -> Vec<Choice> {
         separator(),
         (
             BUILTIN_HOTWORDS,
-            "使用自带热词（AI、编程常听错的词）".to_owned(),
+            "使用自带热词".to_owned(),
             s.text.builtin_hotwords,
         ),
     ]
@@ -406,7 +406,7 @@ mod tests {
     fn hotword_menu_has_the_builtin_switch() {
         let s = Settings::default();
         let c = hotword_choices(&s);
-        assert!(find(&c, "使用自带热词（AI、编程常听错的词）").1);
+        assert!(find(&c, "使用自带热词").1);
         assert!(c.iter().any(|(id, _, _)| *id == ADD_HOTWORD));
         assert!(c.iter().any(|(id, _, _)| *id == OPEN_HOTWORDS));
     }

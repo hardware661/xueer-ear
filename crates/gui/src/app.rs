@@ -1986,7 +1986,7 @@ unsafe fn capture(window: HWND, path: &std::path::Path) -> Result<(), String> {
     result
 }
 
-/// 离屏把控制面板和「添加热词」对话框各拍一张 PNG 到 `dir`（核对外观用）。
+/// 离屏把控制面板、「添加热词」对话框、托盘菜单和热词菜单各拍一张 PNG 到 `dir`（核对外观用）。
 /// 窗口建在屏幕外、不抢焦点、不建托盘图标，不会打扰正在用电脑的人。
 pub fn snapshot(dir: &std::path::Path) -> Result<(), String> {
     unsafe {
@@ -2025,7 +2025,14 @@ pub fn snapshot(dir: &std::path::Path) -> Result<(), String> {
             DeleteObject(bitmap);
             result
         };
+        let hotwords = {
+            let choices = crate::prefs::hotword_choices(&app.settings);
+            let (bitmap, _, _) = crate::menu::render(&choices, app.fonts[3], app.dpi, 0);
+            let result = save_bitmap(bitmap, &dir.join("hotword-menu.png"));
+            DeleteObject(bitmap);
+            result
+        };
         DestroyWindow(hwnd);
-        panel.and(asked).and(tray)
+        panel.and(asked).and(tray).and(hotwords)
     }
 }
