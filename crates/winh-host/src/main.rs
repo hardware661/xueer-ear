@@ -2,6 +2,8 @@
 mod broker;
 #[cfg(windows)]
 mod control;
+#[cfg(any(windows, test))]
+mod dictation;
 #[cfg(windows)]
 mod hotkey;
 #[cfg(any(windows, test))]
