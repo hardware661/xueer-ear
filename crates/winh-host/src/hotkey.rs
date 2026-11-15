@@ -306,10 +306,10 @@ fn send_keys(keys: &[Key]) {
                 }
             }
             Key::Enter => inputs.extend(tap(VK_RETURN)),
-            Key::ShiftEnter => {
-                inputs.push(key(VK_SHIFT, 0, 0));
-                inputs.extend(tap(VK_RETURN));
-                inputs.push(key(VK_SHIFT, 0, KEYEVENTF_KEYUP));
+            Key::CtrlJ => {
+                inputs.push(key(VK_CONTROL, 0, 0));
+                inputs.extend(tap(u16::from(b'J')));
+                inputs.push(key(VK_CONTROL, 0, KEYEVENTF_KEYUP));
             }
             Key::CtrlZ => {
                 inputs.push(key(VK_CONTROL, 0, 0));

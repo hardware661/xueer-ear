@@ -8,7 +8,8 @@ pub enum Key {
     /// 一段文字，用 Unicode 键入
     Text(String),
     Enter,
-    ShiftEnter,
+    /// 终端里换行不发送（Claude Code 文档：Ctrl+J 在所有终端都是换行；模拟的 Shift+Enter 在 Windows Terminal 里被当成回车发出去了）
+    CtrlJ,
     CtrlZ,
     /// 退格若干次
     Backspace(usize),
@@ -41,12 +42,8 @@ impl Typist {
         match command {
             VoiceCommand::NewLine => {
                 self.sentences.clear();
-                // 终端里 Enter 就是发送；Shift+Enter 在 Claude Code / Codex 里是换行
-                vec![if terminal {
-                    Key::ShiftEnter
-                } else {
-                    Key::Enter
-                }]
+                // 终端里 Enter 就是发送，用 Ctrl+J 换行（2026-11-15 主人真机：Shift+Enter 被发送出去了）
+                vec![if terminal { Key::CtrlJ } else { Key::Enter }]
             }
             VoiceCommand::DeleteLastSentence => self
                 .sentences
@@ -200,7 +197,7 @@ mod tests {
     fn newline_in_terminal_is_shift_enter_not_enter() {
         let mut t = Typist::default();
         assert_eq!(t.command(VoiceCommand::NewLine, false), [Key::Enter]);
-        assert_eq!(t.command(VoiceCommand::NewLine, true), [Key::ShiftEnter]);
+        assert_eq!(t.command(VoiceCommand::NewLine, true), [Key::CtrlJ]);
     }
 
     /// 把按键序列应用到一段文字上，模拟编辑器
@@ -213,7 +210,7 @@ mod tests {
                         doc.pop();
                     }
                 }
-                Key::Enter | Key::ShiftEnter => doc.push('\n'),
+                Key::Enter | Key::CtrlJ => doc.push('\n'),
                 Key::CtrlZ => {}
             }
         }
