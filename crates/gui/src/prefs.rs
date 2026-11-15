@@ -99,7 +99,7 @@ pub fn toggle(s: &Settings, id: usize) -> Option<Settings> {
     Some(next)
 }
 
-/// 改了这些，要重启后台服务才生效；其余的下次说话就生效。
+/// 改了这些，要重启后台服务才生效；其余的从下一次听写开始生效。
 pub fn needs_restart(old: &Settings, new: &Settings) -> bool {
     old.winh_enabled != new.winh_enabled
 }
@@ -341,7 +341,7 @@ mod tests {
         let mut winh = s.clone();
         winh.winh_enabled = true;
         assert!(needs_restart(&s, &winh));
-        // 快捷键、文字开关都是下次说话就生效
+        // 快捷键、文字开关都是下一次听写就生效
         let mut key = s.clone();
         key.hotkey_vk = 0x77;
         key.text.allow_send = true;
