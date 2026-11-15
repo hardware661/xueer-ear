@@ -223,34 +223,27 @@ impl Live {
     }
 
     /// 去掉这句里已经被 Enter 发走的开头，只剩还没上屏的部分。
-    /// 云端定稿常在发走的文字后面补标点或改一两个字，所以按「去掉标点后的前缀」对齐。
+    /// 云端定稿常在发走的文字后面补标点、改一两个字（「天器」→「天气」），所以按「去掉标点后的字数」跳过，
+    /// 不要求逐字相同（审查 R6）：按前缀对齐时，前面改了一个字就会把后半句甚至整句重打一遍。
     pub fn unsent(&self, text: &str) -> String {
         let text = &self.without_early(text);
         let Some(sent) = self.sent.as_deref() else {
             return text.to_string();
         };
-        let wanted: Vec<char> = sent.chars().filter(|c| !is_punct(*c)).collect();
-        let mut matched = 0;
+        let wanted = sent.chars().filter(|c| !is_punct(*c)).count();
+        let mut counted = 0;
         let mut cut = 0;
         for (i, c) in text.char_indices() {
-            if matched == wanted.len() {
+            if counted == wanted {
                 break;
             }
-            if is_punct(c) {
-                continue;
+            if !is_punct(c) {
+                counted += 1;
             }
-            if c != wanted[matched] {
-                break;
-            }
-            matched += 1;
             cut = i + c.len_utf8();
         }
-        if matched == 0 {
-            return text.to_string();
-        }
         // 发走部分后面紧跟的标点也算发走了的那句的，别单独留在新输入框开头
-        let rest = text[cut..].trim_start_matches(is_punct);
-        rest.to_string()
+        text[cut..].trim_start_matches(is_punct).to_string()
     }
 
     /// 提前执行过指令的这句：去掉指令词和它前面的部分（前面的已经上屏或发走了），只留后面接着说的。
@@ -961,5 +954,31 @@ mod tests {
             ),
         );
         assert_eq!(doc, "第一行，\n");
+    }
+
+    #[test]
+    fn enter_mid_sentence_skips_the_sent_part_even_if_the_cloud_respelled_it() {
+        // 审查 R6：屏幕上「今天天器很好」被 Enter 发走；定稿「今天天气很好。」→ 新输入框里出现「气很好。」
+        for shown in ["今天天器很好", "金天天气很好"] {
+            let mut live = Live::new(false);
+            let mut doc = String::new();
+            type_into(&mut doc, &live.partial(shown));
+            live.user_sent();
+            doc.clear(); // 输入框被 Enter 清空
+            let rest = live.unsent("今天天气很好。");
+            type_into(&mut doc, &live.finalize(Output::Text(rest)));
+            assert_eq!(doc, "", "{shown}：发走的那句不该再打出来");
+        }
+        // 发走后接着说的照常打
+        let mut live = Live::new(false);
+        let mut doc = String::new();
+        type_into(&mut doc, &live.partial("今天天器很好"));
+        live.user_sent();
+        doc.clear();
+        let rest = live.unsent("今天天气很好，明天下雨");
+        type_into(&mut doc, &live.partial(&rest));
+        let rest = live.unsent("今天天气很好，明天下雨。");
+        type_into(&mut doc, &live.finalize(Output::Text(rest)));
+        assert_eq!(doc, "明天下雨。");
     }
 }
