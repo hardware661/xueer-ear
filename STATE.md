@@ -9,6 +9,7 @@
 - [x] 安装器：`[Registry]` 写 `HKCU\...\Run\XueerEar = "{app}\xueer-ear.exe" --autostart`（uninsdeletevalue）；`[InstallDelete]` 删旧版 `{userstartup}\雪耳.lnk`；重装时取消勾选会删 Run 值。程序找 host/dll 都用 exe 自身路径，不依赖工作目录
 - [x] 测试先红后绿（`test_autostart_uses_run_key_not_startup_folder`）；Windows 全量测试过；打包到 `D:\projects\_build\xueer-ear\dist-1.0.2`（旧 dist/release 里有 1.0.1 的产物，打包脚本拒绝混放，换了新目录）
 - [x] 主人电脑静默装 1.0.2（/TASKS=autostart）：Run 值在、旧 lnk 已删、旧 bridge 0.1.0/1.0.1 已清；按 Run 值原样拉起，status ready、快捷键听写开启
+- [x] 推 main（gitleaks 无泄漏、CI 过）→ 推 v1.0.2 标签 → CI 发布，latest = v1.0.2；下载回来 sha256 两个都 OK；补了发布说明
 - 未验：真正重启开机后是否自己起来（下次开机看）；「重装时取消勾选删 Run 值」只有文本测试，没实装验
 
 ## 2026-11-16 16:50 · 抖音里按右 Alt 像按了 Esc（主人报，后来复现不出，先不修）
