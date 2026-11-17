@@ -78,6 +78,20 @@ class PackagingTests(unittest.TestCase):
         # 按当前用户装、没有管理员权限：RestartReplace 会抛异常，把整个清理中断（1.0.1 实测）
         self.assertNotIn("RestartReplace(", script)
 
+    def test_autostart_uses_run_key_not_startup_folder(self):
+        # 2026-11-17：启动文件夹的快捷方式开机没被执行，桌宠、音箱走 HKCU Run 都正常
+        script = (ROOT / "packaging" / "xueer-ear.iss").read_text(encoding="utf-8")
+        self.assertNotRegex(script, r"\[Icons\][^\[]*\{userstartup\}")
+        self.assertRegex(
+            script,
+            r'Root: HKCU; Subkey: "Software\\Microsoft\\Windows\\CurrentVersion\\Run"; '
+            r'ValueType: string; ValueName: "XueerEar"; '
+            r'ValueData: """\{app\}\\xueer-ear\.exe"" --autostart"; Flags: uninsdeletevalue; Tasks: autostart',
+        )
+        # 升级时删掉旧版放的快捷方式；取消勾选时删掉 Run 值
+        self.assertRegex(script, r'\[InstallDelete\]\s*Type: files; Name: "\{userstartup\}\\雪耳\.lnk"')
+        self.assertRegex(script, r"not WizardIsTaskSelected\('autostart'\)[\s\S]*RegDeleteValue\(HKCU, RunKey, 'XueerEar'\)")
+
     def test_missing_remote_installer_never_publishes_draft(self):
         with tempfile.TemporaryDirectory() as root:
             directory = Path(root)

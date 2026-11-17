@@ -59,7 +59,14 @@ Source: "{#StageDir}\xueer-ear.exe"; DestName: "xueer-ear-shutdown.exe"; Flags: 
 [Icons]
 Name: "{autoprograms}\雪耳"; Filename: "{app}\xueer-ear.exe"; WorkingDir: "{app}"
 Name: "{autodesktop}\雪耳"; Filename: "{app}\xueer-ear.exe"; WorkingDir: "{app}"; Tasks: desktopicon
-Name: "{userstartup}\雪耳"; Filename: "{app}\xueer-ear.exe"; Parameters: "--autostart"; WorkingDir: "{app}"; Tasks: autostart
+
+; 开机自启走 HKCU Run（和桌宠、音箱一样）。启动文件夹的快捷方式 2026-11-17 开机没被执行。
+[Registry]
+Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: string; ValueName: "XueerEar"; ValueData: """{app}\xueer-ear.exe"" --autostart"; Flags: uninsdeletevalue; Tasks: autostart
+
+; 1.0.1 及更早放在启动文件夹的快捷方式，升级时删掉，免得开机启动两次
+[InstallDelete]
+Type: files; Name: "{userstartup}\雪耳.lnk"
 
 [Run]
 Filename: "{app}\xueer-ear.exe"; Description: "打开雪耳"; Flags: nowait postinstall skipifsilent shellexec runasoriginaluser
@@ -131,10 +138,18 @@ begin
   end;
 end;
 
+const
+  RunKey = 'Software\Microsoft\Windows\CurrentVersion\Run';
+
 procedure CurStepChanged(CurStep: TSetupStep);
 begin
   if CurStep = ssPostInstall then
+  begin
     RemoveOldBridges('xueer_ear_bridge-{#AppVersion}.dll');
+    // 重装时取消勾选开机自启：删掉以前写的 Run 值
+    if not WizardIsTaskSelected('autostart') then
+      RegDeleteValue(HKCU, RunKey, 'XueerEar');
+  end;
 end;
 
 procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);

@@ -30,7 +30,7 @@ GitHub runner 使用 `windows-2022`，原生 x64 MSVC、Rust stable 和 `-C targ
 
 GUI 的 `--quit` 必须先让本产品旧 GUI 退出、让 broker 完成 Windows 原生恢复，并在确认后返回 0；失败返回非 0。临时 GUI 被命名为 `xueer-ear-shutdown.exe`，其同目录有 `xueer-ear-host.exe`，该退出逻辑不应依赖 GUI 文件名。
 
-安装脚本关闭 Inno Restart Manager 的自动关闭/重启功能，不结束微信、输入法或 TextInputHost。版本化 bridge 不覆盖同版本已有文件；卸载时若 Windows 仍映射 DLL，只安排重启后删除，不强制退出其宿主。安装器不删除 `%LOCALAPPDATA%\XueerEar` 用户数据。开机启动是安装向导里的勾选项（默认勾上）：在「启动」文件夹放一个带 `--autostart` 的快捷方式，登录后只在托盘、自动开启后台服务；卸载时一并删除。
+安装脚本关闭 Inno Restart Manager 的自动关闭/重启功能，不结束微信、输入法或 TextInputHost。版本化 bridge 不覆盖同版本已有文件；卸载时若 Windows 仍映射 DLL，只安排重启后删除，不强制退出其宿主。安装器不删除 `%LOCALAPPDATA%\XueerEar` 用户数据。开机启动是安装向导里的勾选项（默认勾上）：在 `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` 写一个 `XueerEar` 值（带 `--autostart`；以前放在「启动」文件夹的快捷方式开机会漏执行，升级时删掉），登录后只在托盘、自动开启后台服务；卸载或重装时取消勾选都会删掉这个值。
 
 ## Release 一致性
 

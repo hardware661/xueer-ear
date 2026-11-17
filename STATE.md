@@ -3,6 +3,14 @@
 > 任何 AI 接手先读这里；每次会话收尾在最上面追加一节（最新在上），写清做了什么、验证了什么、还差什么。
 > 计划原文：主人桌面 `雪耳xueer-ear计划-v1.md`（v1.1）。
 
+## 2026-11-17 14:05 · 开机自启改走 HKCU Run，发 1.0.2（主人："设为和桌宠、音箱同一个方式……做好直接上线"）
+
+- 现象：今天 13:42 开机，Run 注册表里的桌宠、音箱、Husic 都起来了，启动文件夹的 `雪耳.lnk --autostart` 没被执行（Shell-Core 日志里根本没有它；快捷方式指向对、没被禁用；手动双击能正常起来）。原因查不到（推测：启动文件夹比 Run 晚处理，开机时容易被跳过）
+- [x] 安装器：`[Registry]` 写 `HKCU\...\Run\XueerEar = "{app}\xueer-ear.exe" --autostart`（uninsdeletevalue）；`[InstallDelete]` 删旧版 `{userstartup}\雪耳.lnk`；重装时取消勾选会删 Run 值。程序找 host/dll 都用 exe 自身路径，不依赖工作目录
+- [x] 测试先红后绿（`test_autostart_uses_run_key_not_startup_folder`）；Windows 全量测试过；打包到 `D:\projects\_build\xueer-ear\dist-1.0.2`（旧 dist/release 里有 1.0.1 的产物，打包脚本拒绝混放，换了新目录）
+- [x] 主人电脑静默装 1.0.2（/TASKS=autostart）：Run 值在、旧 lnk 已删、旧 bridge 0.1.0/1.0.1 已清；按 Run 值原样拉起，status ready、快捷键听写开启
+- 未验：真正重启开机后是否自己起来（下次开机看）；「重装时取消勾选删 Run 值」只有文本测试，没实装验
+
 ## 2026-11-16 16:50 · 抖音里按右 Alt 像按了 Esc（主人报，后来复现不出，先不修）
 
 - 主人：刷抖音时按右 Alt 开关雪耳，页面像按了 Esc 退回上一层，怀疑是雪耳补发的「无用键」。
