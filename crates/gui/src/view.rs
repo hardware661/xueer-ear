@@ -80,6 +80,14 @@ impl Canvas {
         );
         Some(Self(graphics))
     }
+    /// 直角矩形（rounded 半径为 0 时路径画不出来）
+    unsafe fn rect(&self, x: f32, y: f32, w: f32, h: f32, color: u32) {
+        let mut brush = ptr::null_mut();
+        if gp::GdipCreateSolidFill(color, &mut brush) == 0 {
+            gp::GdipFillRectangle(self.0, brush.cast(), x, y, w, h);
+            gp::GdipDeleteBrush(brush.cast());
+        }
+    }
     unsafe fn ellipse(&self, x: f32, y: f32, w: f32, h: f32, color: u32) {
         let mut brush = ptr::null_mut();
         if gp::GdipCreateSolidFill(color, &mut brush) == 0 {
@@ -403,35 +411,64 @@ pub unsafe fn button(
     }
 }
 
-/// 翻译小窗的底：白卡片、中间一条细分隔线，线中间一个小标签（「中 → 英」）的底（字由调用方写）。
-/// `pill` 是标签在 96 DPI 下的 (x, y, 宽, 高)；`busy_phase` 有值时在译文区左上画三个跳动的小点。
+/// 翻译小窗的底（主人 2026-11-19 第三版，参照 macOS「翻译」）：上半白底写原文，下半浅灰底出译文，
+/// 两块的颜色分界就是分隔线；右上一个小 ×，下半右下一个复制图标（复制后变成对勾），翻译中三个小点。
 pub unsafe fn translate_card(
     dc: HDC,
     dpi: u32,
     width: i32,
     height: i32,
-    divider_y: f32,
-    pill: (f32, f32, f32, f32),
+    split: f32,
     busy_phase: Option<f32>,
+    copied: bool,
 ) {
     let Some(c) = Canvas::new(dc, dpi) else {
         return;
     };
     let w = width as f32 * 96. / dpi as f32;
-    let _ = height;
-    c.line(20., divider_y, w - 20., divider_y, 1.4, 0xffc7c7cc);
-    let (x, y, pw, ph) = pill;
-    c.rounded(x, y, pw, ph, ph / 2., 0xfff2f2f7, false);
-    if let Some(phase) = busy_phase {
-        for i in 0..3 {
-            let lift = ((phase - i as f32 * 0.6).sin().max(0.)) * 3.;
-            c.ellipse(
-                24. + i as f32 * 10.,
-                divider_y + 26. - lift,
-                5.,
-                5.,
-                0xffaeaeb2,
-            );
-        }
+    let h = height as f32 * 96. / dpi as f32;
+    c.rect(0., 0., w, h, 0xffffffff);
+    c.rect(0., split, w, h - split, 0xfff5f5f7);
+    c.line(0., split, w, split, 1., 0xffe5e5ea);
+    // 右上 ×
+    let (x, y) = (w - 24., 22.);
+    c.line(x - 4.5, y - 4.5, x + 4.5, y + 4.5, 1.4, 0xff8e8e93);
+    c.line(x - 4.5, y + 4.5, x + 4.5, y - 4.5, 1.4, 0xff8e8e93);
+    // 右下复制图标：两张叠着的圆角纸；复制后变成对勾
+    let (x, y) = (w - 34., h - 34.);
+    if copied {
+        c.line(x + 3., y + 10., x + 8., y + 15., 1.8, 0xff2c2c2e);
+        c.line(x + 8., y + 15., x + 17., y + 4., 1.8, 0xff2c2c2e);
+    } else {
+        c.rounded(x + 6., y + 1., 12., 14., 3., 0xff8e8e93, true);
+        c.rounded(x + 2., y + 5., 12., 14., 3., 0xfff5f5f7, false);
+        c.rounded(x + 2., y + 5., 12., 14., 3., 0xff8e8e93, true);
+    }
+    let _ = busy_phase;
+}
+
+/// 翻译中三个跳动的小点，画在 (0,0) 起的一小条里（浅灰底）
+pub unsafe fn busy_dots(dc: HDC, dpi: u32, width: i32, height: i32, phase: f32) {
+    busy_dots_at(dc, dpi, 0, 0, width, height, phase);
+}
+
+/// 同上，画在 (x, y)（像素）起的那一条
+pub unsafe fn busy_dots_at(dc: HDC, dpi: u32, x: i32, y: i32, width: i32, height: i32, phase: f32) {
+    let Some(c) = Canvas::new(dc, dpi) else {
+        return;
+    };
+    let ratio = dpi as f32 / 96.;
+    gp::GdipTranslateWorldTransform(
+        c.0,
+        x as f32 / ratio,
+        y as f32 / ratio,
+        gp::MatrixOrderPrepend,
+    );
+    let w = width as f32 / ratio;
+    let h = height as f32 / ratio;
+    let _ = (w, h);
+    for i in 0..3 {
+        let lift = ((phase - i as f32 * 0.6).sin().max(0.)) * 3.;
+        c.ellipse(4. + i as f32 * 11., h / 2. - 1. - lift, 6., 6., 0xffaeaeb2);
     }
 }

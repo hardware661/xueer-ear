@@ -10,9 +10,9 @@ use windows_sys::Win32::{
     Foundation::{GetLastError, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM},
     Graphics::Gdi::{
         BeginPaint, CLEARTYPE_QUALITY, CLIP_DEFAULT_PRECIS, CreateFontW, CreateSolidBrush,
-        DEFAULT_CHARSET, DEFAULT_PITCH, DT_CENTER, DT_SINGLELINE, DT_VCENTER, DrawTextW, EndPaint,
-        FillRect, HDC, HFONT, InvalidateRect, OUT_DEFAULT_PRECIS, PAINTSTRUCT, ScreenToClient,
-        SelectObject, SetBkColor, SetBkMode, SetTextColor, TRANSPARENT,
+        DEFAULT_CHARSET, DEFAULT_PITCH, DT_SINGLELINE, DT_VCENTER, DrawTextW, EndPaint, HDC, HFONT,
+        InvalidateRect, OUT_DEFAULT_PRECIS, PAINTSTRUCT, ScreenToClient, SelectObject, SetBkColor,
+        SetBkMode, SetTextColor, TRANSPARENT,
     },
     System::{LibraryLoader::GetModuleHandleW, Threading::CreateMutexW},
     UI::{
@@ -47,23 +47,27 @@ const COPIED_TIMER: usize = 3;
 /// 译文回来了
 const DONE: u32 = WM_APP + 21;
 
-/// 卡片尺寸（96 DPI）
-const WIDTH: i32 = 440;
-const HEIGHT: i32 = 330;
-/// 输入区、分隔线、译文区、底栏
-const PAD: i32 = 20;
-const SOURCE_TOP: i32 = 44;
-const DIVIDER: i32 = 168;
-const RESULT_TOP: i32 = 184;
-const FOOTER: i32 = 290;
-/// 右上 ×、右下「复制」的点击区
-const CLOSE_BOX: (i32, i32, i32, i32) = (WIDTH - 40, 8, 28, 28);
-const COPY_BOX: (i32, i32, i32, i32) = (WIDTH - 110, FOOTER, 90, 28);
+/// 卡片尺寸（96 DPI）：上半白底原文，下半浅灰底译文
+const WIDTH: i32 = 420;
+const HEIGHT: i32 = 300;
+const PAD: i32 = 18;
+/// 上下两半的分界
+const DIVIDER: i32 = 140;
+/// 每半左上角的语言小字（「中文」「English」）
+const CAPTION_H: i32 = 30;
+const SOURCE_TOP: i32 = CAPTION_H + 6;
+const RESULT_TOP: i32 = DIVIDER + CAPTION_H + 6;
+/// 右上 ×、右下复制图标的点击区
+const CLOSE_BOX: (i32, i32, i32, i32) = (WIDTH - 38, 8, 28, 28);
+const COPY_BOX: (i32, i32, i32, i32) = (WIDTH - 40, HEIGHT - 40, 30, 30);
+/// 翻译中小点那一条
+const DOTS_BOX: (i32, i32, i32, i32) = (PAD, DIVIDER + CAPTION_H + 4, 60, 24);
 
 struct State {
     dpi: u32,
     fonts: [HFONT; 3],
     white: isize,
+    grey: isize,
     asked: usize,
     replies: mpsc::Receiver<(usize, Result<String, String>)>,
     sender: mpsc::Sender<(usize, Result<String, String>)>,
@@ -138,20 +142,14 @@ unsafe fn paint(window: HWND, state: &State) {
     let dc = BeginPaint(window, &mut ps);
     let mut client: RECT = mem::zeroed();
     GetClientRect(window, &mut client);
-    FillRect(dc, &client, state.white as _);
-    let label = match state.target {
-        Target::English => "中 → 英",
-        Target::Chinese => "英 → 中",
-    };
-    let pill = ((WIDTH / 2 - 34) as f32, (DIVIDER - 11) as f32, 68., 22.);
     crate::view::translate_card(
         dc,
         state.dpi,
         client.right,
         client.bottom,
         DIVIDER as f32,
-        pill,
         state.busy.then_some(state.phase),
+        state.copied,
     );
     SetBkMode(dc, TRANSPARENT as i32);
     let d = state.dpi;
@@ -170,34 +168,60 @@ unsafe fn paint(window: HWND, state: &State) {
             units.as_ptr(),
             units.len() as i32,
             &mut rect,
-            DT_SINGLELINE | DT_VCENTER | if w < 120 { DT_CENTER } else { 0 },
+            DT_SINGLELINE | DT_VCENTER,
         );
         SelectObject(dc, old);
     };
-    // 颜色是 GDI 的 0x00BBGGRR
-    draw("翻译", state.fonts[2], 0x001e1c1c, (PAD, 12, 120, 24));
-    draw("×", state.fonts[0], 0x00938e8e, CLOSE_BOX);
-    draw(
-        label,
-        state.fonts[1],
-        0x00706c6c,
-        (pill.0 as i32, pill.1 as i32, 68, 22),
-    );
+    // 语言小字（GDI 颜色 0x00BBGGRR）
+    let (from, to) = match state.target {
+        Target::English => ("中文", "English"),
+        Target::Chinese => ("English", "中文"),
+    };
+    draw(from, state.fonts[1], 0x00938e8e, (PAD, 8, 200, 22));
+    draw(to, state.fonts[1], 0x00938e8e, (PAD, DIVIDER + 8, 200, 22));
     if !state.note.is_empty() {
         draw(
             &state.note,
             state.fonts[1],
             0x003f39bd,
-            (PAD, FOOTER, 280, 28),
+            (PAD, HEIGHT - 38, 300, 26),
         );
     }
-    let copy = if state.copied {
-        "已复制 ✓"
-    } else {
-        "复制"
-    };
-    draw(copy, state.fonts[1], 0x00403c3a, COPY_BOX);
+    if state.busy {
+        let (x, y, w, h) = DOTS_BOX;
+        let (px, py) = (scale(x, d), scale(y, d));
+        crate::view::busy_dots_at(dc, d, px, py, scale(w, d), scale(h, d), state.phase);
+    }
     EndPaint(window, &ps);
+}
+
+/// 只重画三个小点那一条：先画进内存再一次贴上去，不闪
+unsafe fn paint_dots(window: HWND, state: &State) {
+    use windows_sys::Win32::Graphics::Gdi::{
+        BitBlt, CreateCompatibleBitmap, CreateCompatibleDC, DeleteDC, DeleteObject, GetDC,
+        ReleaseDC, SRCCOPY,
+    };
+    let d = state.dpi;
+    let (x, y, w, h) = DOTS_BOX;
+    let (px, py, pw, ph) = (scale(x, d), scale(y, d), scale(w, d), scale(h, d));
+    let screen = GetDC(window);
+    let memory = CreateCompatibleDC(screen);
+    let bitmap = CreateCompatibleBitmap(screen, pw, ph);
+    let old = SelectObject(memory, bitmap);
+    // 内存位图一开始是黑的，先铺成译文区的浅灰，小点边缘的抗锯齿才不会带黑边
+    let all = RECT {
+        left: 0,
+        top: 0,
+        right: pw,
+        bottom: ph,
+    };
+    windows_sys::Win32::Graphics::Gdi::FillRect(memory, &all, state.grey as _);
+    crate::view::busy_dots(memory, d, pw, ph, state.phase);
+    BitBlt(screen, px, py, pw, ph, memory, 0, 0, SRCCOPY);
+    SelectObject(memory, old);
+    DeleteObject(bitmap);
+    DeleteDC(memory);
+    ReleaseDC(window, screen);
 }
 
 unsafe extern "system" fn procedure(
@@ -285,14 +309,7 @@ unsafe extern "system" fn procedure(
                 }
                 DOTS_TIMER => {
                     state.phase += 0.35;
-                    let d = state.dpi;
-                    let strip = RECT {
-                        left: scale(PAD, d),
-                        top: scale(DIVIDER + 12, d),
-                        right: scale(PAD + 60, d),
-                        bottom: scale(DIVIDER + 36, d),
-                    };
-                    InvalidateRect(hwnd, &strip, 0);
+                    paint_dots(hwnd, state);
                 }
                 _ => {
                     KillTimer(hwnd, COPIED_TIMER);
@@ -325,11 +342,11 @@ unsafe extern "system" fn procedure(
         }
         WM_CTLCOLOREDIT | WM_CTLCOLORSTATIC => {
             let dc = wparam as HDC;
-            SetBkColor(dc, 0x00ffffff);
-            // 译文比输入稍深
+            // 原文白底、译文浅灰底（和卡片两半同色）
             let result = lparam as HWND == GetDlgItem(hwnd, RESULT as i32);
-            SetTextColor(dc, if result { 0x001e1c1c } else { 0x00403c3a });
-            state.white
+            SetBkColor(dc, if result { 0x00f7f5f5 } else { 0x00ffffff });
+            SetTextColor(dc, 0x001e1c1c);
+            if result { state.grey } else { state.white }
         }
         WM_CLOSE => {
             DestroyWindow(hwnd);
@@ -392,6 +409,7 @@ unsafe fn open(at: Option<(i32, i32)>) -> HWND {
         dpi: 96,
         fonts: [ptr::null_mut(); 3],
         white: CreateSolidBrush(0x00ffffff) as isize,
+        grey: CreateSolidBrush(0x00f7f5f5) as isize,
         asked: 0,
         replies,
         sender,
@@ -467,8 +485,8 @@ unsafe fn open(at: Option<(i32, i32)>) -> HWND {
     }
     let edit = WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_MULTILINE | ES_AUTOVSCROLL;
     for (id, style, top, bottom) in [
-        (SOURCE, edit | ES_WANTRETURN, SOURCE_TOP, DIVIDER - 16),
-        (RESULT, edit | ES_READONLY, RESULT_TOP, FOOTER - 6),
+        (SOURCE, edit | ES_WANTRETURN, SOURCE_TOP, DIVIDER - 10),
+        (RESULT, edit | ES_READONLY, RESULT_TOP, HEIGHT - 44),
     ] {
         let control = CreateWindowExW(
             0,
@@ -488,7 +506,7 @@ unsafe fn open(at: Option<(i32, i32)>) -> HWND {
         SendMessageW(
             control,
             WM_SETFONT,
-            [font(15, 400, dpi, family), font(16, 400, dpi, family)][size] as usize,
+            [font(17, 400, dpi, family), font(17, 500, dpi, family)][size] as usize,
             0,
         );
         // 文字离边框留点空
@@ -511,7 +529,7 @@ unsafe fn open(at: Option<(i32, i32)>) -> HWND {
         source,
         EM_SETCUEBANNER,
         1,
-        wide("说点什么，或者粘贴进来").as_ptr() as isize,
+        wide("输入文字").as_ptr() as isize,
     );
     window
 }
