@@ -60,8 +60,10 @@ const RESULT_TOP: i32 = DIVIDER + CAPTION_H + 6;
 /// 右上 ×、右下复制图标的点击区
 const CLOSE_BOX: (i32, i32, i32, i32) = (WIDTH - 38, 8, 28, 28);
 const COPY_BOX: (i32, i32, i32, i32) = (WIDTH - 40, HEIGHT - 40, 30, 30);
-/// 翻译中小点那一条
-const DOTS_BOX: (i32, i32, i32, i32) = (PAD, DIVIDER + CAPTION_H + 4, 60, 24);
+/// 翻译中小点：在下半「English」小字右边（父窗口自己画的地方，不在译文框下面）
+const DOTS_BOX: (i32, i32, i32, i32) = (PAD + 64, DIVIDER + 8, 44, 22);
+/// 两行语言小字所在的条（换语言时只重画这里）
+const CAPTIONS: [(i32, i32, i32, i32); 2] = [(PAD, 8, 200, 22), (PAD, DIVIDER + 8, 200, 22)];
 
 struct State {
     dpi: u32,
@@ -78,6 +80,8 @@ struct State {
     note: String,
     copied: bool,
     target: Target,
+    /// 离屏拍照用的窗口
+    offscreen: bool,
 }
 
 fn wide(value: &str) -> Vec<u16> {
@@ -107,6 +111,20 @@ fn inside(point: POINT, (x, y, w, h): (i32, i32, i32, i32), dpi: u32) -> bool {
         && point.y < scale(y + h, dpi)
 }
 
+/// 只让一小块重画（96 DPI 坐标）
+unsafe fn invalidate(window: HWND, dpi: u32, (x, y, w, h): (i32, i32, i32, i32)) {
+    let rect = RECT {
+        left: scale(x, dpi),
+        top: scale(y, dpi),
+        right: scale(x + w, dpi),
+        bottom: scale(y + h, dpi),
+    };
+    InvalidateRect(window, &rect, 0);
+}
+
+/// 底栏提示那一条
+const NOTE_BOX: (i32, i32, i32, i32) = (PAD, HEIGHT - 38, 300, 26);
+
 unsafe fn ask(window: HWND, state: &mut State) {
     let source = text_of(window, SOURCE);
     state.target = Target::for_text(&source);
@@ -115,7 +133,9 @@ unsafe fn ask(window: HWND, state: &mut State) {
         state.last_source.clear();
         state.note.clear();
         state.busy = false;
-        InvalidateRect(window, ptr::null(), 0);
+        KillTimer(window, DOTS_TIMER);
+        invalidate(window, state.dpi, DOTS_BOX);
+        invalidate(window, state.dpi, NOTE_BOX);
         return;
     }
     if source == state.last_source {
@@ -125,10 +145,7 @@ unsafe fn ask(window: HWND, state: &mut State) {
     state.asked += 1;
     state.busy = true;
     state.note.clear();
-    // 翻译中：收起译文框，露出底下跳动的小点
-    ShowWindow(GetDlgItem(window, RESULT as i32), SW_HIDE);
     SetTimer(window, DOTS_TIMER, 60, None);
-    InvalidateRect(window, ptr::null(), 0);
     let (id, sender, target) = (state.asked, state.sender.clone(), window as usize);
     thread::spawn(move || {
         let result = xueer_ear_backend::translate::translate(&source);
@@ -138,10 +155,23 @@ unsafe fn ask(window: HWND, state: &mut State) {
 }
 
 unsafe fn paint(window: HWND, state: &State) {
+    use windows_sys::Win32::Graphics::Gdi::{
+        BitBlt, CreateCompatibleBitmap, CreateCompatibleDC, DeleteDC, DeleteObject, SRCCOPY,
+    };
     let mut ps: PAINTSTRUCT = mem::zeroed();
-    let dc = BeginPaint(window, &mut ps);
+    let screen = BeginPaint(window, &mut ps);
     let mut client: RECT = mem::zeroed();
     GetClientRect(window, &mut client);
+    // 屏幕上先在内存里画完整张卡片再一次贴上去：直接往屏幕画会先看到白底、再灰底、再字，一闪一闪
+    // （主人 2026-11-19）。离屏拍照时（PrintWindow）直接画，内存画布在那条路上是黑的。
+    let (dc, buffer) = if state.offscreen {
+        (screen, None)
+    } else {
+        let memory = CreateCompatibleDC(screen);
+        let bitmap = CreateCompatibleBitmap(screen, client.right, client.bottom);
+        let old = SelectObject(memory, bitmap);
+        (memory, Some((bitmap, old)))
+    };
     crate::view::translate_card(
         dc,
         state.dpi,
@@ -191,6 +221,12 @@ unsafe fn paint(window: HWND, state: &State) {
         let (x, y, w, h) = DOTS_BOX;
         let (px, py) = (scale(x, d), scale(y, d));
         crate::view::busy_dots_at(dc, d, px, py, scale(w, d), scale(h, d), state.phase);
+    }
+    if let Some((bitmap, old)) = buffer {
+        BitBlt(screen, 0, 0, client.right, client.bottom, dc, 0, 0, SRCCOPY);
+        SelectObject(dc, old);
+        DeleteObject(bitmap);
+        DeleteDC(dc);
     }
     EndPaint(window, &ps);
 }
@@ -275,7 +311,8 @@ unsafe extern "system" fn procedure(
                         Err(reason) => state.note = reason,
                     }
                 }
-                InvalidateRect(hwnd, ptr::null(), 0);
+                invalidate(hwnd, state.dpi, COPY_BOX);
+                invalidate(hwnd, state.dpi, NOTE_BOX);
             }
             0
         }
@@ -296,7 +333,9 @@ unsafe extern "system" fn procedure(
                 let target = Target::for_text(&text_of(hwnd, SOURCE));
                 if target != state.target {
                     state.target = target;
-                    InvalidateRect(hwnd, ptr::null(), 0);
+                    for area in CAPTIONS {
+                        invalidate(hwnd, state.dpi, area);
+                    }
                 }
             }
             0
@@ -314,7 +353,7 @@ unsafe extern "system" fn procedure(
                 _ => {
                     KillTimer(hwnd, COPIED_TIMER);
                     state.copied = false;
-                    InvalidateRect(hwnd, ptr::null(), 0);
+                    invalidate(hwnd, state.dpi, COPY_BOX);
                 }
             }
             0
@@ -326,13 +365,13 @@ unsafe extern "system" fn procedure(
                 }
                 state.busy = false;
                 KillTimer(hwnd, DOTS_TIMER);
-                ShowWindow(GetDlgItem(hwnd, RESULT as i32), SW_SHOWNOACTIVATE);
                 match result {
                     Ok(text) => set_text(hwnd, RESULT, &text),
                     Err(reason) => state.note = format!("翻译失败：{reason}"),
                 }
             }
-            InvalidateRect(hwnd, ptr::null(), 0);
+            invalidate(hwnd, state.dpi, DOTS_BOX);
+            invalidate(hwnd, state.dpi, NOTE_BOX);
             0
         }
         WM_ERASEBKGND => 1,
@@ -419,6 +458,7 @@ unsafe fn open(at: Option<(i32, i32)>) -> HWND {
         note: String::new(),
         copied: false,
         target: Target::English,
+        offscreen: at.is_some(),
     }));
     let window = CreateWindowExW(
         extended,
@@ -586,7 +626,6 @@ pub unsafe fn offscreen(busy: bool) -> HWND {
             let state = GetWindowLongPtrW(window, GWLP_USERDATA) as *mut State;
             (*state).busy = true;
             (*state).phase = 1.2;
-            ShowWindow(GetDlgItem(window, RESULT as i32), SW_HIDE);
         } else {
             set_text(
                 window,
