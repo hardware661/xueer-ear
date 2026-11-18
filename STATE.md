@@ -20,6 +20,7 @@
 - 「窗口自己关了」：没复现（主人的同一段字、旧版也没关）；Windows 应用日志没有崩溃记录。推测是拖动/选字后在右上 × 上松手被当成点了 ×。改成按钮要按下、松开都在它上面才算；关闭原因和崩溃写进 %LOCALAPPDATA%\XueerEar\translate.log，下次再出现看日志
 - 「停顿多久算一句」主人定 1 秒：已改主人 settings.json（备份 claude scratch/backups/20261119-0640-xueer-settings.json）
 - 主人本机 translate.json 加了 zhipu_key
+- [x] 1.1.9 装机 ready（silence_seconds=1 已生效）；装好的小窗里粘 6000 字回车：40 秒内译完到最后一句，窗口没关，两框滑块都在
 
 ## 2026-11-19 06:10 · 1.1.8：翻译小窗可调大小、最小化/最大化、Ctrl+A、细滚动条（主人追加）
 
