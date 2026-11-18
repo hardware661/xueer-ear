@@ -35,7 +35,16 @@ mod typing;
 fn main() {
     // 离屏把面板画成 PNG 核对外观（不在屏幕上弹窗）：`--panel-render 目录`
     let mut args = std::env::args().skip(1);
-    if args.next().as_deref() == Some("--panel-render") {
+    let first = args.next();
+    // 排查漏字：`--type-probe 文字 [分几次] [等几毫秒]`，把文字按听写的方式打进前台窗口
+    if first.as_deref() == Some("--type-probe") {
+        let text = args.next().unwrap_or_default();
+        let pieces = args.next().and_then(|v| v.parse().ok()).unwrap_or(8);
+        let delay = args.next().and_then(|v| v.parse().ok()).unwrap_or(1500);
+        hotkey::type_probe(&text, pieces, delay);
+        return;
+    }
+    if first.as_deref() == Some("--panel-render") {
         let dir = std::path::PathBuf::from(args.next().unwrap_or_else(|| ".".into()));
         for (name, look, level) in [
             ("listening", panel::Look::Listening, 0.),

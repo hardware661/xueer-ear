@@ -760,6 +760,19 @@ fn send_to_qt(key: &Key) -> bool {
     }
 }
 
+/// 排查漏字用：等 `delay_ms` 让人把焦点切到目标窗口，然后按听写的打字方式把 `text` 分 `pieces` 次打出去
+/// （模拟边说边出字：每次接一截），最后补一个换行。只发这段文字，不读屏幕。
+pub fn type_probe(text: &str, pieces: usize, delay_ms: u64) {
+    thread::sleep(Duration::from_millis(delay_ms));
+    let chars: Vec<char> = text.chars().collect();
+    let step = chars.len().div_ceil(pieces.max(1));
+    for chunk in chars.chunks(step.max(1)) {
+        send_keys(&[Key::Text(chunk.iter().collect())]);
+        thread::sleep(Duration::from_millis(120));
+    }
+    send_keys(&[Key::Enter]);
+}
+
 /// 一批最多发这么多个字（或退格），批与批之间等 flush 里的 20 ms
 const BATCH_UNITS: usize = 12;
 
