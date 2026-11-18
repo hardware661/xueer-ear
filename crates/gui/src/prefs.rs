@@ -9,6 +9,8 @@ pub const OPEN_HISTORY: usize = 1100;
 pub const OPEN_HOTWORDS: usize = 1101;
 pub const ADD_HOTWORD: usize = 1102;
 pub const BUILTIN_HOTWORDS: usize = 1103;
+pub const OPEN_TRANSLATOR: usize = 1104;
+pub const OPEN_TRANSLATE_KEYS: usize = 1105;
 const BASE: usize = 1110;
 const KEY_BASE: usize = 1200;
 const HISTORY_BASE: usize = 1300;
@@ -221,6 +223,53 @@ pub fn history_pick(texts: &[String], id: usize) -> Option<&str> {
     texts.get(id.checked_sub(HISTORY_BASE)?).map(String::as_str)
 }
 
+/// 翻译服务配了哪几家（「翻译」一行和菜单里显示）
+pub fn translate_services(keys: &xueer_ear_backend::translate::Keys) -> Vec<&'static str> {
+    [
+        ("微软", &keys.azure_key),
+        ("谷歌", &keys.google_key),
+        ("智谱", &keys.zhipu_key),
+    ]
+    .into_iter()
+    .filter(|(_, key)| !key.trim().is_empty())
+    .map(|(name, _)| name)
+    .collect()
+}
+
+/// 「翻译」一行按钮上的字
+pub fn translate_summary(keys: &xueer_ear_backend::translate::Keys) -> String {
+    if translate_services(keys).is_empty() {
+        "未配置".to_owned()
+    } else {
+        "打开".to_owned()
+    }
+}
+
+/// 「翻译」菜单：打开翻译小窗；灰字说用的是哪几家、怎么用；最后是打开 Key 文件
+pub fn translate_choices(keys: &xueer_ear_backend::translate::Keys) -> Vec<Choice> {
+    let services = translate_services(keys);
+    let status = if services.is_empty() {
+        "还没配翻译服务".to_owned()
+    } else {
+        format!(
+            "服务：{}（按顺序，前一家不行换下一家）",
+            services.join(" → ")
+        )
+    };
+    vec![
+        (OPEN_TRANSLATOR, "打开翻译小窗".to_owned(), false),
+        separator(),
+        (NOTHING, status, false),
+        (
+            NOTHING,
+            "听写最后说「翻译」：这轮的字换成英文".to_owned(),
+            false,
+        ),
+        separator(),
+        (OPEN_TRANSLATE_KEYS, "打开翻译 Key 设置".to_owned(), false),
+    ]
+}
+
 /// 托盘右键菜单：上面一行灰字说状态，中间是常用的几项，最后是退出。
 /// 状态行和分隔线不能点（命令号 0 / NOTHING）。
 pub fn tray_choices(
@@ -254,6 +303,31 @@ pub fn tray_choices(
     out.push(separator());
     out.push((exit, "退出".to_owned(), false));
     out
+}
+
+#[cfg(test)]
+mod translate_menu_tests {
+    use super::*;
+    use xueer_ear_backend::translate::Keys;
+
+    #[test]
+    fn translate_menu_lists_configured_services_in_order() {
+        let keys = Keys {
+            google_key: "g".into(),
+            zhipu_key: "z".into(),
+            ..Keys::default()
+        };
+        assert_eq!(translate_summary(&keys), "打开");
+        let menu = translate_choices(&keys);
+        assert_eq!(menu[0].0, OPEN_TRANSLATOR);
+        assert!(menu.iter().any(|(_, t, _)| t.contains("谷歌 → 智谱")));
+        assert_eq!(translate_summary(&Keys::default()), "未配置");
+        assert!(
+            translate_choices(&Keys::default())
+                .iter()
+                .any(|(_, t, _)| t == "还没配翻译服务")
+        );
+    }
 }
 
 #[cfg(test)]

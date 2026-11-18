@@ -66,13 +66,16 @@ const LABEL_HOTWORDS: usize = 227;
 const LABEL_HOTWORDS_VALUE: usize = 228;
 const LABEL_HISTORY: usize = 229;
 const LABEL_HISTORY_VALUE: usize = 230;
+const LABEL_TRANSLATE: usize = 231;
+const LABEL_TRANSLATE_VALUE: usize = 232;
 /// 右边带小箭头、点了出菜单的那几个按钮
-const VALUE_BUTTONS: [usize; 6] = [
+const VALUE_BUTTONS: [usize; 7] = [
     LABEL_HOTKEY_VALUE,
     LABEL_MIC_VALUE,
     LABEL_SILENCE_VALUE,
     LABEL_HOTWORDS_VALUE,
     LABEL_HISTORY_VALUE,
+    LABEL_TRANSLATE_VALUE,
     LABEL_TEXT_VALUE,
 ];
 /// 热词表最大多少字节（和后台读它时的上限一致）
@@ -94,11 +97,16 @@ unsafe fn open_data_file(name: &str) -> Result<(), String> {
     let dir = data_dir()?;
     let path = dir.join(name);
     if !path.exists() {
-        if name != "hotwords.txt" {
-            return Err("还没有历史记录".to_owned());
-        }
+        let header = match name {
+            "hotwords.txt" => HOTWORDS_HEADER,
+            // 翻译 Key：哪个没有就留空，按 微软 → 谷歌 → 智谱 的顺序用
+            "translate.json" => {
+                "{\r\n  \"azure_key\": \"\",\r\n  \"azure_region\": \"eastasia\",\r\n  \"google_key\": \"\",\r\n  \"zhipu_key\": \"\"\r\n}\r\n"
+            }
+            _ => return Err("还没有历史记录".to_owned()),
+        };
         std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-        std::fs::write(&path, HOTWORDS_HEADER).map_err(|e| e.to_string())?;
+        std::fs::write(&path, header).map_err(|e| e.to_string())?;
     }
     let result = ShellExecuteW(
         ptr::null_mut(),
@@ -501,6 +509,7 @@ impl App {
             (LABEL_SILENCE, "静音收句"),
             (LABEL_HOTWORDS, "热词"),
             (LABEL_HISTORY, "历史"),
+            (LABEL_TRANSLATE, "翻译"),
             (LABEL_TEXT, "更多设置"),
             (UPDATE_TITLE, ""),
             (UPDATE_BODY, ""),
@@ -517,6 +526,7 @@ impl App {
             (LABEL_HOTKEY_VALUE, "右 Alt", BS_OWNERDRAW),
             (LABEL_HOTWORDS_VALUE, "添加", BS_OWNERDRAW),
             (LABEL_HISTORY_VALUE, "最近 7 天", BS_OWNERDRAW),
+            (LABEL_TRANSLATE_VALUE, "打开", BS_OWNERDRAW),
             (LABEL_TEXT_VALUE, "设置", BS_OWNERDRAW),
             (UPDATE_DOWNLOAD, "下载更新", BS_OWNERDRAW),
             (UPDATE_SKIP, "跳过此版本", BS_OWNERDRAW),
@@ -606,8 +616,10 @@ impl App {
             (LABEL_HOTWORDS_VALUE, 264, 473, 116, 36, 3),
             (LABEL_HISTORY, 52, 539, 130, 22, 0),
             (LABEL_HISTORY_VALUE, 264, 531, 116, 36, 3),
-            (LABEL_TEXT, 52, 597, 130, 22, 0),
-            (LABEL_TEXT_VALUE, 264, 589, 116, 36, 3),
+            (LABEL_TRANSLATE, 52, 597, 130, 22, 0),
+            (LABEL_TRANSLATE_VALUE, 264, 589, 116, 36, 3),
+            (LABEL_TEXT, 52, 655, 130, 22, 0),
+            (LABEL_TEXT_VALUE, 264, 647, 116, 36, 3),
             (UPDATE_TITLE, 28, 107, 216, 22, 4),
             (UPDATE_BODY, 28, 134, 216, 18, 1),
             (UPDATE_DOWNLOAD, 28, 164, 85, 30, 3),
@@ -762,6 +774,11 @@ impl App {
         self.set_text(
             LABEL_HISTORY_VALUE,
             &crate::prefs::history_summary(&self.settings),
+        );
+        let keys = xueer_ear_backend::translate::local_keys().unwrap_or_default();
+        self.set_text(
+            LABEL_TRANSLATE_VALUE,
+            &crate::prefs::translate_summary(&keys),
         );
         if self
             .notice
@@ -1108,6 +1125,7 @@ impl App {
             LABEL_SILENCE_VALUE => self.settings_menu(false),
             LABEL_HOTKEY_VALUE => self.hotkey_menu(),
             LABEL_HOTWORDS_VALUE => self.hotwords_menu(),
+            LABEL_TRANSLATE_VALUE => self.translate_menu(),
             LABEL_HISTORY_VALUE => self.history_menu(),
             LABEL_TEXT_VALUE => self.text_menu(),
             EXIT => self.begin(Action::Exit),
@@ -1272,6 +1290,31 @@ impl App {
                 }
             }
             _ => {}
+        }
+    }
+
+    /// 翻译：打开翻译小窗（另起一个 `xueer-ear.exe --translate`），或者用记事本打开 Key 文件
+    unsafe fn translate_menu(&mut self) {
+        let keys = xueer_ear_backend::translate::local_keys().unwrap_or_default();
+        let result = match self.popup_under(
+            LABEL_TRANSLATE_VALUE,
+            &crate::prefs::translate_choices(&keys),
+        ) {
+            crate::prefs::OPEN_TRANSLATOR => std::env::current_exe()
+                .map_err(|e| e.to_string())
+                .and_then(|exe| {
+                    std::process::Command::new(exe)
+                        .arg("--translate")
+                        .spawn()
+                        .map(|_| ())
+                        .map_err(|e| format!("打不开翻译小窗：{e}"))
+                }),
+            crate::prefs::OPEN_TRANSLATE_KEYS => open_data_file("translate.json"),
+            _ => Ok(()),
+        };
+        if let Err(error) = result {
+            self.command_error = error;
+            self.refresh();
         }
     }
 
@@ -1661,6 +1704,7 @@ unsafe extern "system" fn procedure(
                     LABEL_SILENCE,
                     LABEL_HOTWORDS,
                     LABEL_HISTORY,
+                    LABEL_TRANSLATE,
                     LABEL_TEXT,
                 ]
                 .iter()

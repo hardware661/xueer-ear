@@ -47,15 +47,17 @@ Windows 11 的语音输入。屏幕顶上一个小猫面板，边说边出字，
 
 ### 翻译
 
-两种用法：一轮听写最后单独说「翻译」；或者点面板右边的「译」，弹出翻译小窗，输入或粘贴文字，停手半秒自动翻；点「翻译」按钮或按回车立刻翻（Shift+回车换行），中文翻成英文、英文翻成中文，「复制」放进剪贴板，Esc 关闭。
+两种用法：一轮听写最后单独说「翻译」，这轮打出来的字整段换成英文；或者点面板右边的「译」（控制面板「翻译 → 打开翻译小窗」也行），弹出翻译小窗。
 
-翻译服务用微软翻译（每月 200 万字免费），没配或失败时用谷歌 Gemini。Key 填在 `%LOCALAPPDATA%\XueerEar\translate.json`，只在你自己电脑上：
+翻译小窗：上面输入或粘贴，下面出译文；中间「中 ⇄ 英」点一下反转方向。边打字边自动翻（间隔 1 秒起，翻得越多间隔越长：2、4、8 秒），点「翻译」或按回车立刻翻（Shift+回车换行）。「复制」放进剪贴板，Ctrl+A 全选；窗口可拖边改大小、最大化，Esc 关闭。
+
+翻译服务按 微软翻译（每月 200 万字免费）→ 谷歌 Gemini → 智谱 的顺序用，哪家限流或出错马上换下一家。Key 填在 `%LOCALAPPDATA%\XueerEar\translate.json`，只在你自己电脑上：
 
 ```json
-{"azure_key": "微软翻译的密钥", "azure_region": "eastasia", "google_key": "Google AI Studio 的 Key"}
+{"azure_key": "微软翻译的密钥", "azure_region": "eastasia", "google_key": "Google AI Studio 的 Key", "zhipu_key": "智谱的 Key"}
 ```
 
-哪个没填就跳过哪个。命令行 `xueer-ear-cli translate 今天吃什么` 可以试一下通不通。
+哪个没填就跳过哪个。控制面板「翻译 → 打开翻译 Key 设置」会用记事本打开这个文件。命令行 `xueer-ear-cli translate 今天吃什么` 可以试一下通不通。
 
 ### 文字整理（每句说定时）
 

@@ -9,7 +9,7 @@ use windows_sys::Win32::{
 pub const BACKGROUND: u32 = 0x00fffcfa;
 pub const WIDTH: i32 = 400;
 pub const HEADER: i32 = 42;
-pub const HEIGHT: i32 = 646;
+pub const HEIGHT: i32 = 704;
 pub fn body_y(y: i32) -> i32 {
     y
 }
@@ -211,7 +211,7 @@ pub unsafe fn background(dc: HDC, dpi: u32, enabled: bool, peak: u32, frame: u64
             false,
         );
     }
-    for y in [230., 288., 346., 404., 462., 520., 578.] {
+    for y in [230., 288., 346., 404., 462., 520., 578., 636.] {
         c.line(20., y, 380., y, 1., LINE);
     }
     // 每行左边的小图标：服务、快捷键、麦克风、静音收句、热词、历史、更多设置
@@ -270,8 +270,17 @@ pub unsafe fn background(dc: HDC, dpi: u32, enabled: bool, peak: u32, frame: u64
             MUTED,
         );
     }
+    // 翻译：「文」「A」两块错开叠着
+    c.rounded(20., 598., 12., 12., 2.5, MUTED, true);
+    c.rounded(27., 605., 12., 12., 2.5, 0xffffffff, false);
+    c.rounded(27., 605., 12., 12., 2.5, MUTED, true);
+    c.line(23., 601.5, 29., 601.5, 1.2, MUTED);
+    c.line(26., 601.5, 26., 607., 1.2, MUTED);
+    c.line(30., 615., 33., 607.5, 1.2, MUTED);
+    c.line(33., 607.5, 36., 615., 1.2, MUTED);
+    c.line(31., 612.5, 35., 612.5, 1.2, MUTED);
     // 更多设置：两条滑杆
-    for (y, knob) in [(603., 26.), (611., 34.)] {
+    for (y, knob) in [(661., 26.), (669., 34.)] {
         c.line(21., y, 39., y, 1.5, MUTED);
         c.ellipse(knob - 2.5, y - 2.5, 5., 5., MUTED);
     }
