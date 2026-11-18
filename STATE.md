@@ -16,7 +16,7 @@
 - [~] S6 右 Alt 闪两下：推测是点停止后这轮还在收最后一句，「一句说完」/出字事件把面板又叫出来一下、轮询线程马上再收起。已改成点了停止后这轮不再动面板；真机待验
 - [x] S7 翻译：backend/translate.rs（微软主力、谷歌备用，Key 在本机 translate.json）；一轮最后说「翻译」整段换英文（这轮动过键鼠就不替换、面板提示）；CLI `translate 文字` 真机试过谷歌通。Azure Key 等主人
 - [x] S8 面板：左齿轮=打开控制面板，中麦克风，右「译」=弹翻译小窗（`xueer-ear.exe --translate`，停手 0.6 秒自动翻、Ctrl+Enter 立刻翻、复制、Esc 关）；离屏截图核对过
-- [ ] S9 热词候选一次性采集
+- [~] S9 热词候选：一次性收集完，候选表在主人桌面「雪耳热词候选.md」（脚本在 claude scratch/tmp/hotword-harvest），等主人挑；挑完写进个人表并跑 hotword-check
 - [ ] S10 识别好坏与音量对照
 - [ ] S11 全量测试、离屏画图、打包装机、README/STATE
 
