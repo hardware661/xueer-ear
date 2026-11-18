@@ -41,6 +41,16 @@ impl Default for Gain {
 }
 
 impl Gain {
+    /// 接着上一轮的增益开始（主人音量、麦克风位置一轮和一轮差不多），不再每轮从 1 倍慢慢往上调
+    pub fn resume(gain: f32) -> Self {
+        let gain = gain.clamp(1., MAX_GAIN);
+        Self {
+            gain,
+            speech: (gain > 1.).then(|| TARGET_PEAK / gain),
+            ..Self::default()
+        }
+    }
+
     /// 当前增益（倍数），给日志和测试看
     pub fn current(&self) -> f32 {
         self.gain
@@ -121,6 +131,20 @@ mod tests {
         let tail = &out[out.len() - 16 * 500..];
         assert!(peak(tail) > 2000, "放大后最后半秒峰值 {}", peak(tail));
         assert!(gain.current() > 12. && gain.current() <= MAX_GAIN);
+    }
+
+    #[test]
+    fn a_new_round_starts_at_the_last_rounds_gain() {
+        // 主人历史：「点问题的……」「耳真好用」——每轮从 1 倍慢慢往上调，刚开口的几个字太轻被当成没说话
+        let mut first = Gain::default();
+        first.process(&tone(150., 3000));
+        let mut next = Gain::resume(first.current());
+        let out = next.process(&tone(150., 100));
+        assert!(peak(&out) > 1500, "新一轮头 100 ms 峰值 {}", peak(&out));
+        // 下一轮主人大声说，照样马上压下来、不削顶
+        let mut loud = Gain::resume(first.current());
+        let out = loud.process(&tone(12_000., 200));
+        assert!(peak(&out) <= CEILING as i16);
     }
 
     #[test]

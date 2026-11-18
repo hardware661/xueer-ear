@@ -4,12 +4,13 @@ use std::collections::VecDeque;
 use webrtc_vad::{SampleRate, Vad, VadMode};
 
 pub const SILENCE_SAMPLES: usize = SAMPLE_RATE as usize * 3;
-pub const PREROLL_SAMPLES: usize = SAMPLE_RATE as usize * 360 / 1000;
+/// 开口前多留一点（原 360 ms；主人历史里句首常丢一两个字，2026-11-19 加到 600 ms）
+pub const PREROLL_SAMPLES: usize = SAMPLE_RATE as usize * 600 / 1000;
 const ATTACK_FRAMES: usize = 3; // 60 ms; one click must not open a connection.
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum ActivityEvent {
-    /// Includes the onset and up to 360 ms of preceding audio.
+    /// Includes the onset and up to 600 ms of preceding audio.
     Started(Vec<i16>),
     Audio(Vec<i16>),
     /// The preceding Audio includes the configured amount of detected silence.

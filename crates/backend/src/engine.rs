@@ -136,6 +136,9 @@ impl Drop for Capture {
     }
 }
 
+/// 上一轮最后的增益：下一轮从这里开始，刚开口的字不会因为增益还在 1 倍而太轻被吃掉（1.0 的位模式）
+static LAST_GAIN: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0x3f80_0000);
+
 fn produce(
     source: Source,
     stop: &AtomicBool,
@@ -153,12 +156,15 @@ fn produce(
         &source,
         Source::Microphone(_) | Source::MicrophoneHold { .. }
     )
-    .then(xueer_ear_audio::gain::Gain::default);
+    .then(|| {
+        xueer_ear_audio::gain::Gain::resume(f32::from_bits(LAST_GAIN.load(Ordering::Relaxed)))
+    });
     let mut accept = |pcm: &[i16]| -> Result<()> {
         signal.accept(pcm);
         match gain.as_mut() {
             Some(gain) => {
                 let louder = gain.process(pcm);
+                LAST_GAIN.store(gain.current().to_bits(), Ordering::Relaxed);
                 signal
                     .gain_tenths
                     .store((gain.current() * 10.).round() as u32, Ordering::Relaxed);
