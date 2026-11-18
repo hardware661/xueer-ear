@@ -783,9 +783,8 @@ pub fn type_probe(text: &str, pieces: usize, delay_ms: u64) {
 
 /// 标点（中英文）：它后面的字要另起一批发
 fn is_mark(unit: u16) -> bool {
-    char::from_u32(u32::from(unit)).is_some_and(|c| {
-        c.is_ascii_punctuation() || "，。！？；：、…—“”‘’（）《》【】".contains(c)
-    })
+    char::from_u32(u32::from(unit))
+        .is_some_and(|c| c.is_ascii_punctuation() || "，。！？；：、…—“”‘’（）《》【】".contains(c))
 }
 
 /// 一批最多发这么多个字（或退格），批与批之间等 flush 里的 20 ms

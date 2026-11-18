@@ -447,6 +447,22 @@ pub unsafe fn translate_card(
     let _ = busy_phase;
 }
 
+/// 深灰胶囊按钮的底（翻译小窗的「翻译」），坐标是 96 DPI 的 x, y, 宽, 高
+pub unsafe fn pill(dc: HDC, dpi: u32, x: i32, y: i32, w: i32, h: i32) {
+    let Some(c) = Canvas::new(dc, dpi) else {
+        return;
+    };
+    c.rounded(
+        x as f32,
+        y as f32,
+        w as f32,
+        h as f32,
+        h as f32 / 2.,
+        GREEN,
+        false,
+    );
+}
+
 /// 翻译中三个跳动的小点，画在 (0,0) 起的一小条里（浅灰底）
 pub unsafe fn busy_dots(dc: HDC, dpi: u32, width: i32, height: i32, phase: f32) {
     busy_dots_at(dc, dpi, 0, 0, width, height, phase);

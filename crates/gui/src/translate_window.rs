@@ -10,9 +10,9 @@ use windows_sys::Win32::{
     Foundation::{GetLastError, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM},
     Graphics::Gdi::{
         BeginPaint, CLEARTYPE_QUALITY, CLIP_DEFAULT_PRECIS, CreateFontW, CreateSolidBrush,
-        DEFAULT_CHARSET, DEFAULT_PITCH, DT_SINGLELINE, DT_VCENTER, DrawTextW, EndPaint, HDC, HFONT,
-        InvalidateRect, OUT_DEFAULT_PRECIS, PAINTSTRUCT, ScreenToClient, SelectObject, SetBkColor,
-        SetBkMode, SetTextColor, TRANSPARENT,
+        DEFAULT_CHARSET, DEFAULT_PITCH, DT_CENTER, DT_SINGLELINE, DT_VCENTER, DrawTextW, EndPaint,
+        HDC, HFONT, InvalidateRect, OUT_DEFAULT_PRECIS, PAINTSTRUCT, ScreenToClient, SelectObject,
+        SetBkColor, SetBkMode, SetTextColor, TRANSPARENT,
     },
     System::{LibraryLoader::GetModuleHandleW, Threading::CreateMutexW},
     UI::{
@@ -20,7 +20,7 @@ use windows_sys::Win32::{
             DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, GetDpiForWindow,
             SetProcessDpiAwarenessContext,
         },
-        Input::KeyboardAndMouse::{GetKeyState, SetFocus, VK_CONTROL},
+        Input::KeyboardAndMouse::{GetKeyState, SetFocus, VK_SHIFT},
         WindowsAndMessaging::*,
     },
 };
@@ -60,6 +60,8 @@ const RESULT_TOP: i32 = DIVIDER + CAPTION_H + 6;
 /// 右上 ×、右下复制图标的点击区
 const CLOSE_BOX: (i32, i32, i32, i32) = (WIDTH - 38, 8, 28, 28);
 const COPY_BOX: (i32, i32, i32, i32) = (WIDTH - 40, HEIGHT - 40, 30, 30);
+/// 上半右下角的「翻译」按钮（主人 2026-11-19：加一个按钮，回车是快捷键）
+const GO_BOX: (i32, i32, i32, i32) = (WIDTH - 18 - 58, DIVIDER - 12 - 28, 58, 28);
 /// 翻译中小点：在下半「English」小字下面（主人 2026-11-19：放回原来的位置）。
 /// 那块平时被译文框盖着，翻译中把译文框清空并藏起来，露出父窗口画的小点；整窗双缓冲，藏/显不闪
 const DOTS_BOX: (i32, i32, i32, i32) = (PAD, DIVIDER + CAPTION_H + 4, 60, 24);
@@ -110,6 +112,13 @@ fn inside(point: POINT, (x, y, w, h): (i32, i32, i32, i32), dpi: u32) -> bool {
         && point.x < scale(x + w, dpi)
         && point.y >= scale(y, dpi)
         && point.y < scale(y + h, dpi)
+}
+
+/// 马上翻译（按钮、回车）：不等停手；同样的原文再按一次也重新翻
+unsafe fn translate_now(window: HWND, state: &mut State) {
+    KillTimer(window, SETTLE_TIMER);
+    state.last_source.clear();
+    ask(window, state);
 }
 
 /// 只让一小块重画（96 DPI 坐标）
@@ -221,6 +230,28 @@ unsafe fn paint(window: HWND, state: &State) {
             (PAD, HEIGHT - 38, 300, 26),
         );
     }
+    // 上半右下角的「翻译」按钮：深灰胶囊、白字
+    let (gx, gy, gw, gh) = GO_BOX;
+    crate::view::pill(dc, d, gx, gy, gw, gh);
+    {
+        let old = SelectObject(dc, state.fonts[1]);
+        SetTextColor(dc, 0x00ffffff);
+        let mut rect = RECT {
+            left: scale(gx, d),
+            top: scale(gy, d),
+            right: scale(gx + gw, d),
+            bottom: scale(gy + gh, d),
+        };
+        let units: Vec<u16> = "翻译".encode_utf16().collect();
+        DrawTextW(
+            dc,
+            units.as_ptr(),
+            units.len() as i32,
+            &mut rect,
+            DT_SINGLELINE | DT_VCENTER | DT_CENTER,
+        );
+        SelectObject(dc, old);
+    }
     if state.busy {
         let (x, y, w, h) = DOTS_BOX;
         let (px, py) = (scale(x, d), scale(y, d));
@@ -288,7 +319,10 @@ unsafe extern "system" fn procedure(
             };
             ScreenToClient(hwnd, &mut point);
             // ×、复制是按钮；其余空白处按住可以拖
-            if inside(point, CLOSE_BOX, state.dpi) || inside(point, COPY_BOX, state.dpi) {
+            if [CLOSE_BOX, COPY_BOX, GO_BOX]
+                .iter()
+                .any(|&b| inside(point, b, state.dpi))
+            {
                 HTCLIENT as isize
             } else {
                 HTCAPTION as isize
@@ -301,6 +335,8 @@ unsafe extern "system" fn procedure(
             };
             if inside(point, CLOSE_BOX, state.dpi) {
                 DestroyWindow(hwnd);
+            } else if inside(point, GO_BOX, state.dpi) {
+                translate_now(hwnd, state);
             } else if inside(point, COPY_BOX, state.dpi) {
                 let result = text_of(hwnd, RESULT);
                 if result.is_empty() {
@@ -324,7 +360,10 @@ unsafe extern "system" fn procedure(
             let mut point = mem::zeroed();
             GetCursorPos(&mut point);
             ScreenToClient(hwnd, &mut point);
-            if inside(point, CLOSE_BOX, state.dpi) || inside(point, COPY_BOX, state.dpi) {
+            if [CLOSE_BOX, COPY_BOX, GO_BOX]
+                .iter()
+                .any(|&b| inside(point, b, state.dpi))
+            {
                 SetCursor(LoadCursorW(ptr::null_mut(), IDC_HAND));
                 return 1;
             }
@@ -530,7 +569,7 @@ unsafe fn open(at: Option<(i32, i32)>) -> HWND {
     }
     let edit = WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_MULTILINE | ES_AUTOVSCROLL;
     for (id, style, top, bottom) in [
-        (SOURCE, edit | ES_WANTRETURN, SOURCE_TOP, DIVIDER - 10),
+        (SOURCE, edit | ES_WANTRETURN, SOURCE_TOP, DIVIDER - 46),
         (RESULT, edit | ES_READONLY, RESULT_TOP, HEIGHT - 44),
     ] {
         let control = CreateWindowExW(
@@ -606,11 +645,11 @@ pub fn run() -> Result<(), String> {
                     DestroyWindow(window);
                     continue;
                 }
-                if message.wParam == 0x0D && GetKeyState(VK_CONTROL as i32) < 0 {
-                    KillTimer(window, SETTLE_TIMER);
+                // 回车立刻翻译；Shift+回车照常换行
+                if message.wParam == 0x0D && GetKeyState(VK_SHIFT as i32) >= 0 {
                     let state = GetWindowLongPtrW(window, GWLP_USERDATA) as *mut State;
                     if !state.is_null() {
-                        ask(window, &mut *state);
+                        translate_now(window, &mut *state);
                     }
                     continue;
                 }
