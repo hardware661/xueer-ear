@@ -12,6 +12,8 @@ use crate::encoder::FRAME_SAMPLES;
 const TARGET_PEAK: f32 = 4_000.;
 /// 最多放大这么多倍（约 +24 dB）；再大底噪会盖过说话
 pub const MAX_GAIN: f32 = 16.;
+/// 新一轮起步的增益上限
+const RESUME_MAX: f32 = 8.;
 /// 任何一帧放大后的峰值都不超过这里（离满格留余量，不削顶）
 const CEILING: f32 = 30_000.;
 /// 峰值至少是底噪的这么多倍才算说话帧
@@ -42,8 +44,9 @@ impl Default for Gain {
 
 impl Gain {
     /// 接着上一轮的增益开始（主人音量、麦克风位置一轮和一轮差不多），不再每轮从 1 倍慢慢往上调
+    /// 起步最多 `RESUME_MAX` 倍：一上来就 16 倍会把底噪也放大，送去识别更容易认错（2026-11-19 主人：错字变多）
     pub fn resume(gain: f32) -> Self {
-        let gain = gain.clamp(1., MAX_GAIN);
+        let gain = gain.clamp(1., RESUME_MAX);
         Self {
             gain,
             speech: (gain > 1.).then(|| TARGET_PEAK / gain),
@@ -140,7 +143,8 @@ mod tests {
         first.process(&tone(150., 3000));
         let mut next = Gain::resume(first.current());
         let out = next.process(&tone(150., 100));
-        assert!(peak(&out) > 1500, "新一轮头 100 ms 峰值 {}", peak(&out));
+        assert!(peak(&out) > 1000, "新一轮头 100 ms 峰值 {}", peak(&out));
+        assert!(next.current() <= 8.5);
         // 下一轮主人大声说，照样马上压下来、不削顶
         let mut loud = Gain::resume(first.current());
         let out = loud.process(&tone(12_000., 200));

@@ -159,7 +159,14 @@ pub struct Live {
     early: Option<String>,
     /// 这一轮里主人动过键盘或鼠标
     touched_round: bool,
+    /// 上次说话中途退格改字的时间
+    last_fix: Option<std::time::Instant>,
 }
+
+/// 说话中途一次最多退格改这么多字；更多的留到定稿
+const LIVE_FIX_MAX: usize = 8;
+/// 说话中途两次改字至少隔这么久
+const LIVE_FIX_GAP: std::time::Duration = std::time::Duration::from_millis(350);
 
 impl Live {
     pub fn new(terminal: bool) -> Self {
@@ -171,6 +178,7 @@ impl Live {
             frozen: None,
             early: None,
             touched_round: false,
+            last_fix: None,
         }
     }
 
@@ -344,14 +352,31 @@ impl Live {
         self.partial_at(text, std::time::Instant::now())
     }
 
-    /// 同上，带时间。说话中途只往后接字，不退格改前面（2026-11-19：中途反复「退格再重打」时
-    /// 终端、微信、网页都会漏字）。云端改了前面的字，屏幕上先留着，定稿时一次改好。
-    pub fn partial_at(&mut self, text: &str, _now: std::time::Instant) -> Vec<Key> {
+    /// 同上，带时间。往后接字随时打；要退格改前面的字时，只有改动不大（`LIVE_FIX_MAX` 个字以内）、
+    /// 且离上次改字至少 `LIVE_FIX_GAP` 才当场改，否则先留着，下一次或定稿时一起改。
+    /// 2026-11-19：中途反复大段「退格再重打」会漏字；全部留到定稿又太慢、错字在屏幕上留太久。
+    pub fn partial_at(&mut self, text: &str, now: std::time::Instant) -> Vec<Key> {
         use unicode_segmentation::UnicodeSegmentation;
         let text = self.separated(&clean(text));
         if self.frozen.is_some() {
             return self.append_only(&text);
         }
+        let Ok(update) = self.revision.prepare(&text, false) else {
+            return vec![];
+        };
+        let may_fix = update.erase <= LIVE_FIX_MAX
+            && self
+                .last_fix
+                .is_none_or(|at| now.duration_since(at) >= LIVE_FIX_GAP);
+        if update.erase == 0 || may_fix {
+            if update.erase > 0 {
+                self.last_fix = Some(now);
+            }
+            let keys = edit(update.erase, &update.insert);
+            self.revision.accept(update);
+            return keys;
+        }
+        // 改动太大或刚改过：只把多出来的字接上
         let shown = self.revision.pending_graphemes();
         let graphemes: Vec<&str> = text.graphemes(true).collect();
         if graphemes.len() <= shown {
@@ -738,9 +763,35 @@ mod tests {
     }
 
     #[test]
-    fn while_speaking_only_appends_and_fixes_once_at_the_end() {
+    fn small_corrections_show_while_speaking_big_ones_wait_for_the_end() {
+        // 主人 2026-11-19：只在定稿时改字太慢，屏幕上错字留太久。小改动（几个字）说话中就改，
+        // 但两次改字至少隔一会儿；大段改写还是等定稿，免得一次塞太多键又漏字。
+        let t0 = std::time::Instant::now();
+        let ms = |n| t0 + std::time::Duration::from_millis(n);
+        let mut live = Live::new(false);
+        let mut doc = String::new();
+        type_into(&mut doc, &live.partial_at("今天天器", ms(0)));
+        type_into(&mut doc, &live.partial_at("今天天气很好", ms(400)));
+        assert_eq!(doc, "今天天气很好");
+        // 刚改过，马上又要改：先不动
+        assert!(
+            live.partial_at("今天天气狠好呀", ms(450))
+                .iter()
+                .all(|k| matches!(k, Key::Text(_)))
+        );
+        let long_before: String = "一".repeat(20);
+        let mut live = Live::new(false);
+        let mut doc = String::new();
+        type_into(&mut doc, &live.partial_at(&long_before, ms(0)));
+        // 前面 20 个字全变：说话中不改，定稿时一次改
+        let keys = live.partial_at(&"二".repeat(21), ms(800));
+        assert!(keys.iter().all(|k| matches!(k, Key::Text(_))), "{keys:?}");
+    }
+
+    #[test]
+    fn rapid_revisions_only_append_and_fix_once_at_the_end() {
         // 2026-11-19 主人：漏字发生在说话中途反复「退格再重打」时（「功能」只剩「功」），终端、微信、网页都有。
-        // 改法：说话时只往后接字，前面的错字等这句定稿时一次改好。
+        // 云端连着改（间隔很短）时只往后接字，前面的错字等这句定稿时一次改好。
         let t0 = std::time::Instant::now();
         let ms = |n| t0 + std::time::Duration::from_millis(n);
         let mut live = Live::new(false);
@@ -756,11 +807,15 @@ mod tests {
             all.extend(keys.clone());
             type_into(&mut doc, &keys);
         }
-        assert!(
-            all.iter().all(|k| matches!(k, Key::Text(_))),
-            "说话中途不该退格：{all:?}"
+        // 300 ms 里云端改了两次：只当场改第一次，第二次留到定稿
+        assert_eq!(
+            all.iter()
+                .filter(|k| matches!(k, Key::Backspace(_)))
+                .count(),
+            1,
+            "{all:?}"
         );
-        assert_eq!(doc, "原有今天天器很好");
+        assert_eq!(doc, "原有今天天气很好");
         let keys = live.finalize(Output::Text("今天天气很好。".into()));
         assert_eq!(
             keys.iter()
@@ -781,7 +836,7 @@ mod tests {
         type_into(&mut doc, &live.partial_at("今天", ms(0)));
         type_into(&mut doc, &live.partial_at("今天天气", ms(300)));
         type_into(&mut doc, &live.partial_at("今天天器很好", ms(600)));
-        assert_eq!(doc, "原有内容今天天气很好");
+        assert_eq!(doc, "原有内容今天天器很好");
         type_into(
             &mut doc,
             &live.finalize(Output::Text("今天天气很好。".into())),
