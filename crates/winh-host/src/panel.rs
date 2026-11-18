@@ -398,7 +398,7 @@ unsafe fn paint(
         if gp::GdipCreateFromHDC(dc, &mut g) != 0 {
             return;
         }
-        paint_graphics(g, scale, look, level, phase, text);
+        paint_graphics(g, scale, look, level, phase, text, EAR);
         gp::GdipDeleteGraphics(g);
     }
 }
@@ -410,6 +410,7 @@ unsafe fn paint_graphics(
     level: f32,
     phase: f32,
     text: &str,
+    ear_style: EarStyle,
 ) {
     // 卡片宽度：平时是小方块，出错提示时变宽
     let card_w = width(look);
@@ -427,30 +428,31 @@ unsafe fn paint_graphics(
         // 卡片和两只耳朵画成同一条轮廓（主人 2026-11-19：耳朵和窗口的衔接有点怪）：
         // 顶边从左耳外侧顺着弧线爬上耳尖，再弧线落回顶边，中间平直，右耳对称
         // 很淡的一圈影子托着卡片（往下错 1.5，不扩出去），让白卡片从任何背景上浮出来
+        let e = ear_style;
         gp::GdipTranslateWorldTransform(g, 0., 1.5, gp::MatrixOrderPrepend);
-        cat_card(g, card_w, body_h, twitch, 0x1a000000);
+        cat_card(g, card_w, body_h, twitch, 0x1a000000, e);
         gp::GdipTranslateWorldTransform(g, 0., -1.5, gp::MatrixOrderPrepend);
-        cat_card(g, card_w, body_h, twitch, PANEL_FILL);
-        // 内耳一抹淡粉，放在耳朵正中
-        let inner = 3. + 10. + 25.;
-        soft_ear(
-            g,
-            inner - twitch,
-            BODY_TOP - 1.,
-            18.,
-            16.,
-            -twitch,
-            INNER_EAR,
-        );
-        soft_ear(
-            g,
-            card_w - inner + twitch,
-            BODY_TOP - 1.,
-            18.,
-            16.,
-            twitch,
-            INNER_EAR,
-        );
+        cat_card(g, card_w, body_h, twitch, PANEL_FILL, e);
+        if e.pink {
+            // 内耳一抹淡粉：同形状缩小，贴着耳根
+            let small = EarStyle {
+                width: e.width * 0.42,
+                height: e.height * 0.62,
+                ..e
+            };
+            for (center, side) in [(e.inset, -1.), (card_w - e.inset, 1.)] {
+                let lean = side * (e.lean * 0.7 + twitch.abs() * twitch.signum() * side);
+                soft_ear(
+                    g,
+                    center + lean * 0.3,
+                    BODY_TOP + 1.,
+                    small.width,
+                    small.height,
+                    lean,
+                    INNER_EAR,
+                );
+            }
+        }
         // 中间：同一种中灰圆底，没开口时是白麦克风，出字时是白波浪
         let (cx, cy) = (card_w / 2., BODY_TOP + body_h / 2.);
         // 两边：左设置（齿轮）、右翻译（「译」字），出错提示时不画
@@ -458,7 +460,7 @@ unsafe fn paint_graphics(
             side_button(g, SETTINGS_X, cy);
             gear(g, SETTINGS_X, cy, ICON);
             side_button(g, TRANSLATE_X, cy);
-            translate_icon(g, TRANSLATE_X, cy, ICON);
+            glyph_sized(g, "译", TRANSLATE_X, cy + 0.5, 16., false, ICON);
         }
         match look {
             // 出错提示：左边灰掉的麦克风，右边一句原因
@@ -776,8 +778,41 @@ unsafe fn mic(g: *mut gp::GpGraphics, x: f32, y: f32, size: f32, color: u32) {
     }
 }
 
-/// 卡片 + 两只耳朵的整体轮廓：圆角矩形，顶边上鼓起两只圆角三角耳朵，接缝处是顺滑的凹弧
-unsafe fn cat_card(g: *mut gp::GpGraphics, card_w: f32, body_h: f32, twitch: f32, fill: u32) {
+/// 耳朵的样子（主人 2026-11-19 挑款用；定下后只留一种）
+#[derive(Debug, Clone, Copy)]
+pub struct EarStyle {
+    /// 耳根宽
+    pub width: f32,
+    /// 高出卡片顶边多少
+    pub height: f32,
+    /// 耳朵中心离卡片左右边多远
+    pub inset: f32,
+    /// 耳尖圆不圆：0 尖、1 很圆
+    pub round: f32,
+    /// 耳尖往外歪多少（像猫耳朵稍微朝外）
+    pub lean: f32,
+    /// 有没有内耳粉
+    pub pink: bool,
+}
+
+pub const EAR: EarStyle = EarStyle {
+    width: 50.,
+    height: 23.,
+    inset: 38.,
+    round: 0.5,
+    lean: 0.,
+    pink: true,
+};
+
+/// 卡片 + 两只耳朵的整体轮廓：圆角矩形，顶边上鼓起两只耳朵，接缝处顺滑
+unsafe fn cat_card(
+    g: *mut gp::GpGraphics,
+    card_w: f32,
+    body_h: f32,
+    twitch: f32,
+    fill: u32,
+    ear_style: EarStyle,
+) {
     unsafe {
         let mut path = ptr::null_mut();
         if gp::GdipCreatePath(gp::FillModeAlternate, &mut path) != 0 {
@@ -786,52 +821,53 @@ unsafe fn cat_card(g: *mut gp::GpGraphics, card_w: f32, body_h: f32, twitch: f32
         let (x0, x1) = (3., card_w - 3.);
         let (top, bottom) = (BODY_TOP, BODY_TOP + body_h);
         let r = 28.;
-        // 一只耳朵：从顶边 (a, top) 起，经耳尖，落到 (b, top)；tilt 是耳尖横向偏移
-        let ear = |path: *mut gp::GpPath, a: f32, b: f32, tilt: f32| {
-            let mid = (a + b) / 2. + tilt;
-            let tip = top - 23.;
-            let w = b - a;
-            // 起脚处切线水平（和顶边顺接），侧边外鼓，耳尖圆
+        let e = ear_style;
+        // 一只耳朵：从顶边 (a, top) 起，经耳尖，落到 (b, top)；lean>0 耳尖朝外（side 是 -1 左 / 1 右）
+        let ear = |path: *mut gp::GpPath, center: f32, side: f32| {
+            let (a, b) = (center - e.width / 2., center + e.width / 2.);
+            let mid = center + side * (e.lean + twitch.abs() * twitch.signum() * side);
+            let tip = top - e.height;
+            let w = e.width;
+            let cap = 0.04 + 0.14 * e.round;
             gp::GdipAddPathBezier(
                 path,
                 a,
                 top,
-                a + w * 0.18,
-                top - 2.,
-                mid - w * 0.16,
-                tip + 4.,
-                mid - w * 0.08,
-                tip,
+                a + w * 0.2,
+                top - 1.,
+                mid - w * (cap + 0.12),
+                tip + e.height * 0.18,
+                mid - w * cap,
+                tip + e.height * 0.04 * e.round,
             );
             gp::GdipAddPathBezier(
                 path,
-                mid - w * 0.08,
-                tip,
-                mid - w * 0.02,
-                tip - 1.5,
-                mid + w * 0.02,
-                tip - 1.5,
-                mid + w * 0.08,
-                tip,
+                mid - w * cap,
+                tip + e.height * 0.04 * e.round,
+                mid - w * cap * 0.4,
+                tip - e.height * 0.05 * e.round,
+                mid + w * cap * 0.4,
+                tip - e.height * 0.05 * e.round,
+                mid + w * cap,
+                tip + e.height * 0.04 * e.round,
             );
             gp::GdipAddPathBezier(
                 path,
-                mid + w * 0.08,
-                tip,
-                mid + w * 0.16,
-                tip + 4.,
-                b - w * 0.18,
-                top - 2.,
+                mid + w * cap,
+                tip + e.height * 0.04 * e.round,
+                mid + w * (cap + 0.12),
+                tip + e.height * 0.18,
+                b - w * 0.2,
+                top - 1.,
                 b,
                 top,
             );
         };
-        // 左上角 → 左耳 → 顶边 → 右耳 → 右上角 → 右下 → 左下。耳朵中心在 x=30 / card_w-30，和内耳粉色对齐
-        // 上面两个角用小圆角，耳朵从角上直接长出来；下面两个角照旧大圆角
-        let rt = 10.;
+        // 上面两个角：耳朵离边远就用大圆角，贴边就用小圆角让耳朵从角上长出来
+        let rt = (e.inset - e.width / 2. - 3.).clamp(8., r);
         gp::GdipAddPathArc(path, x0, top, rt * 2., rt * 2., 180., 90.);
-        ear(path, x0 + rt, x0 + rt + 50., -twitch);
-        ear(path, x1 - rt - 50., x1 - rt, twitch);
+        ear(path, e.inset, -1.);
+        ear(path, card_w - e.inset, 1.);
         gp::GdipAddPathArc(path, x1 - rt * 2., top, rt * 2., rt * 2., 270., 90.);
         gp::GdipAddPathArc(path, x1 - r * 2., bottom - r * 2., r * 2., r * 2., 0., 90.);
         gp::GdipAddPathArc(path, x0, bottom - r * 2., r * 2., r * 2., 90., 90.);
@@ -845,10 +881,11 @@ unsafe fn cat_card(g: *mut gp::GpGraphics, card_w: f32, body_h: f32, twitch: f32
             gp::PointF { X: 0., Y: bottom },
         );
         let mut brush = ptr::null_mut();
+        let top_color = if fill >> 24 == 0xff { 0xfffcfcfd } else { fill };
         if gp::GdipCreateLineBrush(
             &from,
             &to,
-            0xfffcfcfd,
+            top_color,
             fill,
             gp::WrapModeTileFlipXY,
             &mut brush,
@@ -865,17 +902,6 @@ unsafe fn cat_card(g: *mut gp::GpGraphics, card_w: f32, body_h: f32, twitch: f32
 unsafe fn side_button(g: *mut gp::GpGraphics, cx: f32, cy: f32) {
     unsafe {
         ellipse(g, cx - 17., cy - 17., 34., 34., SIDE_FILL);
-    }
-}
-
-/// 翻译图标（参照 Apple 的 translate 符号）：左上一块写「文」，右下一块写「A」，两块错开叠着
-unsafe fn translate_icon(g: *mut gp::GpGraphics, cx: f32, cy: f32, color: u32) {
-    unsafe {
-        rounded(g, cx - 10., cy - 10., 13., 13., 3.5, color, false);
-        glyph_sized(g, "文", cx - 3.5, cy - 3.5, 9.5, true, SIDE_FILL);
-        rounded(g, cx - 1.5, cy - 1.5, 12., 12., 3.5, SIDE_FILL, false);
-        rounded(g, cx - 1.5, cy - 1.5, 12., 12., 3.5, color, true);
-        glyph_sized(g, "A", cx + 4.5, cy + 4.6, 9., true, color);
     }
 }
 
@@ -951,6 +977,7 @@ pub fn render_png(
     scale: f32,
     text: &str,
     out: &std::path::Path,
+    ear: EarStyle,
 ) -> Result<(), String> {
     unsafe {
         let mut input: gp::GdiplusStartupInput = mem::zeroed();
@@ -976,7 +1003,7 @@ pub fn render_png(
             gp::GdipGetImageGraphicsContext(bitmap.cast(), &mut g);
             // 白底方便看
             gp::GdipGraphicsClear(g, 0xffffffff);
-            paint_graphics(g, scale, look, level, 0., text);
+            paint_graphics(g, scale, look, level, 0., text, ear);
             gp::GdipDeleteGraphics(g);
             let clsid = windows_sys::core::GUID::from_u128(0x557cf406_1a04_11d3_9a73_0000f81ef32e);
             let path: Vec<u16> = out
@@ -997,3 +1024,79 @@ pub fn render_png(
         result
     }
 }
+
+/// 挑耳朵用的几款（主人定下后删掉，只留 EAR）
+pub const EAR_CHOICES: [(&str, EarStyle); 6] = [
+    // A 小圆耳：很小、很圆，像小猫刚冒出的耳朵
+    (
+        "A",
+        EarStyle {
+            width: 30.,
+            height: 13.,
+            inset: 30.,
+            round: 0.9,
+            lean: 0.,
+            pink: true,
+        },
+    ),
+    // B 小尖耳：小，三角感明显但耳尖带一点圆
+    (
+        "B",
+        EarStyle {
+            width: 30.,
+            height: 16.,
+            inset: 30.,
+            round: 0.35,
+            lean: 0.,
+            pink: true,
+        },
+    ),
+    // C 小耳朝外：小三角，耳尖往外撇一点，更像猫
+    (
+        "C",
+        EarStyle {
+            width: 32.,
+            height: 16.,
+            inset: 30.,
+            round: 0.4,
+            lean: 4.,
+            pink: true,
+        },
+    ),
+    // D 中等、不要粉：干净的灰白，只靠形状
+    (
+        "D",
+        EarStyle {
+            width: 36.,
+            height: 17.,
+            inset: 32.,
+            round: 0.45,
+            lean: 2.,
+            pink: false,
+        },
+    ),
+    // E 极小：只是两个小凸起，存在感最低
+    (
+        "E",
+        EarStyle {
+            width: 24.,
+            height: 10.,
+            inset: 28.,
+            round: 0.8,
+            lean: 0.,
+            pink: false,
+        },
+    ),
+    // F 小耳靠里：离边更远，像猫头顶
+    (
+        "F",
+        EarStyle {
+            width: 30.,
+            height: 15.,
+            inset: 40.,
+            round: 0.5,
+            lean: 3.,
+            pink: true,
+        },
+    ),
+];

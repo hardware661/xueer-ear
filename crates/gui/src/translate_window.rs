@@ -60,8 +60,9 @@ const RESULT_TOP: i32 = DIVIDER + CAPTION_H + 6;
 /// 右上 ×、右下复制图标的点击区
 const CLOSE_BOX: (i32, i32, i32, i32) = (WIDTH - 38, 8, 28, 28);
 const COPY_BOX: (i32, i32, i32, i32) = (WIDTH - 40, HEIGHT - 40, 30, 30);
-/// 翻译中小点：在下半「English」小字右边（父窗口自己画的地方，不在译文框下面）
-const DOTS_BOX: (i32, i32, i32, i32) = (PAD + 64, DIVIDER + 8, 44, 22);
+/// 翻译中小点：在下半「English」小字下面（主人 2026-11-19：放回原来的位置）。
+/// 那块平时被译文框盖着，翻译中把译文框清空并藏起来，露出父窗口画的小点；整窗双缓冲，藏/显不闪
+const DOTS_BOX: (i32, i32, i32, i32) = (PAD, DIVIDER + CAPTION_H + 4, 60, 24);
 /// 两行语言小字所在的条（换语言时只重画这里）
 const CAPTIONS: [(i32, i32, i32, i32); 2] = [(PAD, 8, 200, 22), (PAD, DIVIDER + 8, 200, 22)];
 
@@ -145,6 +146,9 @@ unsafe fn ask(window: HWND, state: &mut State) {
     state.asked += 1;
     state.busy = true;
     state.note.clear();
+    // 先清空再藏：藏起来的瞬间露出的就是和它同色的灰底 + 小点，看不出变化
+    set_text(window, RESULT, "");
+    ShowWindow(GetDlgItem(window, RESULT as i32), SW_HIDE);
     SetTimer(window, DOTS_TIMER, 60, None);
     let (id, sender, target) = (state.asked, state.sender.clone(), window as usize);
     thread::spawn(move || {
@@ -365,6 +369,7 @@ unsafe extern "system" fn procedure(
                 }
                 state.busy = false;
                 KillTimer(hwnd, DOTS_TIMER);
+                ShowWindow(GetDlgItem(hwnd, RESULT as i32), SW_SHOWNOACTIVATE);
                 match result {
                     Ok(text) => set_text(hwnd, RESULT, &text),
                     Err(reason) => state.note = format!("翻译失败：{reason}"),
@@ -626,6 +631,7 @@ pub unsafe fn offscreen(busy: bool) -> HWND {
             let state = GetWindowLongPtrW(window, GWLP_USERDATA) as *mut State;
             (*state).busy = true;
             (*state).phase = 1.2;
+            ShowWindow(GetDlgItem(window, RESULT as i32), SW_HIDE);
         } else {
             set_text(
                 window,
