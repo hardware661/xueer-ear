@@ -32,7 +32,6 @@ const RESULT: usize = 402;
 const EN_CHANGE: u32 = 0x0300;
 const EM_SETLIMITTEXT: u32 = 0x00C5;
 const EM_SETCUEBANNER: u32 = 0x1501;
-const EM_SETRECT: u32 = 0x00B3;
 const ES_MULTILINE: u32 = 0x0004;
 const ES_AUTOVSCROLL: u32 = 0x0040;
 const ES_READONLY: u32 = 0x0800;
@@ -567,7 +566,8 @@ unsafe fn open(at: Option<(i32, i32)>) -> HWND {
             4,
         );
     }
-    let edit = WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_MULTILINE | ES_AUTOVSCROLL;
+    // 带竖向滚动条：长文可以用滚轮或拖滚动条看（主人 2026-11-19：塞一万字没法滑）
+    let edit = WS_CHILD | WS_VISIBLE | WS_TABSTOP | WS_VSCROLL | ES_MULTILINE | ES_AUTOVSCROLL;
     for (id, style, top, bottom) in [
         (SOURCE, edit | ES_WANTRETURN, SOURCE_TOP, DIVIDER - 46),
         (RESULT, edit | ES_READONLY, RESULT_TOP, HEIGHT - 44),
@@ -593,14 +593,6 @@ unsafe fn open(at: Option<(i32, i32)>) -> HWND {
             [font(17, 400, dpi, family), font(17, 500, dpi, family)][size] as usize,
             0,
         );
-        // 文字离边框留点空
-        let mut rect = RECT {
-            left: 2,
-            top: 2,
-            right: scale(WIDTH - PAD * 2, dpi) - 2,
-            bottom: scale(bottom - top, dpi),
-        };
-        SendMessageW(control, EM_SETRECT, 0, (&mut rect as *mut RECT) as isize);
     }
     let source = GetDlgItem(window, SOURCE as i32);
     SendMessageW(

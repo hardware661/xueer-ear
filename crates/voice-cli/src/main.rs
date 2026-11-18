@@ -161,8 +161,22 @@ fn run() -> Result<(), Box<dyn Error + Send + Sync>> {
         (Some(command), Some(path), None) if command == "recognize-wave-wetype" => {
             let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
             let mut finals = 0;
+            let started = std::time::Instant::now();
+            let timeline = std::env::var_os("XUEER_EAR_TIMELINE").is_some();
             let text = xueer_ear_backend::engine::run_wetype(xueer_ear_backend::engine::Source::Wave(path.into()), stop, |event| {
-                if let xueer_ear_backend::engine::Event::Speech(event) = event { finals += usize::from(event.final_result); }
+                match event {
+                    xueer_ear_backend::engine::Event::Speech(event) => {
+                        finals += usize::from(event.final_result);
+                        // 排查「停顿后整理慢」：每个中间结果到达的时间和内容
+                        if timeline {
+                            println!("{:>6} ms {} {}", started.elapsed().as_millis(), if event.final_result { "FINAL" } else { "part " }, event.text);
+                        }
+                    }
+                    xueer_ear_backend::engine::Event::Activity(phase) if timeline => {
+                        println!("{:>6} ms [{phase}]", started.elapsed().as_millis());
+                    }
+                    _ => {}
+                }
                 Ok(())
             })?;
             println!("recognition=accepted chars={} finals={finals}", text.chars().count());

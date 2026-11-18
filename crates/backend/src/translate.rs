@@ -74,8 +74,10 @@ pub struct Request {
     pub body: String,
 }
 
-/// 单次翻译最长多少字（大段话够用；更长的请用翻译小窗分段）
-pub const MAX_CHARS: usize = 5000;
+/// 一次请求最多送这么多字；更长的按段落（段太长再按句子）切开，逐段翻译再拼回去
+pub const CHUNK_CHARS: usize = 1500;
+/// 整段最长多少字（输入框上限，约 5 万汉字，正常用不到）
+pub const MAX_CHARS: usize = 50_000;
 
 pub fn azure_request(keys: &Keys, text: &str, target: Target) -> Option<Request> {
     let key = keys.azure_key.trim();
@@ -178,6 +180,77 @@ pub fn translate_with(
         return Err("还没配翻译 Key".into());
     }
     let target = Target::for_text(text);
+    // 长文按段切开逐段翻（2026-10 工具站长文翻译失败的教训：一次送太长会被截断或超时）
+    let mut out = String::new();
+    for (piece, separator) in chunks(text, CHUNK_CHARS) {
+        let translated = translate_piece(keys, piece, target, &mut send)?;
+        // 译成英文时，两段在同一行接上要隔一个空格（「code.The」）
+        if target == Target::English
+            && !out.is_empty()
+            && !out.ends_with(char::is_whitespace)
+            && !translated.starts_with(char::is_whitespace)
+        {
+            out.push(' ');
+        }
+        out.push_str(&translated);
+        out.push_str(separator);
+    }
+    Ok(out)
+}
+
+/// 切成不超过 `limit` 字的段：先按换行切，单段太长再按句末标点切，还太长就硬切。
+/// 返回（这段文字, 它后面原来的分隔符），拼回去时原样补上，换行不丢。
+pub fn chunks(text: &str, limit: usize) -> Vec<(&str, &str)> {
+    let mut out = Vec::new();
+    let mut start = 0;
+    let mut last_break: Option<(usize, usize)> = None; // (段尾, 下一段开头)
+    let mut count = 0;
+    let chars: Vec<(usize, char)> = text.char_indices().collect();
+    let mut i = 0;
+    while i < chars.len() {
+        let (at, c) = chars[i];
+        let end = at + c.len_utf8();
+        count += 1;
+        if c == '\n' {
+            last_break = Some((at, end));
+        } else if "。！？.!?；;".contains(c) {
+            last_break = Some((end, end));
+        }
+        let hard = count >= limit;
+        if c == '\n' || hard {
+            let (cut, next) = if c == '\n' {
+                (at, end)
+            } else {
+                last_break
+                    .filter(|&(cut, _)| cut > start)
+                    .unwrap_or((end, end))
+            };
+            if count >= limit || c == '\n' {
+                // 只有段够长或遇到换行才切；换行前的短段也单独成一段，保留排版
+                out.push((&text[start..cut], &text[cut..next]));
+                start = next;
+                last_break = None;
+                count = text[start..end.max(start)].chars().count();
+            }
+        }
+        i += 1;
+    }
+    if start < text.len() {
+        out.push((&text[start..], ""));
+    }
+    out.retain(|(piece, sep)| !piece.trim().is_empty() || !sep.is_empty());
+    out
+}
+
+fn translate_piece(
+    keys: &Keys,
+    text: &str,
+    target: Target,
+    send: &mut impl FnMut(&Request) -> Result<(u32, Vec<u8>), String>,
+) -> Result<String, String> {
+    if text.trim().is_empty() {
+        return Ok(text.to_string());
+    }
     let attempts: [(&str, Option<Request>, fn(&[u8]) -> Result<String, String>); 2] = [
         ("微软翻译", azure_request(keys, text, target), parse_azure),
         ("谷歌", google_request(keys, text, target), parse_google),
@@ -284,6 +357,57 @@ mod tests {
         assert_eq!(
             translate_with(&keys, "你好", |_| Ok((401, vec![]))),
             Err("微软翻译 的 Key 不对或没开通".into())
+        );
+    }
+
+    #[test]
+    fn long_text_is_split_by_paragraph_and_sentence_and_joined_back() {
+        let text = "第一段。\n第二段很长。第二段第二句。\n\n第三段";
+        let parts = chunks(text, 8);
+        let joined: String = parts.iter().map(|(p, s)| format!("{p}{s}")).collect();
+        assert_eq!(joined, text, "切开再拼回去要和原文一样");
+        assert!(
+            parts.iter().all(|(p, _)| p.chars().count() <= 8),
+            "{parts:?}"
+        );
+        // 每段单独去翻，结果按原来的换行拼
+        let keys = Keys {
+            google_key: "g".into(),
+            ..Keys::default()
+        };
+        let mut calls = 0;
+        let out = translate_with(&keys, text, |r| {
+            calls += 1;
+            let body: serde_json::Value = serde_json::from_str(&r.body).unwrap();
+            let said = body["messages"][1]["content"].as_str().unwrap().to_string();
+            let reply =
+                serde_json::json!({"choices":[{"message":{"content": format!("<{said}>")}}]});
+            Ok((200, reply.to_string().into_bytes()))
+        })
+        .unwrap();
+        assert!(calls >= 3);
+        assert!(out.contains("\n\n<第三段>"), "{out}");
+    }
+
+    #[test]
+    fn a_ten_thousand_character_text_is_accepted() {
+        let text = "今天吃什么。".repeat(1700);
+        let keys = Keys {
+            google_key: "g".into(),
+            ..Keys::default()
+        };
+        let out = translate_with(&keys, &text, |r| {
+            assert!(r.body.chars().count() < CHUNK_CHARS * 2 + 600);
+            Ok((
+                200,
+                br#"{"choices":[{"message":{"content":"x"}}]}"#.to_vec(),
+            ))
+        });
+        // 同一行切开的几段，英文译文之间隔一个空格
+        assert_eq!(
+            out.as_deref().map(|t| t.contains("x x")),
+            Ok(true),
+            "{out:?}"
         );
     }
 
