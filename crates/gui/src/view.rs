@@ -428,9 +428,12 @@ pub unsafe fn translate_card(
     };
     let w = width as f32 * 96. / dpi as f32;
     let h = height as f32 * 96. / dpi as f32;
+    // 整张白底；分隔线（主人 2026-11-19：加回来）上下各留距离，中间空出放「中 ⇄ 英」的小胶囊。
+    // 译文那半不再整块铺灰，只靠线和留白分开，胶囊不会骑在两种底色的接缝上
     c.rect(0., 0., w, h, 0xffffffff);
-    c.rect(0., split, w, h - split, 0xfff5f5f7);
-    c.line(0., split, w, split, 1., 0xffe5e5ea);
+    let gap = 60.;
+    c.line(18., split, w / 2. - gap, split, 1., 0xffd1d1d6);
+    c.line(w / 2. + gap, split, w - 18., split, 1., 0xffd1d1d6);
     // 右上三个小按钮：最小化、最大化/还原、关闭（主人 2026-11-19：要有最小和全屏窗口化）
     let (x, y) = (w - 24., 22.);
     c.line(x - 4.5, y - 4.5, x + 4.5, y + 4.5, 1.4, 0xff8e8e93);
@@ -452,7 +455,7 @@ pub unsafe fn translate_card(
         c.line(x + 8., y + 15., x + 17., y + 4., 1.8, 0xff2c2c2e);
     } else {
         c.rounded(x + 6., y + 1., 12., 14., 3., 0xff8e8e93, true);
-        c.rounded(x + 2., y + 5., 12., 14., 3., 0xfff5f5f7, false);
+        c.rounded(x + 2., y + 5., 12., 14., 3., 0xffffffff, false);
         c.rounded(x + 2., y + 5., 12., 14., 3., 0xff8e8e93, true);
     }
     let _ = busy_phase;
@@ -472,6 +475,23 @@ pub unsafe fn pill(dc: HDC, dpi: u32, x: i32, y: i32, w: i32, h: i32) {
         GREEN,
         false,
     );
+}
+
+/// 分隔线中间的方向胶囊：白底细灰边，中间画一对反向小箭头（⇄）。两边的字由调用方写。
+/// (x, y, w, h) 是 96 DPI 坐标
+pub unsafe fn swap_pill(dc: HDC, dpi: u32, x: f32, y: f32, w: f32, h: f32) {
+    let Some(c) = Canvas::new(dc, dpi) else {
+        return;
+    };
+    c.rounded(x, y, w, h, h / 2., 0xffffffff, false);
+    c.rounded(x, y, w, h, h / 2., 0xffd1d1d6, true);
+    let (cx, cy) = (x + w / 2., y + h / 2.);
+    let color = 0xff636366;
+    // 上面一支朝右、下面一支朝左
+    c.line(cx - 6., cy - 3., cx + 6., cy - 3., 1.4, color);
+    c.line(cx + 6., cy - 3., cx + 3., cy - 6., 1.4, color);
+    c.line(cx - 6., cy + 3., cx + 6., cy + 3., 1.4, color);
+    c.line(cx - 6., cy + 3., cx - 3., cy + 6., 1.4, color);
 }
 
 /// 细滚动条的滑块（参照 Husic：细、圆头、浅灰），坐标是 96 DPI
@@ -501,7 +521,7 @@ pub unsafe fn busy_dots_at(dc: HDC, dpi: u32, x: i32, y: i32, width: i32, height
     );
     let w = width as f32 / ratio;
     let h = height as f32 / ratio;
-    let _ = (w, h);
+    c.rect(0., 0., w, h, 0xffffffff);
     for i in 0..3 {
         let lift = ((phase - i as f32 * 0.6).sin().max(0.)) * 3.;
         c.ellipse(4. + i as f32 * 11., h / 2. - 1. - lift, 6., 6., 0xffaeaeb2);

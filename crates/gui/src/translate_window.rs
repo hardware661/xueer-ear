@@ -64,6 +64,8 @@ const MIN_HEIGHT: i32 = 240;
 const PAD: i32 = 18;
 /// 每半左上角的语言小字（「中文」「English」）
 const CAPTION_H: i32 = 30;
+/// 分隔线下面多留的距离（主人 2026-11-19：线和上下内容之间要有距离）
+const LOWER: i32 = 8;
 /// 拖这么宽的边改大小
 const EDGE: i32 = 6;
 /// 细滚动条：宽、离右边多远
@@ -88,7 +90,7 @@ impl Layout {
         Self {
             w,
             h,
-            divider: (h * 47 / 100).max(110),
+            divider: (h * 48 / 100).max(118),
         }
     }
     fn close(&self) -> (i32, i32, i32, i32) {
@@ -109,10 +111,14 @@ impl Layout {
     }
     /// 翻译中小点：在下半「English」小字下面
     fn dots(&self) -> (i32, i32, i32, i32) {
-        (PAD, self.divider + CAPTION_H + 4, 60, 24)
+        (PAD, self.divider + LOWER + CAPTION_H + 4, 60, 24)
     }
     fn captions(&self) -> [(i32, i32, i32, i32); 2] {
-        [(PAD, 8, 200, 22), (PAD, self.divider + 8, 200, 22)]
+        [(PAD, 8, 200, 22), (PAD, self.divider + LOWER + 8, 200, 22)]
+    }
+    /// 分隔线中间的方向胶囊（点它反转「中 ⇄ 英」）
+    fn swap(&self) -> (i32, i32, i32, i32) {
+        (self.w / 2 - 52, self.divider - 13, 104, 26)
     }
     fn note(&self) -> (i32, i32, i32, i32) {
         (PAD, self.h - 38, 300, 26)
@@ -127,7 +133,7 @@ impl Layout {
         )
     }
     fn result(&self) -> (i32, i32, i32, i32) {
-        let top = self.divider + CAPTION_H + 6;
+        let top = self.divider + LOWER + CAPTION_H + 6;
         (
             PAD,
             top,
@@ -150,7 +156,6 @@ struct State {
     dpi: u32,
     fonts: [HFONT; 3],
     white: isize,
-    grey: isize,
     asked: usize,
     replies: mpsc::Receiver<(usize, Result<String, String>)>,
     sender: mpsc::Sender<(usize, Result<String, String>)>,
@@ -323,6 +328,21 @@ unsafe fn schedule(window: HWND, state: &mut State) {
     SetTimer(window, SETTLE_TIMER, gap.saturating_sub(since).max(1), None);
 }
 
+/// 反转翻译方向（像谷歌翻译的 ⇄）：两半的语言对调；已经有译文的话，译文搬到上面当原文，再翻回去
+unsafe fn swap_direction(window: HWND, state: &mut State) {
+    state.target = match state.target {
+        Target::English => Target::Chinese,
+        Target::Chinese => Target::English,
+    };
+    let result = text_of(window, RESULT);
+    if !result.trim().is_empty() && !state.busy {
+        set_text(window, SOURCE, &result);
+        set_text(window, RESULT, "");
+    }
+    InvalidateRect(window, ptr::null(), 0);
+    translate_now(window, state);
+}
+
 /// 只让一小块重画（96 DPI 坐标）
 unsafe fn invalidate(window: HWND, dpi: u32, (x, y, w, h): (i32, i32, i32, i32)) {
     let rect = RECT {
@@ -336,7 +356,6 @@ unsafe fn invalidate(window: HWND, dpi: u32, (x, y, w, h): (i32, i32, i32, i32))
 
 unsafe fn ask(window: HWND, state: &mut State) {
     let source = text_of(window, SOURCE);
-    state.target = Target::for_text(&source);
     if source.trim().is_empty() {
         set_text(window, RESULT, "");
         state.last_source.clear();
@@ -366,8 +385,9 @@ unsafe fn ask(window: HWND, state: &mut State) {
         ));
     }
     let (id, sender, target) = (state.asked, state.sender.clone(), window as usize);
+    let target_language = state.target;
     thread::spawn(move || {
-        let result = xueer_ear_backend::translate::translate(&source);
+        let result = xueer_ear_backend::translate::translate_into(&source, target_language);
         let _ = sender.send((id, result));
         PostMessageW(target as HWND, DONE, id, 0);
     });
@@ -434,10 +454,38 @@ unsafe fn paint(window: HWND, state: &State) {
         Target::English => ("中文", "English"),
         Target::Chinese => ("English", "中文"),
     };
-    draw(from, state.fonts[1], 0x00938e8e, (PAD, 8, 200, 22));
+    draw(from, state.fonts[1], 0x00938e8e, layout.captions()[0]);
     draw(to, state.fonts[1], 0x00938e8e, layout.captions()[1]);
     if !state.note.is_empty() {
         draw(&state.note, state.fonts[1], 0x003f39bd, layout.note());
+    }
+    // 分隔线中间：「中 ⇄ 英」，点了反转
+    let (sx, sy, sw, sh) = layout.swap();
+    crate::view::swap_pill(dc, d, sx as f32, sy as f32, sw as f32, sh as f32);
+    let (left, right) = match state.target {
+        Target::English => ("中", "英"),
+        Target::Chinese => ("英", "中"),
+    };
+    {
+        let old = SelectObject(dc, state.fonts[1]);
+        SetTextColor(dc, 0x003c3a3a);
+        for (text, x) in [(left, sx + 8), (right, sx + sw - 8 - 32)] {
+            let mut rect = RECT {
+                left: scale(x, d),
+                top: scale(sy, d),
+                right: scale(x + 32, d),
+                bottom: scale(sy + sh, d),
+            };
+            let units: Vec<u16> = text.encode_utf16().collect();
+            DrawTextW(
+                dc,
+                units.as_ptr(),
+                units.len() as i32,
+                &mut rect,
+                DT_SINGLELINE | DT_VCENTER | DT_CENTER,
+            );
+        }
+        SelectObject(dc, old);
     }
     // 上半右下角的「翻译」按钮：深灰胶囊、白字
     let (gx, gy, gw, gh) = layout.go();
@@ -495,7 +543,7 @@ unsafe fn paint_dots(window: HWND, state: &State) {
         right: pw,
         bottom: ph,
     };
-    windows_sys::Win32::Graphics::Gdi::FillRect(memory, &all, state.grey as _);
+    windows_sys::Win32::Graphics::Gdi::FillRect(memory, &all, state.white as _);
     crate::view::busy_dots(memory, d, pw, ph, state.phase);
     BitBlt(screen, px, py, pw, ph, memory, 0, 0, SRCCOPY);
     SelectObject(memory, old);
@@ -600,6 +648,8 @@ unsafe extern "system" fn procedure(
                 );
             } else if same(layout.minimize()) {
                 ShowWindow(hwnd, SW_MINIMIZE);
+            } else if same(layout.swap()) {
+                swap_direction(hwnd, state);
             } else if same(layout.go()) {
                 translate_now(hwnd, state);
             } else if same(layout.copy()) {
@@ -650,13 +700,6 @@ unsafe extern "system" fn procedure(
                     ask(hwnd, state);
                 } else {
                     schedule(hwnd, state);
-                }
-                let target = Target::for_text(&text_of(hwnd, SOURCE));
-                if target != state.target {
-                    state.target = target;
-                    for area in Layout::of(hwnd, state.dpi).captions() {
-                        invalidate(hwnd, state.dpi, area);
-                    }
                 }
             }
             0
@@ -744,6 +787,7 @@ unsafe extern "system" fn procedure(
                 y: ((lparam >> 16) as i16) as i32,
             };
             let layout = Layout::of(hwnd, state.dpi);
+            state.pressed = Some(point);
             for id in [SOURCE, RESULT] {
                 let (x, y, w, h) = if id == SOURCE {
                     layout.source()
@@ -779,9 +823,10 @@ unsafe extern "system" fn procedure(
             let dc = wparam as HDC;
             // 原文白底、译文浅灰底（和卡片两半同色）
             let result = lparam as HWND == GetDlgItem(hwnd, RESULT as i32);
-            SetBkColor(dc, if result { 0x00f7f5f5 } else { 0x00ffffff });
-            SetTextColor(dc, 0x001e1c1c);
-            if result { state.grey } else { state.white }
+            SetBkColor(dc, 0x00ffffff);
+            // 译文稍深，和原文区分
+            SetTextColor(dc, if result { 0x001e1c1c } else { 0x00403c3a });
+            state.white
         }
         WM_CLOSE => {
             DestroyWindow(hwnd);
@@ -850,7 +895,6 @@ unsafe fn open(at: Option<(i32, i32)>) -> HWND {
         dpi: 96,
         fonts: [ptr::null_mut(); 3],
         white: CreateSolidBrush(0x00ffffff) as isize,
-        grey: CreateSolidBrush(0x00f7f5f5) as isize,
         asked: 0,
         replies,
         sender,

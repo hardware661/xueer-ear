@@ -200,6 +200,16 @@ pub fn status_reason(service: &str, status: u32) -> String {
 pub fn translate_with(
     keys: &Keys,
     text: &str,
+    send: impl FnMut(&Request) -> Result<(u32, Vec<u8>), String>,
+) -> Result<String, String> {
+    translate_to(keys, text, Target::for_text(text.trim()), send)
+}
+
+/// 指定译成哪种语言（翻译小窗手动选了方向时用）
+pub fn translate_to(
+    keys: &Keys,
+    text: &str,
+    target: Target,
     mut send: impl FnMut(&Request) -> Result<(u32, Vec<u8>), String>,
 ) -> Result<String, String> {
     let text = text.trim();
@@ -212,7 +222,6 @@ pub fn translate_with(
     if keys.is_empty() {
         return Err("还没配翻译 Key".into());
     }
-    let target = Target::for_text(text);
     // 长文按段切开逐段翻（2026-10 工具站长文翻译失败的教训：一次送太长会被截断或超时）
     let mut out = String::new();
     for (piece, separator) in merge(text, chunks(text, CHUNK_CHARS), CHUNK_CHARS) {
@@ -478,6 +487,23 @@ mod tests {
     }
 
     #[test]
+    fn an_explicit_direction_wins_over_detection() {
+        let keys = Keys {
+            azure_key: "a".into(),
+            ..Keys::default()
+        };
+        // 原文是中文，但主人把方向反转成「英 → 中」：照样按译成中文发
+        let out = translate_to(&keys, "你好", Target::Chinese, |r| {
+            assert!(r.path.ends_with("to=zh-Hans"), "{}", r.path);
+            Ok((
+                200,
+                r#"[{"translations":[{"text":"你好"}]}]"#.as_bytes().to_vec(),
+            ))
+        });
+        assert_eq!(out.as_deref(), Ok("你好"));
+    }
+
+    #[test]
     fn bad_key_reason_is_plain() {
         let keys = Keys {
             azure_key: "a".into(),
@@ -580,9 +606,19 @@ pub fn send(request: &Request) -> Result<(u32, Vec<u8>), String> {
 /// 读本机翻译 Key，按微软 → 谷歌翻译
 #[cfg(windows)]
 pub fn translate(text: &str) -> Result<String, String> {
+    translate_with(&local_keys()?, text, send)
+}
+
+/// 译成指定语言
+#[cfg(windows)]
+pub fn translate_into(text: &str, target: Target) -> Result<String, String> {
+    translate_to(&local_keys()?, text, target, send)
+}
+
+/// 本机 %LOCALAPPDATA%\XueerEar\translate.json 里的 Key
+pub fn local_keys() -> Result<Keys, String> {
     let dir = std::env::var_os("LOCALAPPDATA").ok_or("LOCALAPPDATA 不可用")?;
-    let keys = Keys::load(&std::path::PathBuf::from(dir).join("XueerEar/translate.json"))?;
-    translate_with(&keys, text, send)
+    Keys::load(&std::path::PathBuf::from(dir).join("XueerEar/translate.json"))
 }
 
 #[cfg(windows)]
