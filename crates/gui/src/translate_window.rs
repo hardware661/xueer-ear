@@ -46,8 +46,7 @@ const ES_MULTILINE: u32 = 0x0004;
 const ES_AUTOVSCROLL: u32 = 0x0040;
 const ES_READONLY: u32 = 0x0800;
 const ES_WANTRETURN: u32 = 0x1000;
-/// 停手这么久就自动翻译
-const SETTLE_MS: u32 = 600;
+/// 边打字边自动翻译：离上一次翻译至少隔 `Pace::gap_ms()`（1→2→4→8 秒，主人 2026-11-19 定）
 const SETTLE_TIMER: usize = 1;
 /// 翻译中小点的动画
 const DOTS_TIMER: usize = 2;
@@ -168,6 +167,10 @@ struct State {
     dragging: Option<usize>,
     /// 左键在哪按下的（按钮要按下、松开都在它上面才算点）
     pressed: Option<POINT>,
+    /// 自动翻译的节奏、上一次自动翻译的时间、是否已经定了时
+    pace: xueer_ear_backend::translate::Pace,
+    last_auto: Option<std::time::Instant>,
+    waiting: bool,
 }
 
 fn wide(value: &str) -> Vec<u16> {
@@ -213,7 +216,7 @@ fn note_close(what: &str) {
     {
         let at = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .map_or(0, |d| d.as_secs());
+            .map_or(0, |d| d.as_millis());
         let _ = writeln!(file, "{at} {what}");
     }
 }
@@ -301,8 +304,23 @@ unsafe fn drag_to(window: HWND, id: usize, y_px: i32, layout: Layout, dpi: u32) 
 /// 马上翻译（按钮、回车）：不等停手；同样的原文再按一次也重新翻
 unsafe fn translate_now(window: HWND, state: &mut State) {
     KillTimer(window, SETTLE_TIMER);
+    state.waiting = false;
+    state.pace.reset();
     state.last_source.clear();
     ask(window, state);
+}
+
+/// 打了字：离上一次翻译够久了就马上翻，不够就定个时到点再翻（期间再打字不重新计时）
+unsafe fn schedule(window: HWND, state: &mut State) {
+    if state.waiting {
+        return;
+    }
+    let gap = state.pace.gap_ms();
+    let since = state.last_auto.map_or(u32::MAX, |at| {
+        at.elapsed().as_millis().min(u128::from(u32::MAX)) as u32
+    });
+    state.waiting = true;
+    SetTimer(window, SETTLE_TIMER, gap.saturating_sub(since).max(1), None);
 }
 
 /// 只让一小块重画（96 DPI 坐标）
@@ -340,6 +358,13 @@ unsafe fn ask(window: HWND, state: &mut State) {
     set_text(window, RESULT, "");
     ShowWindow(GetDlgItem(window, RESULT as i32), SW_HIDE);
     SetTimer(window, DOTS_TIMER, 60, None);
+    if std::env::var_os("XUEER_EAR_PACE_LOG").is_some() {
+        note_close(&format!(
+            "自动/手动翻译第 {} 次，{} 字",
+            state.asked,
+            source.chars().count()
+        ));
+    }
     let (id, sender, target) = (state.asked, state.sender.clone(), window as usize);
     thread::spawn(move || {
         let result = xueer_ear_backend::translate::translate(&source);
@@ -616,7 +641,16 @@ unsafe extern "system" fn procedure(
                 PostMessageW(hwnd, SCROLLED, 0, 0);
             }
             if id == SOURCE && code == EN_CHANGE {
-                SetTimer(hwnd, SETTLE_TIMER, SETTLE_MS, None);
+                if text_of(hwnd, SOURCE).trim().is_empty() {
+                    // 清空了：节奏从头算，译文也清掉
+                    KillTimer(hwnd, SETTLE_TIMER);
+                    state.waiting = false;
+                    state.pace.reset();
+                    state.last_auto = None;
+                    ask(hwnd, state);
+                } else {
+                    schedule(hwnd, state);
+                }
                 let target = Target::for_text(&text_of(hwnd, SOURCE));
                 if target != state.target {
                     state.target = target;
@@ -631,7 +665,13 @@ unsafe extern "system" fn procedure(
             match wparam {
                 SETTLE_TIMER => {
                     KillTimer(hwnd, SETTLE_TIMER);
+                    state.waiting = false;
+                    let before = state.asked;
                     ask(hwnd, state);
+                    if state.asked != before {
+                        state.pace.auto();
+                        state.last_auto = Some(std::time::Instant::now());
+                    }
                 }
                 DOTS_TIMER => {
                     state.phase += 0.35;
@@ -823,6 +863,9 @@ unsafe fn open(at: Option<(i32, i32)>) -> HWND {
         offscreen: at.is_some(),
         dragging: None,
         pressed: None,
+        pace: Default::default(),
+        last_auto: None,
+        waiting: false,
     }));
     let window = CreateWindowExW(
         extended,

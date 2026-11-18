@@ -747,3 +747,63 @@ mod chunk_fuzz {
         }
     }
 }
+
+/// 边打字边自动翻译的节奏（主人 2026-11-19 定）：这次打字已经自动翻了几次 → 下一次至少隔多久。
+/// 第 1～3 次隔 1 秒、4～6 次 2 秒、7～9 次 4 秒、之后 8 秒；按回车、点「翻译」、清空输入框后从头算。
+/// 一分钟最多自动翻十来次，不会撞上谷歌免费档每分钟约 10 次的上限。
+#[derive(Debug, Default, Clone)]
+pub struct Pace {
+    done: u32,
+}
+
+impl Pace {
+    /// 下一次自动翻译离上一次至少隔几毫秒
+    pub fn gap_ms(&self) -> u32 {
+        match self.done {
+            0..=2 => 1000,
+            3..=5 => 2000,
+            6..=8 => 4000,
+            _ => 8000,
+        }
+    }
+    /// 自动翻了一次
+    pub fn auto(&mut self) {
+        self.done += 1;
+    }
+    /// 按回车、点按钮、清空：从头算
+    pub fn reset(&mut self) {
+        self.done = 0;
+    }
+}
+
+#[cfg(test)]
+mod pace_tests {
+    use super::Pace;
+
+    #[test]
+    fn gaps_grow_with_each_automatic_translation_and_reset() {
+        let mut pace = Pace::default();
+        let mut gaps = Vec::new();
+        for _ in 0..11 {
+            gaps.push(pace.gap_ms());
+            pace.auto();
+        }
+        assert_eq!(
+            gaps,
+            [
+                1000, 1000, 1000, 2000, 2000, 2000, 4000, 4000, 4000, 8000, 8000
+            ]
+        );
+        pace.reset();
+        assert_eq!(pace.gap_ms(), 1000);
+        // 一分钟里自动翻不超过十来次
+        let mut pace = Pace::default();
+        let (mut t, mut n) = (0, 0);
+        while t + pace.gap_ms() <= 60_000 {
+            t += pace.gap_ms();
+            pace.auto();
+            n += 1;
+        }
+        assert!(n <= 14, "{n}");
+    }
+}

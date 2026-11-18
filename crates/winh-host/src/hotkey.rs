@@ -292,11 +292,30 @@ fn record(
     let post = crate::broker::postprocess();
     let mut live = Live::new(foreground_is_terminal());
     live.set_terminal_newline(settings.text.terminal_newline);
-    let source = Source::MicrophoneHold {
-        device: settings.microphone.clone(),
-        release: release.clone(),
+    // 排查用：XUEER_EAR_TEST_WAVE=文件.wav 时用录好的音代替麦克风，走完全一样的上屏和指令流程
+    let source = match std::env::var_os("XUEER_EAR_TEST_WAVE") {
+        Some(path) => Source::Wave(path.into()),
+        None => Source::MicrophoneHold {
+            device: settings.microphone.clone(),
+            release: release.clone(),
+        },
     };
+    // 「被新一轮取消」要单独记：引擎收完一轮正常结束时也会把传进去的 stop 置位（Capture 的 Drop），
+    // 直接拿 cancel 判断的话，每轮正常结束都像被取消，说「翻译」整段替换就永远不执行（2026-11-19 复现）
     let stopped = cancel.clone();
+    let engine_stop = Arc::new(AtomicBool::new(false));
+    {
+        let (from, to) = (cancel.clone(), engine_stop.clone());
+        thread::spawn(move || {
+            while !to.load(Ordering::Acquire) {
+                if from.load(Ordering::Acquire) {
+                    to.store(true, Ordering::Release);
+                    break;
+                }
+                thread::sleep(Duration::from_millis(20));
+            }
+        });
+    }
     let mut typed_any = false;
     let started = Instant::now();
     // 最近一次识别出新字的时间；开头留出说第一句的时间
@@ -309,7 +328,7 @@ fn record(
     let mut pending_command: Option<(String, Instant)> = None;
     // 这轮最后说了「翻译」
     let mut translate = false;
-    let result = engine::run_wetype(source, cancel, |event| {
+    let result = engine::run_wetype(source, engine_stop.clone(), |event| {
         if stopped.load(Ordering::Acquire) {
             return Ok(());
         }
@@ -433,6 +452,10 @@ fn record(
         }
         return Err(error);
     }
+    println!(
+        "这轮结束：说了翻译={translate} 取消={} 已出字={typed_any}",
+        stopped.load(Ordering::Acquire)
+    );
     if translate && !stopped.load(Ordering::Acquire) {
         translate_round(&mut live, panel);
         return Ok(());
@@ -762,6 +785,17 @@ fn send_to_qt(key: &Key) -> bool {
 
 /// 排查漏字用：等 `delay_ms` 让人把焦点切到目标窗口，然后按听写的打字方式把 `text` 分 `pieces` 次打出去
 /// （模拟边说边出字：每次接一截），最后补一个换行。只发这段文字，不读屏幕。
+/// 排查用：起一个面板，模拟按一下快捷键，用 XUEER_EAR_TEST_WAVE 里的录音跑一整轮听写（字打进前台窗口）
+pub fn wave_probe(delay_ms: u64) {
+    thread::sleep(Duration::from_millis(delay_ms));
+    let (clicks, _) = mpsc::channel();
+    let panel = panel::spawn(clicks);
+    let status = Status::new("wetype").expect("status");
+    let session = begin(panel.clone(), status, None);
+    let _ = session.worker.join();
+    thread::sleep(Duration::from_millis(500));
+}
+
 pub fn type_probe(text: &str, pieces: usize, delay_ms: u64) {
     thread::sleep(Duration::from_millis(delay_ms));
     // 排查用：XUEER_EAR_PROBE=each 每个字单独一次 SendInput

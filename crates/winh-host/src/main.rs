@@ -44,6 +44,12 @@ fn main() {
         hotkey::type_probe(&text, pieces, delay);
         return;
     }
+    // 排查：`--wave-probe [等几毫秒]`，配合环境变量 XUEER_EAR_TEST_WAVE，用录音跑一整轮快捷键听写
+    if first.as_deref() == Some("--wave-probe") {
+        let delay = args.next().and_then(|v| v.parse().ok()).unwrap_or(0);
+        hotkey::wave_probe(delay);
+        return;
+    }
     if first.as_deref() == Some("--panel-render") {
         let dir = std::path::PathBuf::from(args.next().unwrap_or_else(|| ".".into()));
         for (name, look, level) in [
