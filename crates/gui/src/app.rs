@@ -154,7 +154,7 @@ fn recent_history(count: usize) -> Vec<String> {
 }
 
 /// 把一段文字放进剪贴板。
-unsafe fn copy_text(owner: HWND, text: &str) -> Result<(), String> {
+pub(crate) unsafe fn copy_text(owner: HWND, text: &str) -> Result<(), String> {
     use windows_sys::Win32::System::{
         DataExchange::{CloseClipboard, EmptyClipboard, OpenClipboard, SetClipboardData},
         Memory::{GMEM_MOVEABLE, GlobalAlloc, GlobalLock, GlobalUnlock},
@@ -214,7 +214,7 @@ fn fitted_dpi(actual: u32, work: RECT) -> u32 {
         .max(72)
 }
 
-unsafe fn ui_font(window: HWND) -> &'static str {
+pub(crate) unsafe fn ui_font(window: HWND) -> &'static str {
     unsafe extern "system" fn found(
         _: *const LOGFONTW,
         _: *const TEXTMETRICW,
@@ -2032,7 +2032,16 @@ pub fn snapshot(dir: &std::path::Path) -> Result<(), String> {
             DeleteObject(bitmap);
             result
         };
+        let translator = crate::translate_window::offscreen();
+        let translated = if translator.is_null() {
+            Err("无法创建翻译小窗".to_owned())
+        } else {
+            settle(400);
+            let result = capture(translator, &dir.join("translate-window.png"));
+            DestroyWindow(translator);
+            result
+        };
         DestroyWindow(hwnd);
-        panel.and(asked).and(tray).and(hotwords)
+        panel.and(asked).and(tray).and(hotwords).and(translated)
     }
 }

@@ -176,6 +176,9 @@ fn poll_loop(vk: u32, stop: &AtomicBool, status: &Status) {
         while let Ok(click) = clicks.try_recv() {
             match click {
                 Click::Mic => inputs.push(Input::MicClick),
+                // 左边设置：打开控制面板（已经开着就切到前面）；右边翻译：弹翻译小窗
+                Click::Settings => open_control_panel(&[]),
+                Click::Translate => open_control_panel(&["--translate"]),
             }
         }
         let mut effects = Vec::new();
@@ -438,6 +441,22 @@ fn record(
         crate::sound::play(crate::sound::Cue::Missed, settings.sounds_enabled);
     }
     Ok(())
+}
+
+/// 拉起同目录的 xueer-ear.exe（控制面板程序）。它自己保证只开一个控制面板。
+fn open_control_panel(args: &[&str]) {
+    let Some(dir) = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(|d| d.to_path_buf()))
+    else {
+        return;
+    };
+    if let Err(error) = std::process::Command::new(dir.join("xueer-ear.exe"))
+        .args(args)
+        .spawn()
+    {
+        eprintln!("打不开控制面板：{error}");
+    }
 }
 
 fn wants_translation(output: &Output) -> bool {

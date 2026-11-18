@@ -2,8 +2,8 @@
 //! 不抢焦点（WS_EX_NOACTIVATE），所以打字的目标窗口一直是你原来的那个。点卡片任意处 = 点麦克风。
 //! 面板跑在自己的线程和消息循环里；其他线程通过 `PanelHandle` 改状态、收点击。
 //! 出错时卡片变宽、写一句原因，留几秒自己收起（规则在 `look.rs`）。
-use crate::look::Board;
-pub use crate::look::Look;
+use crate::look::{Board, PANEL_WIDTH, SETTINGS_X, TRANSLATE_X};
+pub use crate::look::{Click, Look};
 use std::{
     mem, ptr,
     sync::{
@@ -39,7 +39,7 @@ use windows_sys::Win32::{
 };
 
 /// 面板逻辑尺寸（96 DPI 下的像素）；上面留出猫耳的高度
-const WIDTH: f32 = 120.;
+const WIDTH: f32 = PANEL_WIDTH;
 const HEIGHT: f32 = 100.;
 /// 卡片本体从这里开始，上面是耳朵
 const BODY_TOP: f32 = 24.;
@@ -55,11 +55,6 @@ fn width(look: Look) -> f32 {
     } else {
         WIDTH
     }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Click {
-    Mic,
 }
 
 struct Shared {
@@ -224,11 +219,17 @@ unsafe extern "system" fn procedure(hwnd: HWND, message: u32, wp: WPARAM, lp: LP
                 0
             }
             WM_LBUTTONUP => {
-                // 点出错提示 = 知道了，收起；其他时候 = 点麦克风
+                // 点出错提示 = 知道了，收起；其他时候看点在哪个按钮上
                 if window.board().dismiss() {
                     window.refresh();
                 } else {
-                    let _ = window.shared.clicks.send(Click::Mic);
+                    let s = window.scale();
+                    let (x, y) = (
+                        (lp & 0xffff) as i16 as f32 / s,
+                        (lp >> 16 & 0xffff) as i16 as f32 / s,
+                    );
+                    let click = crate::look::hit(x, y, BODY_TOP + (HEIGHT - BODY_TOP - 6.) / 2.);
+                    let _ = window.shared.clicks.send(click);
                 }
                 0
             }
@@ -461,6 +462,11 @@ unsafe fn paint_graphics(
         );
         // 中间：同一种中灰圆底，没开口时是白麦克风，出字时是白波浪
         let (cx, cy) = (card_w / 2., BODY_TOP + body_h / 2.);
+        // 两边：左设置（齿轮）、右翻译（「译」字），出错提示时不画
+        if look != Look::Notice {
+            gear(g, SETTINGS_X, cy, MUTED);
+            glyph(g, "译", TRANSLATE_X, cy, MUTED);
+        }
         match look {
             // 出错提示：左边灰掉的麦克风，右边一句原因
             Look::Notice => {
@@ -534,6 +540,77 @@ unsafe fn label(g: *mut gp::GpGraphics, text: &str, x: f32, y: f32, w: f32, h: f
                 Y: y,
                 Width: w,
                 Height: h,
+            };
+            let units: Vec<u16> = text.encode_utf16().collect();
+            gp::GdipDrawString(
+                g,
+                units.as_ptr(),
+                units.len() as i32,
+                font,
+                &rect,
+                format,
+                brush.cast(),
+            );
+        }
+        if !brush.is_null() {
+            gp::GdipDeleteBrush(brush.cast());
+        }
+        if !format.is_null() {
+            gp::GdipDeleteStringFormat(format);
+        }
+        if !font.is_null() {
+            gp::GdipDeleteFont(font);
+        }
+        gp::GdipDeleteFontFamily(family);
+    }
+}
+
+unsafe fn gear(g: *mut gp::GpGraphics, cx: f32, cy: f32, color: u32) {
+    unsafe {
+        for i in 0..8 {
+            let a = i as f32 * std::f32::consts::TAU / 8.;
+            line(
+                g,
+                cx + a.cos() * 6.5,
+                cy + a.sin() * 6.5,
+                cx + a.cos() * 9.5,
+                cy + a.sin() * 9.5,
+                2.6,
+                color,
+            );
+        }
+        arc(g, cx - 6.5, cy - 6.5, 13., 13., 0., 360., 1.8, color);
+        arc(g, cx - 2.5, cy - 2.5, 5., 5., 0., 360., 1.6, color);
+    }
+}
+
+/// 一个字居中画在 (cx, cy)（翻译按钮的「译」）
+unsafe fn glyph(g: *mut gp::GpGraphics, text: &str, cx: f32, cy: f32, color: u32) {
+    unsafe {
+        let mut family = ptr::null_mut();
+        if gp::GdipCreateFontFamilyFromName(
+            wide("Microsoft YaHei UI").as_ptr(),
+            ptr::null_mut(),
+            &mut family,
+        ) != 0
+        {
+            return;
+        }
+        let mut font = ptr::null_mut();
+        let mut format = ptr::null_mut();
+        let mut brush = ptr::null_mut();
+        if gp::GdipCreateFont(family, 17., 0, gp::UnitPixel, &mut font) == 0
+            && gp::GdipCreateStringFormat(0, 0, &mut format) == 0
+            && gp::GdipCreateSolidFill(color, &mut brush) == 0
+        {
+            gp::GdipSetStringFormatAlign(format, gp::StringAlignmentCenter);
+            gp::GdipSetStringFormatLineAlign(format, gp::StringAlignmentCenter);
+            gp::GdipSetTextRenderingHint(g, gp::TextRenderingHintAntiAlias);
+            let rect = gp::RectF {
+                X: cx - 16.,
+                Y: cy - 16.,
+                Width: 32.,
+                Height: 32.,
             };
             let units: Vec<u16> = text.encode_utf16().collect();
             gp::GdipDrawString(

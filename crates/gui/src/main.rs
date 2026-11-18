@@ -8,6 +8,8 @@ mod menu;
 mod model;
 #[cfg(any(windows, test))]
 mod prefs;
+#[cfg(windows)]
+mod translate_window;
 mod update;
 #[cfg(windows)]
 mod view;
@@ -18,6 +20,8 @@ fn main() {
         let mut args = std::env::args_os().skip(1);
         let outcome = match args.next() {
             Some(arg) if arg == "--quit" => app::quit(),
+            // 听写面板右边的「译」按钮：开翻译小窗
+            Some(arg) if arg == "--translate" => translate_window::run(),
             // 离屏拍照核对外观：`--snapshot 目录`
             Some(arg) if arg == "--snapshot" => app::snapshot(std::path::Path::new(
                 &args.next().unwrap_or_else(|| ".".into()),

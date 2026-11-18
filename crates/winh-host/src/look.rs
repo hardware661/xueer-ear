@@ -17,6 +17,32 @@ pub enum Look {
     Notice,
 }
 
+/// 面板上点到了哪（主人 2026-11-19：左边设置、中间麦克风、右边翻译小窗）
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Click {
+    Settings,
+    Mic,
+    Translate,
+}
+
+/// 面板宽度（96 DPI 像素），三个按钮横排
+pub const PANEL_WIDTH: f32 = 176.;
+/// 三个按钮的圆心 x（中间是麦克风）
+pub const SETTINGS_X: f32 = 36.;
+pub const TRANSLATE_X: f32 = PANEL_WIDTH - 36.;
+
+/// 点在 (x, y)（面板内的逻辑坐标）算点了哪个按钮；两边按钮之外的地方都算麦克风
+pub fn hit(x: f32, y: f32, center_y: f32) -> Click {
+    let near = |cx: f32| (x - cx).powi(2) + (y - center_y).powi(2) <= 20_f32.powi(2);
+    if near(SETTINGS_X) {
+        Click::Settings
+    } else if near(TRANSLATE_X) {
+        Click::Translate
+    } else {
+        Click::Mic
+    }
+}
+
 /// 出错提示留多久
 pub const NOTICE_HOLD: Duration = Duration::from_secs(4);
 
@@ -130,6 +156,16 @@ mod tests {
         board.notice("麦克风打不开，请检查设备", start);
         assert!(board.dismiss());
         assert_eq!(board.look(), Look::Hidden);
+    }
+
+    #[test]
+    fn side_buttons_and_mic_are_hit_where_drawn() {
+        let cy = 59.;
+        assert_eq!(hit(SETTINGS_X, cy, cy), Click::Settings);
+        assert_eq!(hit(TRANSLATE_X + 10., cy + 5., cy), Click::Translate);
+        assert_eq!(hit(PANEL_WIDTH / 2., cy, cy), Click::Mic);
+        // 耳朵、空白处照旧算麦克风
+        assert_eq!(hit(10., 5., cy), Click::Mic);
     }
 
     #[test]
