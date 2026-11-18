@@ -319,11 +319,15 @@ fn record(
                     println!("一句说完：原始峰值 {loudest}，自动放大 {last_gain:.1} 倍");
                     loudest = 0;
                 }
-                panel.set(if matches!(phase, "connecting" | "reconnecting") {
-                    Look::Connecting
-                } else {
-                    Look::Listening
-                });
+                // 主人已经点了停止（面板收起了），这轮还在收最后一句：别再把面板叫出来。
+                // 原来收尾时的「一句说完」会把面板重新显示一下、轮询线程又马上收起——看起来就是闪两下（2026-11-19）
+                if !release.load(Ordering::Acquire) {
+                    panel.set(if matches!(phase, "connecting" | "reconnecting") {
+                        Look::Connecting
+                    } else {
+                        Look::Listening
+                    });
+                }
             }
             Event::Progress {
                 peak,
@@ -350,7 +354,7 @@ fn record(
                 }
                 status.progress(peak, partials, finals);
                 panel.level(peak);
-                if last_text.elapsed() >= WAVE_HOLD {
+                if last_text.elapsed() >= WAVE_HOLD && !release.load(Ordering::Acquire) {
                     panel.set_if_changed(Look::Listening);
                 }
                 // 到「最长听写时间」，或者 10 秒没识别出新字，就自己结束
@@ -362,7 +366,9 @@ fn record(
                 if speech.text != last_heard {
                     last_heard = speech.text.clone();
                     last_text = Instant::now();
-                    panel.set_if_changed(Look::Speaking);
+                    if !release.load(Ordering::Acquire) {
+                        panel.set_if_changed(Look::Speaking);
+                    }
                 }
                 // 主人在这句说到一半时按了 Enter：屏幕上的部分已经发走，后面只打剩下的
                 let now_sent = sent.load(Ordering::Acquire);
