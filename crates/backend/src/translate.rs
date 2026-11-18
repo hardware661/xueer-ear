@@ -11,6 +11,8 @@ pub struct Keys {
     pub azure_key: String,
     pub azure_region: String,
     pub google_key: String,
+    /// 智谱免费模型（和工具站同一把），谷歌限流时的第三备用
+    pub zhipu_key: String,
 }
 
 impl Keys {
@@ -26,7 +28,9 @@ impl Keys {
     }
 
     pub fn is_empty(&self) -> bool {
-        self.azure_key.trim().is_empty() && self.google_key.trim().is_empty()
+        self.azure_key.trim().is_empty()
+            && self.google_key.trim().is_empty()
+            && self.zhipu_key.trim().is_empty()
     }
 }
 
@@ -74,7 +78,8 @@ pub struct Request {
     pub body: String,
 }
 
-/// 一次请求最多送这么多字；更长的按段落（段太长再按句子）切开，逐段翻译再拼回去
+/// 一次请求最多送这么多字；更长的按段落（段太长再按句子）切开，逐段翻译再拼回去。
+/// 段落很短也会先合并到接近这个长度再送，免得一篇几十段的文章发几十次请求撞上免费档的每分钟次数
 pub const CHUNK_CHARS: usize = 1500;
 /// 整段最长多少字（输入框上限，约 5 万汉字，正常用不到）
 pub const MAX_CHARS: usize = 50_000;
@@ -113,18 +118,38 @@ pub fn parse_azure(body: &[u8]) -> Result<String, String> {
 }
 
 const GOOGLE_MODEL: &str = "gemini-3.5-flash-lite";
+const ZHIPU_MODEL: &str = "glm-4.7-flash";
+
+pub fn zhipu_request(keys: &Keys, text: &str, target: Target) -> Option<Request> {
+    let key = keys.zhipu_key.trim();
+    if key.is_empty() {
+        return None;
+    }
+    let mut request = chat_request(key, text, target, ZHIPU_MODEL);
+    request.host = "open.bigmodel.cn";
+    request.path = "/api/paas/v4/chat/completions".into();
+    let mut body: serde_json::Value = serde_json::from_str(&request.body).ok()?;
+    body.as_object_mut()?.remove("reasoning_effort");
+    body["thinking"] = serde_json::json!({"type": "disabled"});
+    request.body = body.to_string();
+    Some(request)
+}
 
 pub fn google_request(keys: &Keys, text: &str, target: Target) -> Option<Request> {
     let key = keys.google_key.trim();
     if key.is_empty() {
         return None;
     }
+    Some(chat_request(key, text, target, GOOGLE_MODEL))
+}
+
+fn chat_request(key: &str, text: &str, target: Target, model: &str) -> Request {
     let system = format!(
         "Translate the user's text into {}. Keep line breaks, names and code as they are. \
          The text is spoken dictation: drop filler words, keep the meaning. Output only the translation.",
         target.name()
     );
-    Some(Request {
+    Request {
         host: "generativelanguage.googleapis.com",
         path: "/v1beta/openai/chat/completions".into(),
         headers: vec![
@@ -132,7 +157,7 @@ pub fn google_request(keys: &Keys, text: &str, target: Target) -> Option<Request
             ("Content-Type".into(), "application/json".into()),
         ],
         body: serde_json::json!({
-            "model": GOOGLE_MODEL,
+            "model": model,
             "reasoning_effort": "low",
             "messages": [
                 {"role": "system", "content": system},
@@ -140,7 +165,7 @@ pub fn google_request(keys: &Keys, text: &str, target: Target) -> Option<Request
             ],
         })
         .to_string(),
-    })
+    }
 }
 
 pub fn parse_google(body: &[u8]) -> Result<String, String> {
@@ -153,11 +178,19 @@ pub fn parse_google(body: &[u8]) -> Result<String, String> {
         .ok_or_else(|| "谷歌翻译没给结果".to_string())
 }
 
+/// 限流后等几秒再试（测试里不真等）
+fn pause(seconds: u64) {
+    #[cfg(not(test))]
+    std::thread::sleep(std::time::Duration::from_secs(seconds));
+    #[cfg(test)]
+    let _ = seconds;
+}
+
 /// HTTP 状态码 → 给主人看的一句原因
 pub fn status_reason(service: &str, status: u32) -> String {
     match status {
         401 | 403 => format!("{service} 的 Key 不对或没开通"),
-        429 => format!("{service} 额度用完或太频繁"),
+        429 => format!("{service} 一分钟内用得太多，等一会儿再试"),
         _ => format!("{service} 出错（HTTP {status}）"),
     }
 }
@@ -182,7 +215,7 @@ pub fn translate_with(
     let target = Target::for_text(text);
     // 长文按段切开逐段翻（2026-10 工具站长文翻译失败的教训：一次送太长会被截断或超时）
     let mut out = String::new();
-    for (piece, separator) in chunks(text, CHUNK_CHARS) {
+    for (piece, separator) in merge(text, chunks(text, CHUNK_CHARS), CHUNK_CHARS) {
         let translated = translate_piece(keys, piece, target, &mut send)?;
         // 译成英文时，两段在同一行接上要隔一个空格（「code.The」）
         if target == Target::English
@@ -198,47 +231,89 @@ pub fn translate_with(
     Ok(out)
 }
 
-/// 切成不超过 `limit` 字的段：先按换行切，单段太长再按句末标点切，还太长就硬切。
-/// 返回（这段文字, 它后面原来的分隔符），拼回去时原样补上，换行不丢。
+/// 切成不超过 `limit` 字的段：先按换行切；单行太长按句末标点切；一句还太长就按字数硬切。
+/// 返回（这段文字, 它后面原来的分隔符），把它们依次拼回去和原文一字不差。
 pub fn chunks(text: &str, limit: usize) -> Vec<(&str, &str)> {
+    let limit = limit.max(1);
     let mut out = Vec::new();
-    let mut start = 0;
-    let mut last_break: Option<(usize, usize)> = None; // (段尾, 下一段开头)
-    let mut count = 0;
-    let chars: Vec<(usize, char)> = text.char_indices().collect();
-    let mut i = 0;
-    while i < chars.len() {
-        let (at, c) = chars[i];
-        let end = at + c.len_utf8();
-        count += 1;
-        if c == '\n' {
-            last_break = Some((at, end));
-        } else if "。！？.!?；;".contains(c) {
-            last_break = Some((end, end));
+    let mut rest = text;
+    while !rest.is_empty() {
+        let (line, newline, after) = match rest.find('\n') {
+            Some(i) => (&rest[..i], &rest[i..i + 1], &rest[i + 1..]),
+            None => (rest, "", ""),
+        };
+        let mut pieces = split_line(line, limit);
+        match pieces.last_mut() {
+            Some(last) => last.1 = newline,
+            None => out.push((line, newline)),
         }
-        let hard = count >= limit;
-        if c == '\n' || hard {
-            let (cut, next) = if c == '\n' {
-                (at, end)
-            } else {
-                last_break
-                    .filter(|&(cut, _)| cut > start)
-                    .unwrap_or((end, end))
-            };
-            if count >= limit || c == '\n' {
-                // 只有段够长或遇到换行才切；换行前的短段也单独成一段，保留排版
-                out.push((&text[start..cut], &text[cut..next]));
-                start = next;
-                last_break = None;
-                count = text[start..end.max(start)].chars().count();
+        out.extend(pieces);
+        rest = after;
+    }
+    out
+}
+
+/// 把相邻的短段合并成不超过 `limit` 字的一批（中间的换行原样留在批里，译文里也会保留）。
+/// 返回的每批都是原文里连续的一段，拼回去和原文一样。
+pub fn merge<'a>(
+    text: &'a str,
+    parts: Vec<(&'a str, &'a str)>,
+    limit: usize,
+) -> Vec<(&'a str, &'a str)> {
+    let base = text.as_ptr() as usize;
+    let mut out: Vec<(&str, &str)> = Vec::new();
+    let mut start: Option<usize> = None;
+    let mut end = 0;
+    let mut count = 0;
+    for (piece, separator) in parts {
+        let at = piece.as_ptr() as usize - base;
+        let piece_end = at + piece.len();
+        let size = piece.chars().count() + separator.chars().count();
+        if let Some(s) = start {
+            if count + size > limit {
+                out.push((&text[s..end], ""));
+                start = None;
+                count = 0;
             }
         }
-        i += 1;
+        if start.is_none() {
+            start = Some(at);
+        }
+        end = piece_end + separator.len();
+        count += size;
     }
-    if start < text.len() {
-        out.push((&text[start..], ""));
+    if let Some(s) = start {
+        out.push((&text[s..end], ""));
     }
-    out.retain(|(piece, sep)| !piece.trim().is_empty() || !sep.is_empty());
+    // 每批末尾的换行挪到分隔符里（译文常把结尾换行吃掉）
+    out.into_iter()
+        .map(|(batch, _)| {
+            let trimmed = batch.trim_end_matches(['\n', '\r']);
+            (trimmed, &batch[trimmed.len()..])
+        })
+        .collect()
+}
+
+/// 一行切成不超过 `limit` 字的几段（分隔符都是空的，切点尽量落在句末标点后面）
+fn split_line(line: &str, limit: usize) -> Vec<(&str, &str)> {
+    let mut out = Vec::new();
+    let mut start = 0;
+    while line[start..].chars().count() > limit {
+        let window: Vec<(usize, char)> = line[start..].char_indices().take(limit).collect();
+        let hard = start + window.last().map_or(0, |&(i, c)| i + c.len_utf8());
+        let cut = window
+            .iter()
+            .rev()
+            .find(|(_, c)| "。！？.!?；;".contains(*c))
+            .map(|&(i, c)| start + i + c.len_utf8())
+            .filter(|&cut| cut > start)
+            .unwrap_or(hard);
+        out.push((&line[start..cut], ""));
+        start = cut;
+    }
+    if start < line.len() {
+        out.push((&line[start..], ""));
+    }
     out
 }
 
@@ -251,20 +326,33 @@ fn translate_piece(
     if text.trim().is_empty() {
         return Ok(text.to_string());
     }
-    let attempts: [(&str, Option<Request>, fn(&[u8]) -> Result<String, String>); 2] = [
+    let attempts: [(&str, Option<Request>, fn(&[u8]) -> Result<String, String>); 3] = [
         ("微软翻译", azure_request(keys, text, target), parse_azure),
         ("谷歌", google_request(keys, text, target), parse_google),
+        ("智谱", zhipu_request(keys, text, target), parse_google),
     ];
     let mut reason = String::new();
     for (service, request, parse) in attempts {
         let Some(request) = request else { continue };
-        match send(&request) {
-            Ok((200, body)) => match parse(&body) {
-                Ok(text) => return Ok(text),
-                Err(error) => reason = error,
-            },
-            Ok((status, _)) => reason = status_reason(service, status),
-            Err(error) => reason = format!("{service} 连不上（{error}）"),
+        // 免费档每分钟次数有限（谷歌约 10 次）：长文分段连着发会撞上 429。
+        // 和工具站一样，撞上了等一会儿再试同一家，最多等两轮，还不行再换下一家
+        for wait in [0, 8, 20] {
+            if wait > 0 {
+                pause(wait);
+            }
+            match send(&request) {
+                Ok((200, body)) => match parse(&body) {
+                    Ok(text) => return Ok(text),
+                    Err(error) => reason = error,
+                },
+                Ok((429, _)) => {
+                    reason = status_reason(service, 429);
+                    continue;
+                }
+                Ok((status, _)) => reason = status_reason(service, status),
+                Err(error) => reason = format!("{service} 连不上（{error}）"),
+            }
+            break;
         }
     }
     Err(reason)
@@ -279,6 +367,7 @@ mod tests {
             azure_key: "a".into(),
             azure_region: "eastasia".into(),
             google_key: "g".into(),
+            zhipu_key: String::new(),
         }
     }
 
@@ -307,8 +396,11 @@ mod tests {
             hosts,
             [
                 "api.cognitive.microsofttranslator.com",
+                "api.cognitive.microsofttranslator.com",
+                "api.cognitive.microsofttranslator.com",
                 "generativelanguage.googleapis.com"
-            ]
+            ],
+            "微软限流先等着重试两次，再换谷歌"
         );
     }
 
@@ -349,6 +441,43 @@ mod tests {
     }
 
     #[test]
+    fn rate_limited_service_is_retried_then_the_next_one_is_used() {
+        let keys = Keys {
+            google_key: "g".into(),
+            zhipu_key: "z".into(),
+            ..Keys::default()
+        };
+        let mut google = 0;
+        let out = translate_with(&keys, "你好", |r| {
+            if r.host == "generativelanguage.googleapis.com" {
+                google += 1;
+                return Ok((429, vec![]));
+            }
+            assert!(r.body.contains("glm-4.7-flash") && !r.body.contains("reasoning_effort"));
+            Ok((
+                200,
+                br#"{"choices":[{"message":{"content":"Hello"}}]}"#.to_vec(),
+            ))
+        });
+        assert_eq!(out.as_deref(), Ok("Hello"));
+        assert_eq!(google, 3, "谷歌限流要先等着重试两次");
+        // 第二次重试成功就不用换
+        let mut calls = 0;
+        let out = translate_with(&keys, "你好", |_| {
+            calls += 1;
+            Ok(if calls < 2 {
+                (429, vec![])
+            } else {
+                (
+                    200,
+                    br#"{"choices":[{"message":{"content":"Hi"}}]}"#.to_vec(),
+                )
+            })
+        });
+        assert_eq!(out.as_deref(), Ok("Hi"));
+    }
+
+    #[test]
     fn bad_key_reason_is_plain() {
         let keys = Keys {
             azure_key: "a".into(),
@@ -385,8 +514,22 @@ mod tests {
             Ok((200, reply.to_string().into_bytes()))
         })
         .unwrap();
-        assert!(calls >= 3);
-        assert!(out.contains("\n\n<第三段>"), "{out}");
+        // 短文合成一批送一次，换行留在里面
+        assert_eq!(calls, 1);
+        assert_eq!(out, format!("<{text}>"));
+    }
+
+    #[test]
+    fn short_paragraphs_are_sent_together() {
+        // 主人粘过的说明文字：几十个短段，一段一请求会撞上谷歌每分钟 10 次
+        let text = "第一段。\n\n- 第二条\n- 第三条\n\n**第四段**\n".repeat(20);
+        let batches = merge(&text, chunks(&text, CHUNK_CHARS), CHUNK_CHARS);
+        assert_eq!(batches.len(), 1, "{batches:?}");
+        let joined: String = batches.iter().map(|(p, s)| format!("{p}{s}")).collect();
+        assert_eq!(joined, text);
+        let long = "很长的一句话没有标点".repeat(400);
+        let batches = merge(&long, chunks(&long, 1500), 1500);
+        assert!(batches.len() >= 3 && batches.iter().all(|(p, _)| p.chars().count() <= 1500));
     }
 
     #[test]
@@ -556,6 +699,51 @@ mod native {
                 out.extend_from_slice(&buffer[..received]);
             }
             Ok((status, out))
+        }
+    }
+}
+
+#[cfg(test)]
+mod chunk_fuzz {
+    use super::*;
+
+    #[test]
+    fn chunks_never_panic_and_always_rejoin_exactly() {
+        // 主人粘过的那种：中英混排、markdown、空行、全角标点、很长的段
+        let pieces = [
+            "雪耳 1.1.8 已经装好。",
+            "**翻译小窗**\n",
+            "- 两个框都能滑。",
+            "\n\n",
+            "Ctrl+A、Ctrl+C",
+            "（推测）",
+            "“引号”",
+            "a.b!c?",
+            "😀",
+            "\r\n",
+            "一",
+            "。",
+            "\n",
+            " ",
+            "——",
+            "…",
+        ];
+        let mut seed = 7u64;
+        for round in 0..3000 {
+            let mut text = String::new();
+            let n = (round % 400) + 1;
+            for _ in 0..n {
+                seed = seed
+                    .wrapping_mul(6364136223846793005)
+                    .wrapping_add(1442695040888963407);
+                text.push_str(pieces[(seed >> 33) as usize % pieces.len()]);
+            }
+            for limit in [1, 2, 3, 7, 50, CHUNK_CHARS] {
+                let parts = chunks(&text, limit);
+                let joined: String = parts.iter().map(|(p, s)| format!("{p}{s}")).collect();
+                assert_eq!(joined, text, "limit {limit} round {round}");
+                assert!(parts.iter().all(|(p, _)| p.chars().count() <= limit));
+            }
         }
     }
 }

@@ -12,8 +12,8 @@ use windows_sys::Win32::{
         BeginPaint, CLEARTYPE_QUALITY, CLIP_DEFAULT_PRECIS, CreateFontW, CreateSolidBrush,
         DEFAULT_CHARSET, DEFAULT_PITCH, DT_CENTER, DT_SINGLELINE, DT_VCENTER, DrawTextW, EndPaint,
         GetDC, GetTextMetricsW, HDC, HFONT, InvalidateRect, OUT_DEFAULT_PRECIS, PAINTSTRUCT,
-        ReleaseDC, ScreenToClient, SelectObject, SetBkColor, SetBkMode, SetTextColor, TEXTMETRICW,
-        TRANSPARENT,
+        RDW_ALLCHILDREN, RDW_INVALIDATE, RDW_UPDATENOW, RedrawWindow, ReleaseDC, ScreenToClient,
+        SelectObject, SetBkColor, SetBkMode, SetTextColor, TEXTMETRICW, TRANSPARENT,
     },
     System::{LibraryLoader::GetModuleHandleW, Threading::CreateMutexW},
     UI::{
@@ -166,6 +166,8 @@ struct State {
     offscreen: bool,
     /// 正在拖哪个框的滚动条
     dragging: Option<usize>,
+    /// 左键在哪按下的（按钮要按下、松开都在它上面才算点）
+    pressed: Option<POINT>,
 }
 
 fn wide(value: &str) -> Vec<u16> {
@@ -193,6 +195,27 @@ fn inside(point: POINT, (x, y, w, h): (i32, i32, i32, i32), dpi: u32) -> bool {
         && point.x < scale(x + w, dpi)
         && point.y >= scale(y, dpi)
         && point.y < scale(y + h, dpi)
+}
+
+/// 翻译小窗关掉、出错时记一行到 %LOCALAPPDATA%\\XueerEar\\translate.log（主人 2026-11-19：窗口自己没了，查不到原因）
+fn note_close(what: &str) {
+    use std::io::Write;
+    let Some(dir) = std::env::var_os("LOCALAPPDATA") else {
+        return;
+    };
+    let path = std::path::PathBuf::from(dir)
+        .join("XueerEar")
+        .join("translate.log");
+    if let Ok(mut file) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+    {
+        let at = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_secs());
+        let _ = writeln!(file, "{at} {what}");
+    }
 }
 
 /// 按当前窗口大小摆两个框
@@ -533,9 +556,15 @@ unsafe extern "system" fn procedure(
             let layout = Layout::of(hwnd, state.dpi);
             state.dragging = None;
             ReleaseCapture();
-            if inside(point, layout.close(), state.dpi) {
+            // 按钮要按下和松开都在它上面才算（拖窗口、拖边、拖滚动条后在 × 上松手不会把窗口关掉）
+            let pressed = state.pressed.take();
+            let same = |b: (i32, i32, i32, i32)| {
+                inside(point, b, state.dpi) && pressed.is_some_and(|p| inside(p, b, state.dpi))
+            };
+            if same(layout.close()) {
+                note_close("点了 ×");
                 DestroyWindow(hwnd);
-            } else if inside(point, layout.maximize(), state.dpi) {
+            } else if same(layout.maximize()) {
                 ShowWindow(
                     hwnd,
                     if IsZoomed(hwnd) != 0 {
@@ -544,11 +573,11 @@ unsafe extern "system" fn procedure(
                         SW_MAXIMIZE
                     },
                 );
-            } else if inside(point, layout.minimize(), state.dpi) {
+            } else if same(layout.minimize()) {
                 ShowWindow(hwnd, SW_MINIMIZE);
-            } else if inside(point, layout.go(), state.dpi) {
+            } else if same(layout.go()) {
                 translate_now(hwnd, state);
-            } else if inside(point, layout.copy(), state.dpi) {
+            } else if same(layout.copy()) {
                 let result = text_of(hwnd, RESULT);
                 if result.is_empty() {
                     state.note = "还没有译文".into();
@@ -634,8 +663,17 @@ unsafe extern "system" fn procedure(
             0
         }
         WM_SIZE => {
+            // 拖边改大小时：先关掉重画，把两个框一次挪好，再整窗（连同框）一次性重画。
+            // 原来框先各自重画、卡片再盖一遍，原文框那半一闪一闪（主人 2026-11-19）
+            SendMessageW(hwnd, WM_SETREDRAW, 0, 0);
             place_edits(hwnd, state);
-            InvalidateRect(hwnd, ptr::null(), 0);
+            SendMessageW(hwnd, WM_SETREDRAW, 1, 0);
+            RedrawWindow(
+                hwnd,
+                ptr::null(),
+                ptr::null_mut(),
+                RDW_INVALIDATE | RDW_ALLCHILDREN | RDW_UPDATENOW,
+            );
             0
         }
         WM_GETMINMAXINFO => {
@@ -712,6 +750,7 @@ unsafe extern "system" fn procedure(
             0
         }
         WM_DESTROY => {
+            note_close("窗口关闭");
             PostQuitMessage(0);
             0
         }
@@ -785,6 +824,7 @@ unsafe fn open(at: Option<(i32, i32)>) -> HWND {
         target: Target::English,
         offscreen: at.is_some(),
         dragging: None,
+        pressed: None,
     }));
     let window = CreateWindowExW(
         extended,
@@ -893,6 +933,8 @@ unsafe fn open(at: Option<(i32, i32)>) -> HWND {
 
 /// `xueer-ear.exe --translate`：开翻译小窗，关掉就退出进程
 pub fn run() -> Result<(), String> {
+    // 万一崩了，把原因记下来再退（release 是 panic=abort，不记就什么都看不到）
+    std::panic::set_hook(Box::new(|info| note_close(&format!("崩溃：{info}"))));
     unsafe {
         SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
         let mutex = CreateMutexW(ptr::null(), 0, wide("Local\\XueerEar.Translate").as_ptr());
@@ -913,8 +955,38 @@ pub fn run() -> Result<(), String> {
         SetFocus(GetDlgItem(window, SOURCE as i32));
         let mut message: MSG = mem::zeroed();
         while GetMessageW(&mut message, ptr::null_mut(), 0, 0) > 0 {
+            // 滚轮：没有系统滚动条的多行框不认滚轮，自己按行滚（主人 2026-11-19：滚轮滑不动）
+            if message.message == WM_MOUSEWHEEL {
+                let mut point = POINT {
+                    x: (message.lParam as i16) as i32,
+                    y: ((message.lParam >> 16) as i16) as i32,
+                };
+                ScreenToClient(window, &mut point);
+                let layout = Layout::of(window, GetDpiForWindow(window).max(96));
+                let dpi = GetDpiForWindow(window).max(96);
+                for id in [SOURCE, RESULT] {
+                    let (x, y, w, h) = if id == SOURCE {
+                        layout.source()
+                    } else {
+                        layout.result()
+                    };
+                    if inside(point, (x, y, w + BAR_GAP + BAR_W + 4, h), dpi) {
+                        let delta = ((message.wParam >> 16) as i16) as i32;
+                        let lines = -delta * 3 / 120;
+                        SendMessageW(
+                            GetDlgItem(window, id as i32),
+                            EM_LINESCROLL,
+                            0,
+                            lines as isize,
+                        );
+                        InvalidateRect(window, ptr::null(), 0);
+                    }
+                }
+                continue;
+            }
             if message.message == WM_KEYDOWN {
                 if message.wParam == 0x1B {
+                    note_close("按了 Esc");
                     DestroyWindow(window);
                     continue;
                 }
