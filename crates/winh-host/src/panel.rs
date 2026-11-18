@@ -372,7 +372,11 @@ impl Window {
     }
 }
 
-const PANEL_FILL: u32 = 0xfff2f2f5;
+const PANEL_FILL: u32 = 0xffededf0;
+/// 两边小按钮的浅灰圆底
+const SIDE_FILL: u32 = 0xffe2e2e6;
+/// 两边图标
+const ICON: u32 = 0xff48484a;
 const INNER_EAR: u32 = 0xfff6e4e8;
 const MUTED: u32 = 0xff8e8e93;
 /// 在听和出字用同一种中灰圆底（主人：麦克风太淡、波浪太深，综合成一种）
@@ -422,6 +426,10 @@ unsafe fn paint_graphics(
         };
         // 卡片和两只耳朵画成同一条轮廓（主人 2026-11-19：耳朵和窗口的衔接有点怪）：
         // 顶边从左耳外侧顺着弧线爬上耳尖，再弧线落回顶边，中间平直，右耳对称
+        // 很淡的一圈影子托着卡片（往下错 1.5，不扩出去），让白卡片从任何背景上浮出来
+        gp::GdipTranslateWorldTransform(g, 0., 1.5, gp::MatrixOrderPrepend);
+        cat_card(g, card_w, body_h, twitch, 0x1a000000);
+        gp::GdipTranslateWorldTransform(g, 0., -1.5, gp::MatrixOrderPrepend);
         cat_card(g, card_w, body_h, twitch, PANEL_FILL);
         // 内耳一抹淡粉，放在耳朵正中
         let inner = 3. + 10. + 25.;
@@ -447,8 +455,10 @@ unsafe fn paint_graphics(
         let (cx, cy) = (card_w / 2., BODY_TOP + body_h / 2.);
         // 两边：左设置（齿轮）、右翻译（「译」字），出错提示时不画
         if look != Look::Notice {
-            gear(g, SETTINGS_X, cy, MUTED);
-            glyph(g, "译", TRANSLATE_X, cy, MUTED);
+            side_button(g, SETTINGS_X, cy);
+            gear(g, SETTINGS_X, cy, ICON);
+            side_button(g, TRANSLATE_X, cy);
+            translate_icon(g, TRANSLATE_X, cy, ICON);
         }
         match look {
             // 出错提示：左边灰掉的麦克风，右边一句原因
@@ -554,25 +564,38 @@ unsafe fn gear(g: *mut gp::GpGraphics, cx: f32, cy: f32, color: u32) {
             let a = i as f32 * std::f32::consts::TAU / 8.;
             line(
                 g,
-                cx + a.cos() * 6.5,
-                cy + a.sin() * 6.5,
-                cx + a.cos() * 9.5,
-                cy + a.sin() * 9.5,
-                2.6,
+                cx + a.cos() * 5.6,
+                cy + a.sin() * 5.6,
+                cx + a.cos() * 8.,
+                cy + a.sin() * 8.,
+                2.4,
                 color,
             );
         }
-        arc(g, cx - 6.5, cy - 6.5, 13., 13., 0., 360., 1.8, color);
-        arc(g, cx - 2.5, cy - 2.5, 5., 5., 0., 360., 1.6, color);
+        arc(g, cx - 5.6, cy - 5.6, 11.2, 11.2, 0., 360., 1.6, color);
+        arc(g, cx - 2.1, cy - 2.1, 4.2, 4.2, 0., 360., 1.4, color);
     }
 }
 
-/// 一个字居中画在 (cx, cy)（翻译按钮的「译」）
-unsafe fn glyph(g: *mut gp::GpGraphics, text: &str, cx: f32, cy: f32, color: u32) {
+/// 一个字居中画在 (cx, cy)，字号 size，bold 为粗体
+unsafe fn glyph_sized(
+    g: *mut gp::GpGraphics,
+    text: &str,
+    cx: f32,
+    cy: f32,
+    size: f32,
+    bold: bool,
+    color: u32,
+) {
     unsafe {
         let mut family = ptr::null_mut();
         if gp::GdipCreateFontFamilyFromName(
-            wide("Microsoft YaHei UI").as_ptr(),
+            wide(if text.is_ascii() {
+                "Segoe UI"
+            } else {
+                "Microsoft YaHei UI"
+            })
+            .as_ptr(),
             ptr::null_mut(),
             &mut family,
         ) != 0
@@ -582,7 +605,7 @@ unsafe fn glyph(g: *mut gp::GpGraphics, text: &str, cx: f32, cy: f32, color: u32
         let mut font = ptr::null_mut();
         let mut format = ptr::null_mut();
         let mut brush = ptr::null_mut();
-        if gp::GdipCreateFont(family, 17., 0, gp::UnitPixel, &mut font) == 0
+        if gp::GdipCreateFont(family, size, i32::from(bold), gp::UnitPixel, &mut font) == 0
             && gp::GdipCreateStringFormat(0, 0, &mut format) == 0
             && gp::GdipCreateSolidFill(color, &mut brush) == 0
         {
@@ -813,12 +836,46 @@ unsafe fn cat_card(g: *mut gp::GpGraphics, card_w: f32, body_h: f32, twitch: f32
         gp::GdipAddPathArc(path, x1 - r * 2., bottom - r * 2., r * 2., r * 2., 0., 90.);
         gp::GdipAddPathArc(path, x0, bottom - r * 2., r * 2., r * 2., 90., 90.);
         gp::GdipClosePathFigure(path);
+        // 上亮下暗一点点的竖向渐变（像 macOS 浮层的磨砂白），fill 是下沿颜色
+        let (from, to) = (
+            gp::PointF {
+                X: 0.,
+                Y: top - 24.,
+            },
+            gp::PointF { X: 0., Y: bottom },
+        );
         let mut brush = ptr::null_mut();
-        if gp::GdipCreateSolidFill(fill, &mut brush) == 0 {
+        if gp::GdipCreateLineBrush(
+            &from,
+            &to,
+            0xfffcfcfd,
+            fill,
+            gp::WrapModeTileFlipXY,
+            &mut brush,
+        ) == 0
+        {
             gp::GdipFillPath(g, brush.cast(), path);
             gp::GdipDeleteBrush(brush.cast());
         }
         gp::GdipDeletePath(path);
+    }
+}
+
+/// 两边小按钮的底：一个浅灰圆
+unsafe fn side_button(g: *mut gp::GpGraphics, cx: f32, cy: f32) {
+    unsafe {
+        ellipse(g, cx - 17., cy - 17., 34., 34., SIDE_FILL);
+    }
+}
+
+/// 翻译图标（参照 Apple 的 translate 符号）：左上一块写「文」，右下一块写「A」，两块错开叠着
+unsafe fn translate_icon(g: *mut gp::GpGraphics, cx: f32, cy: f32, color: u32) {
+    unsafe {
+        rounded(g, cx - 10., cy - 10., 13., 13., 3.5, color, false);
+        glyph_sized(g, "文", cx - 3.5, cy - 3.5, 9.5, true, SIDE_FILL);
+        rounded(g, cx - 1.5, cy - 1.5, 12., 12., 3.5, SIDE_FILL, false);
+        rounded(g, cx - 1.5, cy - 1.5, 12., 12., 3.5, color, true);
+        glyph_sized(g, "A", cx + 4.5, cy + 4.6, 9., true, color);
     }
 }
 
