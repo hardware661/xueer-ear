@@ -143,12 +143,39 @@ fn everyday_phrases_ending_in_a_delete_word_are_just_text() {
 fn translate_at_the_end_of_a_sentence() {
     let o = Options::default();
     assert_eq!(
-        process("今天吃什么，翻译成英文。", &o),
+        process("今天吃什么，翻译。", &o),
         Output::TextThen("今天吃什么，".into(), VoiceCommand::Translate)
     );
-    // 句尾只说「翻译」太常见（「这段帮我，翻译」也可能是正文），只认说全的
+}
+
+#[test]
+fn a_sentence_cut_off_mid_thought_gets_no_full_stop() {
+    // 主人历史：「你可以理解我的笔记本放在左上方，然后我的。」「耳机放在左下方。」——停顿一下被切成两句
+    let o = Options::default();
     assert_eq!(
-        process("这一段，翻译", &o),
-        Output::Text("这一段，翻译".into())
+        process("你可以理解我的笔记本放在左上方，然后我的。", &o),
+        Output::Text("你可以理解我的笔记本放在左上方，然后我的".into())
+    );
+    assert_eq!(
+        process("还有一个问题就是当我。", &o),
+        Output::Text("还有一个问题就是当我".into())
+    );
+    // 正常说完的句子照旧
+    assert_eq!(
+        process("确实是有效果的。", &o),
+        Output::Text("确实是有效果的。".into())
+    );
+    assert_eq!(process("不会。", &o), Output::Text("不会。".into()));
+}
+
+#[test]
+fn terminal_joins_a_cut_off_sentence_without_a_comma() {
+    assert_eq!(
+        terminal_append("然后我的", "耳机放在左下方。"),
+        "耳机放在左下方。"
+    );
+    assert_eq!(
+        terminal_append("今天天气不错", "我们去公园"),
+        "，我们去公园"
     );
 }

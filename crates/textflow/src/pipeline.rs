@@ -1,8 +1,8 @@
 //! 对外入口：一句识别结果进来，按固定顺序处理，得到要上屏的文字或一条指令。
 
 use crate::{
-    CommandOptions, Hotwords, PunctOptions, VoiceCommand, apply_punctuation, normalize_numbers,
-    parse_command, parse_trailing_command, strip_fillers,
+    CommandOptions, Hotwords, PunctOptions, VoiceCommand, apply_punctuation, drop_false_full_stop,
+    is_unfinished, normalize_numbers, parse_command, parse_trailing_command, strip_fillers,
 };
 
 #[derive(Debug, Clone)]
@@ -59,7 +59,7 @@ fn tidy(text: &str, options: &Options) -> String {
     } else {
         text
     };
-    apply_punctuation(&text, &options.punct)
+    drop_false_full_stop(&apply_punctuation(&text, &options.punct))
 }
 
 /// 最后一个逗号/句号之后那一小句如果整句是指令，就拆成（前面的文字, 指令）。
@@ -96,7 +96,9 @@ pub fn terminal_append(previous: &str, part: &str) -> String {
     let mut out = String::new();
     if let Some(last) = previous.trim_end().chars().last() {
         let first = part.chars().next().unwrap_or(' ');
-        if "。！？；，、.!?;,".contains(last) {
+        if is_unfinished(previous) {
+            // 上一句话没说完（「然后我的」），这句直接接上，不加逗号
+        } else if "。！？；，、.!?;,".contains(last) {
             if last.is_ascii() {
                 out.push(' ');
             }
