@@ -169,7 +169,16 @@ pub(crate) unsafe fn copy_text(owner: HWND, text: &str) -> Result<(), String> {
     };
     const CF_UNICODETEXT: u32 = 13;
     let units = wide(text);
-    if OpenClipboard(owner) == 0 {
+    // 剪贴板常被剪贴板工具（截图、历史类软件）短暂占着：隔一下多试几次再放弃
+    let mut opened = false;
+    for _ in 0..10 {
+        if OpenClipboard(owner) != 0 {
+            opened = true;
+            break;
+        }
+        thread::sleep(std::time::Duration::from_millis(30));
+    }
+    if !opened {
         return Err("剪贴板正被别的程序占用".to_owned());
     }
     let memory = GlobalAlloc(GMEM_MOVEABLE, units.len() * 2);
