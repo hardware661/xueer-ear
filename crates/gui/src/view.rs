@@ -421,6 +421,7 @@ pub unsafe fn translate_card(
     split: f32,
     busy_phase: Option<f32>,
     copied: bool,
+    maximized: bool,
 ) {
     let Some(c) = Canvas::new(dc, dpi) else {
         return;
@@ -430,10 +431,20 @@ pub unsafe fn translate_card(
     c.rect(0., 0., w, h, 0xffffffff);
     c.rect(0., split, w, h - split, 0xfff5f5f7);
     c.line(0., split, w, split, 1., 0xffe5e5ea);
-    // 右上 ×
+    // 右上三个小按钮：最小化、最大化/还原、关闭（主人 2026-11-19：要有最小和全屏窗口化）
     let (x, y) = (w - 24., 22.);
     c.line(x - 4.5, y - 4.5, x + 4.5, y + 4.5, 1.4, 0xff8e8e93);
     c.line(x - 4.5, y + 4.5, x + 4.5, y - 4.5, 1.4, 0xff8e8e93);
+    let x = w - 56.;
+    if maximized {
+        c.rounded(x - 2.5, y - 4.5, 7.5, 7.5, 1.5, 0xff8e8e93, true);
+        c.rect(x - 4.5, y - 2.5, 7.5, 7.5, 0xffffffff);
+        c.rounded(x - 4.5, y - 2.5, 7.5, 7.5, 1.5, 0xff8e8e93, true);
+    } else {
+        c.rounded(x - 4.5, y - 4.5, 9., 9., 2., 0xff8e8e93, true);
+    }
+    let x = w - 88.;
+    c.line(x - 4.5, y, x + 4.5, y, 1.4, 0xff8e8e93);
     // 右下复制图标：两张叠着的圆角纸；复制后变成对勾
     let (x, y) = (w - 34., h - 34.);
     if copied {
@@ -461,6 +472,14 @@ pub unsafe fn pill(dc: HDC, dpi: u32, x: i32, y: i32, w: i32, h: i32) {
         GREEN,
         false,
     );
+}
+
+/// 细滚动条的滑块（参照 Husic：细、圆头、浅灰），坐标是 96 DPI
+pub unsafe fn thumb(dc: HDC, dpi: u32, x: f32, y: f32, w: f32, h: f32) {
+    let Some(c) = Canvas::new(dc, dpi) else {
+        return;
+    };
+    c.rounded(x, y, w, h, w / 2., 0xffc7c7cc, false);
 }
 
 /// 翻译中三个跳动的小点，画在 (0,0) 起的一小条里（浅灰底）

@@ -11,8 +11,9 @@ use windows_sys::Win32::{
     Graphics::Gdi::{
         BeginPaint, CLEARTYPE_QUALITY, CLIP_DEFAULT_PRECIS, CreateFontW, CreateSolidBrush,
         DEFAULT_CHARSET, DEFAULT_PITCH, DT_CENTER, DT_SINGLELINE, DT_VCENTER, DrawTextW, EndPaint,
-        HDC, HFONT, InvalidateRect, OUT_DEFAULT_PRECIS, PAINTSTRUCT, ScreenToClient, SelectObject,
-        SetBkColor, SetBkMode, SetTextColor, TRANSPARENT,
+        GetDC, GetTextMetricsW, HDC, HFONT, InvalidateRect, OUT_DEFAULT_PRECIS, PAINTSTRUCT,
+        ReleaseDC, ScreenToClient, SelectObject, SetBkColor, SetBkMode, SetTextColor, TEXTMETRICW,
+        TRANSPARENT,
     },
     System::{LibraryLoader::GetModuleHandleW, Threading::CreateMutexW},
     UI::{
@@ -20,7 +21,9 @@ use windows_sys::Win32::{
             DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, GetDpiForWindow,
             SetProcessDpiAwarenessContext,
         },
-        Input::KeyboardAndMouse::{GetKeyState, SetFocus, VK_SHIFT},
+        Input::KeyboardAndMouse::{
+            GetKeyState, ReleaseCapture, SetCapture, SetFocus, VK_CONTROL, VK_SHIFT,
+        },
         WindowsAndMessaging::*,
     },
 };
@@ -30,6 +33,13 @@ const CLASS: &str = "XueerEar.TranslateWindow";
 const SOURCE: usize = 401;
 const RESULT: usize = 402;
 const EN_CHANGE: u32 = 0x0300;
+const EN_VSCROLL: u32 = 0x0602;
+const EM_GETFIRSTVISIBLELINE: u32 = 0x00CE;
+const EM_GETLINECOUNT: u32 = 0x00BA;
+const EM_LINESCROLL: u32 = 0x00B6;
+const EM_SETSEL: u32 = 0x00B1;
+/// 框里滚动了，重画细滚动条
+const SCROLLED: u32 = WM_APP + 22;
 const EM_SETLIMITTEXT: u32 = 0x00C5;
 const EM_SETCUEBANNER: u32 = 0x1501;
 const ES_MULTILINE: u32 = 0x0004;
@@ -46,26 +56,96 @@ const COPIED_TIMER: usize = 3;
 /// 译文回来了
 const DONE: u32 = WM_APP + 21;
 
-/// 卡片尺寸（96 DPI）：上半白底原文，下半浅灰底译文
+/// 初始卡片尺寸（96 DPI）：上半白底原文，下半浅灰底译文。窗口可以拖边改大小、最大化，
+/// 下面的位置都按当前大小算（`Layout`）
 const WIDTH: i32 = 420;
 const HEIGHT: i32 = 300;
+const MIN_WIDTH: i32 = 320;
+const MIN_HEIGHT: i32 = 240;
 const PAD: i32 = 18;
-/// 上下两半的分界
-const DIVIDER: i32 = 140;
 /// 每半左上角的语言小字（「中文」「English」）
 const CAPTION_H: i32 = 30;
-const SOURCE_TOP: i32 = CAPTION_H + 6;
-const RESULT_TOP: i32 = DIVIDER + CAPTION_H + 6;
-/// 右上 ×、右下复制图标的点击区
-const CLOSE_BOX: (i32, i32, i32, i32) = (WIDTH - 38, 8, 28, 28);
-const COPY_BOX: (i32, i32, i32, i32) = (WIDTH - 40, HEIGHT - 40, 30, 30);
-/// 上半右下角的「翻译」按钮（主人 2026-11-19：加一个按钮，回车是快捷键）
-const GO_BOX: (i32, i32, i32, i32) = (WIDTH - 18 - 58, DIVIDER - 12 - 28, 58, 28);
-/// 翻译中小点：在下半「English」小字下面（主人 2026-11-19：放回原来的位置）。
-/// 那块平时被译文框盖着，翻译中把译文框清空并藏起来，露出父窗口画的小点；整窗双缓冲，藏/显不闪
-const DOTS_BOX: (i32, i32, i32, i32) = (PAD, DIVIDER + CAPTION_H + 4, 60, 24);
-/// 两行语言小字所在的条（换语言时只重画这里）
-const CAPTIONS: [(i32, i32, i32, i32); 2] = [(PAD, 8, 200, 22), (PAD, DIVIDER + 8, 200, 22)];
+/// 拖这么宽的边改大小
+const EDGE: i32 = 6;
+/// 细滚动条：宽、离右边多远
+const BAR_W: i32 = 4;
+const BAR_GAP: i32 = 6;
+
+/// 当前窗口大小下各块的位置（96 DPI 坐标：x, y, 宽, 高）
+#[derive(Clone, Copy)]
+struct Layout {
+    w: i32,
+    h: i32,
+    divider: i32,
+}
+
+impl Layout {
+    fn of(window: HWND, dpi: u32) -> Self {
+        let mut client: RECT = unsafe { mem::zeroed() };
+        unsafe { GetClientRect(window, &mut client) };
+        let w = client.right * 96 / dpi as i32;
+        let h = client.bottom * 96 / dpi as i32;
+        // 上下各一半，上半稍小一点
+        Self {
+            w,
+            h,
+            divider: (h * 47 / 100).max(110),
+        }
+    }
+    fn close(&self) -> (i32, i32, i32, i32) {
+        (self.w - 38, 8, 28, 28)
+    }
+    fn maximize(&self) -> (i32, i32, i32, i32) {
+        (self.w - 70, 8, 28, 28)
+    }
+    fn minimize(&self) -> (i32, i32, i32, i32) {
+        (self.w - 102, 8, 28, 28)
+    }
+    fn copy(&self) -> (i32, i32, i32, i32) {
+        (self.w - 40, self.h - 40, 30, 30)
+    }
+    /// 上半右下角的「翻译」按钮（主人 2026-11-19：加一个按钮，回车是快捷键）
+    fn go(&self) -> (i32, i32, i32, i32) {
+        (self.w - 18 - 58, self.divider - 12 - 28, 58, 28)
+    }
+    /// 翻译中小点：在下半「English」小字下面
+    fn dots(&self) -> (i32, i32, i32, i32) {
+        (PAD, self.divider + CAPTION_H + 4, 60, 24)
+    }
+    fn captions(&self) -> [(i32, i32, i32, i32); 2] {
+        [(PAD, 8, 200, 22), (PAD, self.divider + 8, 200, 22)]
+    }
+    fn note(&self) -> (i32, i32, i32, i32) {
+        (PAD, self.h - 38, 300, 26)
+    }
+    /// 原文框、译文框（右边留出细滚动条的位置）
+    fn source(&self) -> (i32, i32, i32, i32) {
+        (
+            PAD,
+            CAPTION_H + 6,
+            self.w - PAD * 2 - BAR_GAP - BAR_W,
+            self.divider - 46 - CAPTION_H - 6,
+        )
+    }
+    fn result(&self) -> (i32, i32, i32, i32) {
+        let top = self.divider + CAPTION_H + 6;
+        (
+            PAD,
+            top,
+            self.w - PAD * 2 - BAR_GAP - BAR_W,
+            self.h - 44 - top,
+        )
+    }
+    fn buttons(&self) -> [(i32, i32, i32, i32); 5] {
+        [
+            self.close(),
+            self.maximize(),
+            self.minimize(),
+            self.copy(),
+            self.go(),
+        ]
+    }
+}
 
 struct State {
     dpi: u32,
@@ -84,6 +164,8 @@ struct State {
     target: Target,
     /// 离屏拍照用的窗口
     offscreen: bool,
+    /// 正在拖哪个框的滚动条
+    dragging: Option<usize>,
 }
 
 fn wide(value: &str) -> Vec<u16> {
@@ -113,6 +195,86 @@ fn inside(point: POINT, (x, y, w, h): (i32, i32, i32, i32), dpi: u32) -> bool {
         && point.y < scale(y + h, dpi)
 }
 
+/// 按当前窗口大小摆两个框
+unsafe fn place_edits(window: HWND, state: &State) {
+    let layout = Layout::of(window, state.dpi);
+    for (id, (x, y, w, h)) in [(SOURCE, layout.source()), (RESULT, layout.result())] {
+        let d = state.dpi;
+        SetWindowPos(
+            GetDlgItem(window, id as i32),
+            ptr::null_mut(),
+            scale(x, d),
+            scale(y, d),
+            scale(w, d).max(1),
+            scale(h, d).max(1),
+            SWP_NOZORDER | SWP_NOACTIVATE,
+        );
+    }
+}
+
+/// 框里一共几行、第一行是第几行、一屏能放几行
+unsafe fn lines(window: HWND, id: usize, height_px: i32) -> (i32, i32, i32) {
+    let edit = GetDlgItem(window, id as i32);
+    let total = SendMessageW(edit, EM_GETLINECOUNT, 0, 0) as i32;
+    let first = SendMessageW(edit, EM_GETFIRSTVISIBLELINE, 0, 0) as i32;
+    let dc = GetDC(edit);
+    let old = SelectObject(dc, SendMessageW(edit, WM_GETFONT, 0, 0) as _);
+    let mut metrics: TEXTMETRICW = mem::zeroed();
+    GetTextMetricsW(dc, &mut metrics);
+    SelectObject(dc, old);
+    ReleaseDC(edit, dc);
+    let per_line = (metrics.tmHeight + metrics.tmExternalLeading).max(1);
+    (total, first, (height_px / per_line).max(1))
+}
+
+/// 细滚动条滑块的位置（96 DPI），内容没超出框高就不画
+unsafe fn scroll_thumb(
+    window: HWND,
+    id: usize,
+    layout: Layout,
+    dpi: u32,
+) -> Option<(f32, f32, f32, f32)> {
+    let (x, y, w, h) = if id == SOURCE {
+        layout.source()
+    } else {
+        layout.result()
+    };
+    let edit = GetDlgItem(window, id as i32);
+    if IsWindowVisible(edit) == 0 {
+        return None;
+    }
+    let (total, first, visible) = lines(window, id, scale(h, dpi));
+    if total <= visible {
+        return None;
+    }
+    let track = h as f32;
+    let size = (track * visible as f32 / total as f32).max(24.);
+    let top = (track - size) * first as f32 / (total - visible) as f32;
+    Some(((x + w + BAR_GAP) as f32, y as f32 + top, BAR_W as f32, size))
+}
+
+/// 拖滚动条：按鼠标在轨道里的位置滚到对应的行
+unsafe fn drag_to(window: HWND, id: usize, y_px: i32, layout: Layout, dpi: u32) {
+    let (_, y, _, h) = if id == SOURCE {
+        layout.source()
+    } else {
+        layout.result()
+    };
+    let (total, first, visible) = lines(window, id, scale(h, dpi));
+    if total <= visible {
+        return;
+    }
+    let ratio = ((y_px - scale(y, dpi)) as f32 / scale(h, dpi) as f32).clamp(0., 1.);
+    let want = (ratio * (total - visible) as f32).round() as i32;
+    SendMessageW(
+        GetDlgItem(window, id as i32),
+        EM_LINESCROLL,
+        0,
+        (want - first) as isize,
+    );
+    InvalidateRect(window, ptr::null(), 0);
+}
+
 /// 马上翻译（按钮、回车）：不等停手；同样的原文再按一次也重新翻
 unsafe fn translate_now(window: HWND, state: &mut State) {
     KillTimer(window, SETTLE_TIMER);
@@ -131,9 +293,6 @@ unsafe fn invalidate(window: HWND, dpi: u32, (x, y, w, h): (i32, i32, i32, i32))
     InvalidateRect(window, &rect, 0);
 }
 
-/// 底栏提示那一条
-const NOTE_BOX: (i32, i32, i32, i32) = (PAD, HEIGHT - 38, 300, 26);
-
 unsafe fn ask(window: HWND, state: &mut State) {
     let source = text_of(window, SOURCE);
     state.target = Target::for_text(&source);
@@ -143,8 +302,8 @@ unsafe fn ask(window: HWND, state: &mut State) {
         state.note.clear();
         state.busy = false;
         KillTimer(window, DOTS_TIMER);
-        invalidate(window, state.dpi, DOTS_BOX);
-        invalidate(window, state.dpi, NOTE_BOX);
+        invalidate(window, state.dpi, Layout::of(window, state.dpi).dots());
+        invalidate(window, state.dpi, Layout::of(window, state.dpi).note());
         return;
     }
     if source == state.last_source {
@@ -184,15 +343,23 @@ unsafe fn paint(window: HWND, state: &State) {
         let old = SelectObject(memory, bitmap);
         (memory, Some((bitmap, old)))
     };
+    let layout = Layout::of(window, state.dpi);
     crate::view::translate_card(
         dc,
         state.dpi,
         client.right,
         client.bottom,
-        DIVIDER as f32,
+        layout.divider as f32,
         state.busy.then_some(state.phase),
         state.copied,
+        IsZoomed(window) != 0,
     );
+    // 两个框各自的细滚动条（内容超出框高才画）
+    for id in [SOURCE, RESULT] {
+        if let Some((x, y, w, h)) = scroll_thumb(window, id, layout, state.dpi) {
+            crate::view::thumb(dc, state.dpi, x, y, w, h);
+        }
+    }
     SetBkMode(dc, TRANSPARENT as i32);
     let d = state.dpi;
     let draw = |text: &str, font: HFONT, color: u32, (x, y, w, h): (i32, i32, i32, i32)| {
@@ -220,17 +387,12 @@ unsafe fn paint(window: HWND, state: &State) {
         Target::Chinese => ("English", "中文"),
     };
     draw(from, state.fonts[1], 0x00938e8e, (PAD, 8, 200, 22));
-    draw(to, state.fonts[1], 0x00938e8e, (PAD, DIVIDER + 8, 200, 22));
+    draw(to, state.fonts[1], 0x00938e8e, layout.captions()[1]);
     if !state.note.is_empty() {
-        draw(
-            &state.note,
-            state.fonts[1],
-            0x003f39bd,
-            (PAD, HEIGHT - 38, 300, 26),
-        );
+        draw(&state.note, state.fonts[1], 0x003f39bd, layout.note());
     }
     // 上半右下角的「翻译」按钮：深灰胶囊、白字
-    let (gx, gy, gw, gh) = GO_BOX;
+    let (gx, gy, gw, gh) = layout.go();
     crate::view::pill(dc, d, gx, gy, gw, gh);
     {
         let old = SelectObject(dc, state.fonts[1]);
@@ -252,7 +414,7 @@ unsafe fn paint(window: HWND, state: &State) {
         SelectObject(dc, old);
     }
     if state.busy {
-        let (x, y, w, h) = DOTS_BOX;
+        let (x, y, w, h) = layout.dots();
         let (px, py) = (scale(x, d), scale(y, d));
         crate::view::busy_dots_at(dc, d, px, py, scale(w, d), scale(h, d), state.phase);
     }
@@ -272,7 +434,7 @@ unsafe fn paint_dots(window: HWND, state: &State) {
         ReleaseDC, SRCCOPY,
     };
     let d = state.dpi;
-    let (x, y, w, h) = DOTS_BOX;
+    let (x, y, w, h) = Layout::of(window, d).dots();
     let (px, py, pw, ph) = (scale(x, d), scale(y, d), scale(w, d), scale(h, d));
     let screen = GetDC(window);
     let memory = CreateCompatibleDC(screen);
@@ -317,10 +479,46 @@ unsafe extern "system" fn procedure(
                 y: ((lparam >> 16) as i16) as i32,
             };
             ScreenToClient(hwnd, &mut point);
-            // ×、复制是按钮；其余空白处按住可以拖
-            if [CLOSE_BOX, COPY_BOX, GO_BOX]
-                .iter()
-                .any(|&b| inside(point, b, state.dpi))
+            let layout = Layout::of(hwnd, state.dpi);
+            // 四边、四角拖动改大小（最大化时不行）
+            let e = scale(EDGE, state.dpi);
+            let (cw, ch) = (scale(layout.w, state.dpi), scale(layout.h, state.dpi));
+            if IsZoomed(hwnd) == 0 {
+                let (l, r, t, b) = (
+                    point.x < e,
+                    point.x >= cw - e,
+                    point.y < e,
+                    point.y >= ch - e,
+                );
+                let edge = match (l, r, t, b) {
+                    (true, _, true, _) => Some(HTTOPLEFT),
+                    (_, true, true, _) => Some(HTTOPRIGHT),
+                    (true, _, _, true) => Some(HTBOTTOMLEFT),
+                    (_, true, _, true) => Some(HTBOTTOMRIGHT),
+                    (true, ..) => Some(HTLEFT),
+                    (_, true, ..) => Some(HTRIGHT),
+                    (_, _, true, _) => Some(HTTOP),
+                    (.., true) => Some(HTBOTTOM),
+                    _ => None,
+                };
+                if let Some(edge) = edge {
+                    return edge as isize;
+                }
+            }
+            // 按钮和滚动条是控件区；其余空白处按住可以拖
+            let on_bar = [SOURCE, RESULT].iter().any(|&id| {
+                let (x, y, w, h) = if id == SOURCE {
+                    layout.source()
+                } else {
+                    layout.result()
+                };
+                inside(point, (x + w, y, BAR_GAP + BAR_W + 4, h), state.dpi)
+            });
+            if on_bar
+                || layout
+                    .buttons()
+                    .iter()
+                    .any(|&b| inside(point, b, state.dpi))
             {
                 HTCLIENT as isize
             } else {
@@ -332,11 +530,25 @@ unsafe extern "system" fn procedure(
                 x: (lparam as i16) as i32,
                 y: ((lparam >> 16) as i16) as i32,
             };
-            if inside(point, CLOSE_BOX, state.dpi) {
+            let layout = Layout::of(hwnd, state.dpi);
+            state.dragging = None;
+            ReleaseCapture();
+            if inside(point, layout.close(), state.dpi) {
                 DestroyWindow(hwnd);
-            } else if inside(point, GO_BOX, state.dpi) {
+            } else if inside(point, layout.maximize(), state.dpi) {
+                ShowWindow(
+                    hwnd,
+                    if IsZoomed(hwnd) != 0 {
+                        SW_RESTORE
+                    } else {
+                        SW_MAXIMIZE
+                    },
+                );
+            } else if inside(point, layout.minimize(), state.dpi) {
+                ShowWindow(hwnd, SW_MINIMIZE);
+            } else if inside(point, layout.go(), state.dpi) {
                 translate_now(hwnd, state);
-            } else if inside(point, COPY_BOX, state.dpi) {
+            } else if inside(point, layout.copy(), state.dpi) {
                 let result = text_of(hwnd, RESULT);
                 if result.is_empty() {
                     state.note = "还没有译文".into();
@@ -350,8 +562,8 @@ unsafe extern "system" fn procedure(
                         Err(reason) => state.note = reason,
                     }
                 }
-                invalidate(hwnd, state.dpi, COPY_BOX);
-                invalidate(hwnd, state.dpi, NOTE_BOX);
+                invalidate(hwnd, state.dpi, Layout::of(hwnd, state.dpi).copy());
+                invalidate(hwnd, state.dpi, Layout::of(hwnd, state.dpi).note());
             }
             0
         }
@@ -359,7 +571,8 @@ unsafe extern "system" fn procedure(
             let mut point = mem::zeroed();
             GetCursorPos(&mut point);
             ScreenToClient(hwnd, &mut point);
-            if [CLOSE_BOX, COPY_BOX, GO_BOX]
+            if Layout::of(hwnd, state.dpi)
+                .buttons()
                 .iter()
                 .any(|&b| inside(point, b, state.dpi))
             {
@@ -370,12 +583,15 @@ unsafe extern "system" fn procedure(
         }
         WM_COMMAND => {
             let (id, code) = (wparam & 0xffff, (wparam >> 16) as u32 & 0xffff);
+            if code == EN_VSCROLL || code == EN_CHANGE {
+                PostMessageW(hwnd, SCROLLED, 0, 0);
+            }
             if id == SOURCE && code == EN_CHANGE {
                 SetTimer(hwnd, SETTLE_TIMER, SETTLE_MS, None);
                 let target = Target::for_text(&text_of(hwnd, SOURCE));
                 if target != state.target {
                     state.target = target;
-                    for area in CAPTIONS {
+                    for area in Layout::of(hwnd, state.dpi).captions() {
                         invalidate(hwnd, state.dpi, area);
                     }
                 }
@@ -395,7 +611,7 @@ unsafe extern "system" fn procedure(
                 _ => {
                     KillTimer(hwnd, COPIED_TIMER);
                     state.copied = false;
-                    invalidate(hwnd, state.dpi, COPY_BOX);
+                    invalidate(hwnd, state.dpi, Layout::of(hwnd, state.dpi).copy());
                 }
             }
             0
@@ -413,8 +629,69 @@ unsafe extern "system" fn procedure(
                     Err(reason) => state.note = format!("翻译失败：{reason}"),
                 }
             }
-            invalidate(hwnd, state.dpi, DOTS_BOX);
-            invalidate(hwnd, state.dpi, NOTE_BOX);
+            invalidate(hwnd, state.dpi, Layout::of(hwnd, state.dpi).dots());
+            invalidate(hwnd, state.dpi, Layout::of(hwnd, state.dpi).note());
+            0
+        }
+        WM_SIZE => {
+            place_edits(hwnd, state);
+            InvalidateRect(hwnd, ptr::null(), 0);
+            0
+        }
+        WM_GETMINMAXINFO => {
+            let info = &mut *(lparam as *mut MINMAXINFO);
+            info.ptMinTrackSize.x = scale(MIN_WIDTH, state.dpi);
+            info.ptMinTrackSize.y = scale(MIN_HEIGHT, state.dpi);
+            // 最大化时铺满所在屏幕的工作区，不盖住任务栏（没有标题栏的窗口默认会铺满整个屏幕）
+            {
+                use windows_sys::Win32::Graphics::Gdi::{
+                    GetMonitorInfoW, MONITOR_DEFAULTTONEAREST, MONITORINFO, MonitorFromWindow,
+                };
+                let mut monitor: MONITORINFO = mem::zeroed();
+                monitor.cbSize = mem::size_of::<MONITORINFO>() as u32;
+                GetMonitorInfoW(
+                    MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST),
+                    &mut monitor,
+                );
+                let (work, whole) = (monitor.rcWork, monitor.rcMonitor);
+                info.ptMaxPosition.x = work.left - whole.left;
+                info.ptMaxPosition.y = work.top - whole.top;
+                info.ptMaxSize.x = work.right - work.left;
+                info.ptMaxSize.y = work.bottom - work.top;
+            }
+            0
+        }
+        // 按住细滚动条拖
+        WM_LBUTTONDOWN => {
+            let point = POINT {
+                x: (lparam as i16) as i32,
+                y: ((lparam >> 16) as i16) as i32,
+            };
+            let layout = Layout::of(hwnd, state.dpi);
+            for id in [SOURCE, RESULT] {
+                let (x, y, w, h) = if id == SOURCE {
+                    layout.source()
+                } else {
+                    layout.result()
+                };
+                if inside(point, (x + w, y, BAR_GAP + BAR_W + 4, h), state.dpi) {
+                    state.dragging = Some(id);
+                    SetCapture(hwnd);
+                    drag_to(hwnd, id, point.y, layout, state.dpi);
+                }
+            }
+            0
+        }
+        WM_MOUSEMOVE => {
+            if let Some(id) = state.dragging {
+                let y = ((lparam >> 16) as i16) as i32;
+                drag_to(hwnd, id, y, Layout::of(hwnd, state.dpi), state.dpi);
+            }
+            0
+        }
+        // 框里滚动了（滚轮、键盘、打字换行）：重画滚动条
+        SCROLLED => {
+            InvalidateRect(hwnd, ptr::null(), 0);
             0
         }
         WM_ERASEBKGND => 1,
@@ -479,7 +756,12 @@ unsafe fn open(at: Option<(i32, i32)>) -> HWND {
     RegisterClassW(&class);
     // 屏幕上要 WS_CLIPCHILDREN：不然卡片每次重画都盖过输入框，输入、等翻译时整窗狂闪（主人 2026-11-19）。
     // 离屏拍照不加：PrintWindow 截图里子控件会是黑块
-    let style = WS_POPUP | WS_SYSMENU | if at.is_some() { 0 } else { WS_CLIPCHILDREN };
+    let style = WS_POPUP
+        | WS_SYSMENU
+        | WS_MINIMIZEBOX
+        | WS_MAXIMIZEBOX
+        | WS_THICKFRAME
+        | if at.is_some() { 0 } else { WS_CLIPCHILDREN };
     let extended = WS_EX_TOPMOST
         | if at.is_some() {
             WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE
@@ -502,6 +784,7 @@ unsafe fn open(at: Option<(i32, i32)>) -> HWND {
         copied: false,
         target: Target::English,
         offscreen: at.is_some(),
+        dragging: None,
     }));
     let window = CreateWindowExW(
         extended,
@@ -566,21 +849,18 @@ unsafe fn open(at: Option<(i32, i32)>) -> HWND {
             4,
         );
     }
-    // 带竖向滚动条：长文可以用滚轮或拖滚动条看（主人 2026-11-19：塞一万字没法滑）
-    let edit = WS_CHILD | WS_VISIBLE | WS_TABSTOP | WS_VSCROLL | ES_MULTILINE | ES_AUTOVSCROLL;
-    for (id, style, top, bottom) in [
-        (SOURCE, edit | ES_WANTRETURN, SOURCE_TOP, DIVIDER - 46),
-        (RESULT, edit | ES_READONLY, RESULT_TOP, HEIGHT - 44),
-    ] {
+    // 长文可以用滚轮看；右边的细滚动条是自己画的（参照 Husic，系统滚动条太粗，主人 2026-11-19）
+    let edit = WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_MULTILINE | ES_AUTOVSCROLL;
+    for (id, style) in [(SOURCE, edit | ES_WANTRETURN), (RESULT, edit | ES_READONLY)] {
         let control = CreateWindowExW(
             0,
             wide("EDIT").as_ptr(),
             wide("").as_ptr(),
             style,
-            scale(PAD, dpi),
-            scale(top, dpi),
-            scale(WIDTH - PAD * 2, dpi),
-            scale(bottom - top, dpi),
+            0,
+            0,
+            10,
+            10,
             window,
             id as HMENU,
             module,
@@ -594,6 +874,7 @@ unsafe fn open(at: Option<(i32, i32)>) -> HWND {
             0,
         );
     }
+    place_edits(window, &*state);
     let source = GetDlgItem(window, SOURCE as i32);
     SendMessageW(
         source,
@@ -635,6 +916,11 @@ pub fn run() -> Result<(), String> {
             if message.message == WM_KEYDOWN {
                 if message.wParam == 0x1B {
                     DestroyWindow(window);
+                    continue;
+                }
+                // Ctrl+A 全选当前框（系统多行输入框默认不支持；只读的译文框也要能全选复制，主人 2026-11-19）
+                if message.wParam == 0x41 && GetKeyState(VK_CONTROL as i32) < 0 {
+                    SendMessageW(message.hwnd, EM_SETSEL, 0, -1);
                     continue;
                 }
                 // 回车立刻翻译；Shift+回车照常换行
