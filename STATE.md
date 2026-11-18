@@ -17,8 +17,11 @@
 - [x] S7 翻译：backend/translate.rs（微软主力、谷歌备用，Key 在本机 translate.json）；一轮最后说「翻译」整段换英文（这轮动过键鼠就不替换、面板提示）；CLI `translate 文字` 真机试过谷歌通。Azure Key 等主人
 - [x] S8 面板：左齿轮=打开控制面板，中麦克风，右「译」=弹翻译小窗（`xueer-ear.exe --translate`，停手 0.6 秒自动翻、Ctrl+Enter 立刻翻、复制、Esc 关）；离屏截图核对过
 - [~] S9 热词候选：一次性收集完，候选表在主人桌面「雪耳热词候选.md」（脚本在 claude scratch/tmp/hotword-harvest），等主人挑；挑完写进个人表并跑 hotword-check
-- [ ] S10 识别好坏与音量对照
-- [ ] S11 全量测试、离屏画图、打包装机、README/STATE
+- [x] S10 识别好坏与音量对照：320 句里音量中位只有满格的 1.7%，51 句放大到上限 16 倍、37 句峰值不到 200（很轻）。识别时好时坏主要是麦克风离嘴远、声音太小（推测）；本轮改了句首增益和预录，麦克风位置要主人挪
+- [x] S11 Windows 全量测试过；离屏画了面板（左齿轮、中麦克风、右「译」）和翻译小窗核对；1.1.0 打包（`D:\projects\_build\xueer-ear\dist-1.1.0\release`）并静默装到主人电脑（/TASKS=autostart），Run 值在，按自启参数拉起后 status ready；README 写了翻译和出字方式变化
+- 谷歌 Key 已写进主人本机 `%LOCALAPPDATA%\XueerEar\translate.json`（不进仓）；debug 版 CLI 真机翻译中→英、英→中都通。Azure 等主人注册后填 azure_key/azure_region
+- 真机没验（要主人试）：说话中途只往后接字、定稿一次改好后，终端/微信/网页是否还漏字；右 Alt 是否还闪两下；面板齿轮/「译」点击；一轮最后说「翻译」整段替换；翻译小窗；句首是否还丢字
+- 没推送、没发版（公开仓，要问主人）
 
 ## 2026-11-17 14:05 · 开机自启改走 HKCU Run，发 1.0.2（主人："设为和桌宠、音箱同一个方式……做好直接上线"）
 
