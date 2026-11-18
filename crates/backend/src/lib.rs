@@ -9,6 +9,7 @@ pub mod replay;
 #[cfg(windows)]
 pub mod runtime_account;
 pub mod settings;
+pub mod translate;
 pub mod wetype;
 use serde::Deserialize;
 use std::{

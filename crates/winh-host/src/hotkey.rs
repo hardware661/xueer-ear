@@ -35,6 +35,7 @@ use xueer_ear_backend::{
     engine::{self, Event, Source},
     settings::Settings,
 };
+use xueer_ear_textflow::{Output, VoiceCommand};
 
 /// 正在往前台发我们自己的按键（里面可能有 Enter），轮询线程这时不把 Enter 算作主人按的
 static INJECTING: AtomicBool = AtomicBool::new(false);
@@ -303,6 +304,8 @@ fn record(
     let (mut loudest, mut last_gain) = (0_u32, 1_f32);
     // 中间结果整句是指令、或者句尾是指令：（此刻的中间结果, 从什么时候开始没变）
     let mut pending_command: Option<(String, Instant)> = None;
+    // 这轮最后说了「翻译」
+    let mut translate = false;
     let result = engine::run_wetype(source, cancel, |event| {
         if stopped.load(Ordering::Acquire) {
             return Ok(());
@@ -342,11 +345,21 @@ fn record(
                 if let Some((text, since)) = &pending_command {
                     if since.elapsed() >= COMMAND_SETTLE {
                         let keys = match post.command_only(text) {
-                            Some(command) => live.early_command(command),
+                            Some(command) => {
+                                translate |= command == VoiceCommand::Translate;
+                                live.early_command(command)
+                            }
                             // 句尾指令：前面的话先定稿上屏（会记进历史），再按指令
-                            None => live
-                                .early_finish(post.finalize(text, crate::broker::now_ms()), text),
+                            None => {
+                                let output = post.finalize(text, crate::broker::now_ms());
+                                translate |= wants_translation(&output);
+                                live.early_finish(output, text)
+                            }
                         };
+                        // 说了「翻译」：这轮到此为止，收完最后一句后整段翻译
+                        if translate {
+                            release.store(true, Ordering::Release);
+                        }
                         pending_command = None;
                         typed_any |= keys.iter().any(|k| matches!(k, Key::Text(_)));
                         send_keys(&keys);
@@ -385,7 +398,12 @@ fn record(
                 let text = live.unsent(&speech.text);
                 let keys = if speech.final_result {
                     pending_command = None;
-                    live.finalize_from(&text, post.finalize(&text, crate::broker::now_ms()))
+                    let output = post.finalize(&text, crate::broker::now_ms());
+                    if wants_translation(&output) {
+                        translate = true;
+                        release.store(true, Ordering::Release);
+                    }
+                    live.finalize_from(&text, output)
                 } else {
                     // 整句只有指令词，或者句尾单独一小句是指令（「今天吃什么，发送」）：
                     // 记下来，停一小会儿没再说别的就提前执行
@@ -412,10 +430,45 @@ fn record(
         }
         return Err(error);
     }
+    if translate && !stopped.load(Ordering::Acquire) {
+        translate_round(&mut live, panel);
+        return Ok(());
+    }
     if !typed_any && !stopped.load(Ordering::Acquire) {
         crate::sound::play(crate::sound::Cue::Missed, settings.sounds_enabled);
     }
     Ok(())
+}
+
+fn wants_translation(output: &Output) -> bool {
+    matches!(
+        output,
+        Output::Command(VoiceCommand::Translate) | Output::TextThen(_, VoiceCommand::Translate)
+    )
+}
+
+/// 主人在一轮最后说了「翻译」：把这一轮雪耳打出去的字整段换成译文（中文→英文）。
+/// 翻译失败、或这轮动过键鼠（不知道光标在哪），屏幕上的字不动，面板写一句原因。
+fn translate_round(live: &mut Live, panel: &PanelHandle) {
+    let Some(text) = live.round_text() else {
+        panel.notice("这轮动过键盘鼠标，没法整段替换，请用翻译小窗");
+        return;
+    };
+    if text.trim().is_empty() {
+        panel.notice("这一轮还没说要翻译的话");
+        return;
+    }
+    panel.set(Look::Connecting);
+    match xueer_ear_backend::translate::translate(&text) {
+        Ok(english) => {
+            send_keys(&live.replace_round(&english));
+            panel.set(Look::Hidden);
+        }
+        Err(reason) => {
+            eprintln!("翻译失败：{reason}");
+            panel.notice(&format!("翻译失败：{reason}"));
+        }
+    }
 }
 
 /// 正在往前台发我们自己的按键：这期间看到的按键状态不是主人的

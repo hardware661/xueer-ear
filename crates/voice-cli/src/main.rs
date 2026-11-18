@@ -144,6 +144,12 @@ fn run() -> Result<(), Box<dyn Error + Send + Sync>> {
             println!("共 {} 句会被改动", changes.len());
             Ok(())
         }
+        // 试一次翻译（读本机 translate.json 里的 Key，微软 → 谷歌）
+        #[cfg(windows)]
+        (Some(command), Some(text), None) if command == "translate" => {
+            println!("{}", xueer_ear_backend::translate::translate(&text.to_string_lossy())?);
+            Ok(())
+        }
         #[cfg(windows)]
         (Some(command), None, None) if command == "microphone-info" => {
             for (role, device) in xueer_ear_audio::microphone::devices()? {
@@ -267,7 +273,7 @@ fn run() -> Result<(), Box<dyn Error + Send + Sync>> {
             }
             Ok(())
         }
-        _ => Err("usage: xueer-ear-cli hotword-check | recognize-wave-wetype FILE.wav | <inspect-capture|replay-capture|connect-check> DIRECTORY | account-status [FILE]".into()),
+        _ => Err("usage: xueer-ear-cli hotword-check | translate TEXT | recognize-wave-wetype FILE.wav | <inspect-capture|replay-capture|connect-check> DIRECTORY | account-status [FILE]".into()),
     }
 }
 

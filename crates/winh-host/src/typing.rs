@@ -157,6 +157,8 @@ pub struct Live {
     frozen: Option<usize>,
     /// 这句里的语音指令已经提前执行了（值是指令词）：后续结果里去掉指令词和它前面的部分再上屏
     early: Option<String>,
+    /// 这一轮里主人动过键盘或鼠标
+    touched_round: bool,
 }
 
 impl Live {
@@ -168,6 +170,7 @@ impl Live {
             sent: None,
             frozen: None,
             early: None,
+            touched_round: false,
         }
     }
 
@@ -243,9 +246,21 @@ impl Live {
         self.revision.pending()
     }
 
+    /// 这一轮雪耳打出去、还留在输入框里的全部文字（说「翻译」时整段拿去翻）。
+    /// 主人这轮动过键鼠时是 None：光标可能已经不在原处，不能按退格整段替换。
+    pub fn round_text(&self) -> Option<String> {
+        (!self.touched_round).then(|| self.typist.round_text())
+    }
+
+    /// 把这一轮打出去的字整段换成译文
+    pub fn replace_round(&mut self, text: &str) -> Vec<Key> {
+        self.typist.replace_all(text, self.terminal)
+    }
+
     /// 主人自己动了键盘或鼠标（点了别处、打了字、选了文字）。雪耳改字靠「退格再重打」，
     /// 不知道光标在哪时再退格就会删错地方，所以这句剩下的时间只往后接字，之前打的也不再往回删。
     pub fn user_touched(&mut self) {
+        self.touched_round = true;
         if self.frozen.is_none() {
             self.frozen = Some(self.revision.pending_graphemes());
         }
@@ -559,6 +574,36 @@ mod tests {
             &t.command(VoiceCommand::DeleteLastSentence, false),
         );
         assert_eq!(doc, "原来就有的");
+    }
+
+    #[test]
+    fn saying_translate_at_the_end_gives_the_whole_round_for_translation() {
+        let mut live = Live::new(false);
+        let mut doc = String::from("原有");
+        type_into(&mut doc, &live.partial("今天吃什么"));
+        type_into(
+            &mut doc,
+            &live.finalize(Output::Text("今天吃什么？".into())),
+        );
+        type_into(&mut doc, &live.partial("明天呢翻译"));
+        type_into(
+            &mut doc,
+            &live.finalize(Output::TextThen("明天呢，".into(), VoiceCommand::Translate)),
+        );
+        assert_eq!(live.round_text().as_deref(), Some("今天吃什么？明天呢，"));
+        type_into(
+            &mut doc,
+            &live.replace_round("What to eat today? And tomorrow?"),
+        );
+        assert_eq!(doc, "原有What to eat today? And tomorrow?");
+    }
+
+    #[test]
+    fn no_replacement_after_the_owner_touched_the_keyboard() {
+        let mut live = Live::new(false);
+        live.finalize(Output::Text("第一句。".into()));
+        live.user_touched();
+        assert_eq!(live.round_text(), None);
     }
 
     #[test]
