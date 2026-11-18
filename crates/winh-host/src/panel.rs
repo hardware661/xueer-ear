@@ -373,7 +373,7 @@ impl Window {
 }
 
 const PANEL_FILL: u32 = 0xfff2f2f5;
-const INNER_EAR: u32 = 0xfff1d9df;
+const INNER_EAR: u32 = 0xfff6e4e8;
 const MUTED: u32 = 0xff8e8e93;
 /// 在听和出字用同一种中灰圆底（主人：麦克风太淡、波浪太深，综合成一种）
 const ACCENT: u32 = 0xff8e8e93;
@@ -413,53 +413,27 @@ unsafe fn paint_graphics(
         gp::GdipSetSmoothingMode(g, gp::SmoothingModeAntiAlias8x8);
         gp::GdipScaleWorldTransform(g, scale, scale, gp::MatrixOrderPrepend);
         let body_h = HEIGHT - BODY_TOP - 6.;
-        // 一对大一点的猫耳（左上、右上），和卡片连成一体
-        cat_ear(
+        // 一对圆钝的猫耳（主人 2026-11-19：原来太尖）：底宽、矮、耳尖是圆弧；
+        // 听到说话时随声音轻轻抖（往外侧歪一点点），不说话就静止
+        let twitch = if look == Look::Speaking {
+            (phase * 2.3).sin() * 2.5 * level.max(0.2)
+        } else {
+            0.
+        };
+        soft_ear(g, 30., BODY_TOP + 14., 50., 30., -twitch, PANEL_FILL);
+        soft_ear(
             g,
-            8.,
-            BODY_TOP + 16.,
-            44.,
-            BODY_TOP + 16.,
-            16.,
-            1.,
+            card_w - 30.,
+            BODY_TOP + 14.,
+            50.,
+            30.,
+            twitch,
             PANEL_FILL,
-            0,
         );
-        cat_ear(
-            g,
-            card_w - 44.,
-            BODY_TOP + 16.,
-            card_w - 8.,
-            BODY_TOP + 16.,
-            card_w - 16.,
-            1.,
-            PANEL_FILL,
-            0,
-        );
-        rounded(g, 3., BODY_TOP, card_w - 6., body_h, 22., PANEL_FILL, false);
-        // 内耳一点粉
-        cat_ear(
-            g,
-            17.,
-            BODY_TOP + 10.,
-            35.,
-            BODY_TOP + 10.,
-            20.,
-            9.,
-            INNER_EAR,
-            0,
-        );
-        cat_ear(
-            g,
-            card_w - 35.,
-            BODY_TOP + 10.,
-            card_w - 17.,
-            BODY_TOP + 10.,
-            card_w - 20.,
-            9.,
-            INNER_EAR,
-            0,
-        );
+        rounded(g, 3., BODY_TOP, card_w - 6., body_h, 28., PANEL_FILL, false);
+        // 内耳一抹淡粉（椭圆，跟着外耳一起歪）
+        soft_ear(g, 30., BODY_TOP + 6., 22., 19., -twitch, INNER_EAR);
+        soft_ear(g, card_w - 30., BODY_TOP + 6., 22., 19., twitch, INNER_EAR);
         // 中间：同一种中灰圆底，没开口时是白麦克风，出字时是白波浪
         let (cx, cy) = (card_w / 2., BODY_TOP + body_h / 2.);
         // 两边：左设置（齿轮）、右翻译（「译」字），出错提示时不画
@@ -770,40 +744,66 @@ unsafe fn mic(g: *mut gp::GpGraphics, x: f32, y: f32, size: f32, color: u32) {
     }
 }
 
-/// 一只猫耳：三角形 (x1,y1)-(x2,y2) 是耳根，(tx,ty) 是耳尖；edge 为 0 就不描边
-unsafe fn cat_ear(
+/// 一只圆钝的猫耳：耳根中心 (cx, base)，底宽 w、高 h；耳尖往外歪 tilt（像素）。
+/// 两条侧边是外鼓的曲线、耳尖一段圆弧，看起来软软的，不扎手。
+unsafe fn soft_ear(
     g: *mut gp::GpGraphics,
-    x1: f32,
-    y1: f32,
-    x2: f32,
-    y2: f32,
-    tx: f32,
-    ty: f32,
+    cx: f32,
+    base: f32,
+    w: f32,
+    h: f32,
+    tilt: f32,
     fill: u32,
-    edge: u32,
 ) {
     unsafe {
         let mut path = ptr::null_mut();
         if gp::GdipCreatePath(gp::FillModeAlternate, &mut path) != 0 {
             return;
         }
-        // 耳尖用一小段圆弧，别太尖
-        gp::GdipAddPathLine(path, x1, y1, tx - 2., ty + 3.);
-        gp::GdipAddPathBezier(path, tx - 2., ty + 3., tx, ty, tx, ty, tx + 2., ty + 3.);
-        gp::GdipAddPathLine(path, tx + 2., ty + 3., x2, y2);
+        let (left, right) = (cx - w / 2., cx + w / 2.);
+        let (tx, ty) = (cx + tilt, base - h);
+        // 圆角三角：两条侧边微微外鼓，耳尖用一小段圆弧（半径约为底宽的 1/6）收住
+        let r = w / 6.;
+        let (lx, ly) = (tx - r * 0.9, ty + r * 0.75);
+        let (rx, ry) = (tx + r * 0.9, ty + r * 0.75);
+        gp::GdipAddPathBezier(
+            path,
+            left,
+            base,
+            left + w * 0.08,
+            base - h * 0.45,
+            lx - r * 0.6,
+            ly + r * 0.9,
+            lx,
+            ly,
+        );
+        gp::GdipAddPathBezier(
+            path,
+            lx,
+            ly,
+            tx - r * 0.45,
+            ty - r * 0.05,
+            tx + r * 0.45,
+            ty - r * 0.05,
+            rx,
+            ry,
+        );
+        gp::GdipAddPathBezier(
+            path,
+            rx,
+            ry,
+            rx + r * 0.6,
+            ry + r * 0.9,
+            right - w * 0.08,
+            base - h * 0.45,
+            right,
+            base,
+        );
         gp::GdipClosePathFigure(path);
         let mut brush = ptr::null_mut();
         if gp::GdipCreateSolidFill(fill, &mut brush) == 0 {
             gp::GdipFillPath(g, brush.cast(), path);
             gp::GdipDeleteBrush(brush.cast());
-        }
-        if edge != 0 {
-            let mut pen = ptr::null_mut();
-            if gp::GdipCreatePen1(edge, 1., gp::UnitPixel, &mut pen) == 0 {
-                gp::GdipSetPenLineJoin(pen, gp::LineJoinRound);
-                gp::GdipDrawPath(g, pen, path);
-                gp::GdipDeletePen(pen);
-            }
         }
         gp::GdipDeletePath(path);
     }
