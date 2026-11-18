@@ -764,6 +764,14 @@ fn send_to_qt(key: &Key) -> bool {
 /// （模拟边说边出字：每次接一截），最后补一个换行。只发这段文字，不读屏幕。
 pub fn type_probe(text: &str, pieces: usize, delay_ms: u64) {
     thread::sleep(Duration::from_millis(delay_ms));
+    // 排查用：XUEER_EAR_PROBE=each 每个字单独一次 SendInput
+    if std::env::var("XUEER_EAR_PROBE").as_deref() == Ok("each") {
+        for c in text.chars() {
+            send_keys(&[Key::Text(c.to_string())]);
+        }
+        send_keys(&[Key::Enter]);
+        return;
+    }
     let chars: Vec<char> = text.chars().collect();
     let step = chars.len().div_ceil(pieces.max(1));
     for chunk in chars.chunks(step.max(1)) {
@@ -771,6 +779,13 @@ pub fn type_probe(text: &str, pieces: usize, delay_ms: u64) {
         thread::sleep(Duration::from_millis(120));
     }
     send_keys(&[Key::Enter]);
+}
+
+/// 标点（中英文）：它后面的字要另起一批发
+fn is_mark(unit: u16) -> bool {
+    char::from_u32(u32::from(unit)).is_some_and(|c| {
+        c.is_ascii_punctuation() || "，。！？；：、…—“”‘’（）《》【】".contains(c)
+    })
 }
 
 /// 一批最多发这么多个字（或退格），批与批之间等 flush 里的 20 ms
@@ -797,12 +812,18 @@ fn send_keys(keys: &[Key]) {
             // 分小批发，每批之间 flush 会等一下，让目标程序来得及处理（2026-11-19：一次塞一长串，
             // 终端、微信、网页都会漏字）
             Key::Text(text) => {
-                for (i, unit) in text.encode_utf16().enumerate() {
-                    if i > 0 && i % BATCH_UNITS == 0 {
+                let mut sent = 0;
+                let mut after_mark = false;
+                for unit in text.encode_utf16() {
+                    // 标点后面紧跟的字单独起一批：Windows Terminal 收到同一批里「标点＋下一个字」时，
+                    // 后面那个字常被吞掉（2026-11-19 复现：82 字丢 6 个，全在「，。？」后面；一字一批 0 丢失）
+                    if sent > 0 && (sent % BATCH_UNITS == 0 || after_mark) {
                         flush(&mut inputs);
                     }
                     inputs.push(key(0, unit, KEYEVENTF_UNICODE));
                     inputs.push(key(0, unit, KEYEVENTF_UNICODE | KEYEVENTF_KEYUP));
+                    after_mark = is_mark(unit);
+                    sent += 1;
                 }
             }
             Key::Enter => inputs.extend(tap(VK_RETURN)),
