@@ -138,3 +138,17 @@ fn everyday_phrases_ending_in_a_delete_word_are_just_text() {
         Output::TextThen("这句是错的，".into(), VoiceCommand::DeleteLastSentence)
     );
 }
+
+#[test]
+fn translate_at_the_end_of_a_sentence() {
+    let o = Options::default();
+    assert_eq!(
+        process("今天吃什么，翻译成英文。", &o),
+        Output::TextThen("今天吃什么，".into(), VoiceCommand::Translate)
+    );
+    // 句尾只说「翻译」太常见（「这段帮我，翻译」也可能是正文），只认说全的
+    assert_eq!(
+        process("这一段，翻译", &o),
+        Output::Text("这一段，翻译".into())
+    );
+}

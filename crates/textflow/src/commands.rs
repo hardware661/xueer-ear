@@ -10,6 +10,8 @@ pub enum VoiceCommand {
     DeleteAll,
     /// 按回车。默认关闭，免得在终端里把半截话发给 AI。
     Send,
+    /// 把这一轮听写打出来的字整段翻译（主人 2026-11-19：只在最后单独说，和「发送」一样）
+    Translate,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -39,6 +41,15 @@ const WORDS: &[(&str, VoiceCommand)] = &[
     ("全删了", VoiceCommand::DeleteAll),
     ("清空", VoiceCommand::DeleteAll),
     ("发送", VoiceCommand::Send),
+    ("翻译", VoiceCommand::Translate),
+    ("英文", VoiceCommand::Translate),
+    ("英语", VoiceCommand::Translate),
+    ("翻译成英文", VoiceCommand::Translate),
+    ("翻译成英语", VoiceCommand::Translate),
+    ("翻成英文", VoiceCommand::Translate),
+    ("翻成英语", VoiceCommand::Translate),
+    ("说英文", VoiceCommand::Translate),
+    ("说英语", VoiceCommand::Translate),
 ];
 
 /// 能接在一句话末尾执行的指令（「第一行，换行」「今天吃什么，发送」「这句不对，删掉上一句」）。
@@ -53,6 +64,8 @@ pub fn parse_trailing_command(text: &str, options: &CommandOptions) -> Option<Vo
     let explicit = core.contains("上一") || core.contains("上句");
     match command {
         VoiceCommand::NewLine | VoiceCommand::Send => Some(command),
+        // 句尾只认说全的「翻译成英文」「说英文」，光「翻译」「英文」两个字常是正文
+        VoiceCommand::Translate if core.chars().count() > 2 => Some(command),
         VoiceCommand::DeleteLastSentence if explicit => Some(command),
         _ => None,
     }
@@ -64,6 +77,25 @@ pub fn parse_command(text: &str, options: &CommandOptions) -> Option<VoiceComman
         .trim()
         .trim_end_matches(['。', '！', '？', '!', '?', '.', '，', ','])
         .trim();
-    let command = WORDS.iter().find(|(w, _)| *w == core).map(|(_, c)| *c)?;
+    let command = lookup(core).or_else(|| said_twice(core))?;
     (command != VoiceCommand::Send || options.allow_send).then_some(command)
+}
+
+fn lookup(core: &str) -> Option<VoiceCommand> {
+    WORDS.iter().find(|(w, _)| *w == core).map(|(_, c)| *c)
+}
+
+/// 同一个指令连说两遍（「发送发送」「撤回，撤回」）也算这个指令；两个不同的指令连说不算。
+fn said_twice(core: &str) -> Option<VoiceCommand> {
+    let compact: String = core
+        .chars()
+        .filter(|c| !matches!(c, '，' | ',' | '。' | '、' | ' ' | '！' | '!'))
+        .collect();
+    let chars: Vec<char> = compact.chars().collect();
+    if chars.len() % 2 != 0 || chars.is_empty() {
+        return None;
+    }
+    let half: String = chars[..chars.len() / 2].iter().collect();
+    let rest: String = chars[chars.len() / 2..].iter().collect();
+    (half == rest).then(|| lookup(&half)).flatten()
 }

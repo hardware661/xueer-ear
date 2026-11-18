@@ -76,3 +76,43 @@ fn bare_delete_and_delete_all() {
     assert_eq!(parse_command("全部删除掉缓存", &o), None);
     assert_eq!(parse_command("清空回收站", &o), None);
 }
+
+#[test]
+fn a_command_said_twice_in_a_row_is_still_the_command() {
+    // 主人历史：「发送发送。」「撤回撤回」被原样打了出来（2026-11-19 复查）
+    let on = CommandOptions { allow_send: true };
+    assert_eq!(parse_command("发送发送。", &on), Some(VoiceCommand::Send));
+    assert_eq!(
+        parse_command("撤回撤回", &on),
+        Some(VoiceCommand::DeleteLastSentence)
+    );
+    assert_eq!(
+        parse_command("撤回，撤回。", &on),
+        Some(VoiceCommand::DeleteLastSentence)
+    );
+    assert_eq!(parse_command("换行换行", &on), Some(VoiceCommand::NewLine));
+    // 两个不同的指令连说不算
+    assert_eq!(parse_command("撤回发送", &on), None);
+}
+
+#[test]
+fn translate_said_on_its_own() {
+    let o = CommandOptions::default();
+    for said in [
+        "翻译",
+        "翻译。",
+        "英文",
+        "翻译成英文",
+        "说英文",
+        "翻成英文",
+        "翻译成英语",
+    ] {
+        assert_eq!(
+            parse_command(said, &o),
+            Some(VoiceCommand::Translate),
+            "{said}"
+        );
+    }
+    assert_eq!(parse_command("翻译一下这段代码", &o), None);
+    assert_eq!(parse_command("英文不好", &o), None);
+}

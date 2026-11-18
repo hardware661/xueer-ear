@@ -102,7 +102,37 @@ impl Typist {
                 self.typed.clear();
                 vec![Key::Enter]
             }
+            // 翻译要联网，按键在译文回来后由 `replace_all` 给出；这里什么都不按
+            VoiceCommand::Translate => vec![],
         }
+    }
+
+    /// 这次听写里雪耳打出去、还留在输入框里的全部文字（换行按 \n）
+    pub fn round_text(&self) -> String {
+        self.typed
+            .iter()
+            .map(|t| match t {
+                Typed::Sentence(text) => text.as_str(),
+                Typed::NewLine => "\n",
+            })
+            .collect()
+    }
+
+    /// 把这次听写打出去的全部文字换成 `text`（翻译结果）：退格删掉，再整段打上。
+    /// 之后再说「撤回」删的就是这整段。
+    pub fn replace_all(&mut self, text: &str, terminal: bool) -> Vec<Key> {
+        let count: usize = self.typed.drain(..).map(|t| t.width()).sum();
+        let text = if terminal {
+            text.replace(['\r', '\n'], " ")
+        } else {
+            text.to_string()
+        };
+        let mut keys = backspaces(count);
+        if !text.is_empty() {
+            self.typed.push(Typed::Sentence(text.clone()));
+            keys.push(Key::Text(text));
+        }
+        keys
     }
 }
 
@@ -498,6 +528,38 @@ mod tests {
             [Key::Backspace(4)]
         );
         assert_eq!(t.command(VoiceCommand::DeleteLastSentence, false), []);
+    }
+
+    #[test]
+    fn translate_replaces_everything_typed_this_round() {
+        let mut t = Typist::default();
+        let mut doc = String::from("原来就有的");
+        type_into(&mut doc, &t.text("今天吃什么。", false));
+        type_into(&mut doc, &t.command(VoiceCommand::NewLine, false));
+        type_into(&mut doc, &t.text("明天呢？", false));
+        assert_eq!(t.command(VoiceCommand::Translate, false), []);
+        assert_eq!(t.round_text(), "今天吃什么。\n明天呢？");
+        type_into(
+            &mut doc,
+            &t.replace_all("What to eat today?\nAnd tomorrow?", false),
+        );
+        assert_eq!(doc, "原来就有的What to eat today?\nAnd tomorrow?");
+        // 再撤回，删的是整段译文，不碰原来就有的字
+        type_into(
+            &mut doc,
+            &t.command(VoiceCommand::DeleteLastSentence, false),
+        );
+        assert_eq!(doc, "原来就有的");
+    }
+
+    #[test]
+    fn translation_never_puts_a_newline_into_a_terminal() {
+        let mut t = Typist::default();
+        t.text("第一句", true);
+        assert_eq!(
+            t.replace_all("one\ntwo", true),
+            [Key::Backspace(3), Key::Text("one two".into())]
+        );
     }
 
     #[test]
