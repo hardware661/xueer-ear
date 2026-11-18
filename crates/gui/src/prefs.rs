@@ -251,20 +251,13 @@ pub fn translate_choices(keys: &xueer_ear_backend::translate::Keys) -> Vec<Choic
     let status = if services.is_empty() {
         "还没配翻译服务".to_owned()
     } else {
-        format!(
-            "服务：{}（按顺序，前一家不行换下一家）",
-            services.join(" → ")
-        )
+        format!("服务：{}", services.join(" → "))
     };
     vec![
         (OPEN_TRANSLATOR, "打开翻译小窗".to_owned(), false),
         separator(),
         (NOTHING, status, false),
-        (
-            NOTHING,
-            "听写最后说「翻译」：这轮的字换成英文".to_owned(),
-            false,
-        ),
+        (NOTHING, "听写最后说「翻译」换成英文".to_owned(), false),
         separator(),
         (OPEN_TRANSLATE_KEYS, "打开翻译 Key 设置".to_owned(), false),
     ]

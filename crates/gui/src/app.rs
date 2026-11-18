@@ -2069,6 +2069,14 @@ pub fn snapshot(dir: &std::path::Path) -> Result<(), String> {
             DeleteObject(bitmap);
             result
         };
+        let translate_menu = {
+            let keys = xueer_ear_backend::translate::local_keys().unwrap_or_default();
+            let choices = crate::prefs::translate_choices(&keys);
+            let (bitmap, _, _) = crate::menu::render(&choices, app.fonts[3], app.dpi, 0);
+            let result = save_bitmap(bitmap, &dir.join("translate-menu.png"));
+            DeleteObject(bitmap);
+            result
+        };
         let hotwords = {
             let choices = crate::prefs::hotword_choices(&app.settings);
             let (bitmap, _, _) = crate::menu::render(&choices, app.fonts[3], app.dpi, 0);
@@ -2092,6 +2100,11 @@ pub fn snapshot(dir: &std::path::Path) -> Result<(), String> {
             });
         }
         DestroyWindow(hwnd);
-        panel.and(asked).and(tray).and(hotwords).and(translated)
+        panel
+            .and(asked)
+            .and(tray)
+            .and(hotwords)
+            .and(translated)
+            .and(translate_menu)
     }
 }
