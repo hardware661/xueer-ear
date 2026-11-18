@@ -230,7 +230,7 @@ unsafe fn place_edits(window: HWND, state: &State) {
             scale(y, d),
             scale(w, d).max(1),
             scale(h, d).max(1),
-            SWP_NOZORDER | SWP_NOACTIVATE,
+            SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOREDRAW | SWP_NOCOPYBITS,
         );
     }
 }
@@ -663,11 +663,9 @@ unsafe extern "system" fn procedure(
             0
         }
         WM_SIZE => {
-            // 拖边改大小时：先关掉重画，把两个框一次挪好，再整窗（连同框）一次性重画。
-            // 原来框先各自重画、卡片再盖一遍，原文框那半一闪一闪（主人 2026-11-19）
-            SendMessageW(hwnd, WM_SETREDRAW, 0, 0);
+            // 拖边改大小：两个框一次挪好（不各自重画），再让整窗按双缓冲重画一次。
+            // 1.1.9 用 WM_SETREDRAW 关/开重画，结果新开的窗口背景没画上、整窗发黑（主人 2026-11-19），不能用
             place_edits(hwnd, state);
-            SendMessageW(hwnd, WM_SETREDRAW, 1, 0);
             RedrawWindow(
                 hwnd,
                 ptr::null(),
