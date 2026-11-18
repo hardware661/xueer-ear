@@ -44,21 +44,6 @@ fn main() {
         hotkey::type_probe(&text, pieces, delay);
         return;
     }
-    // 挑耳朵：`--ear-sheet 目录`，按几组参数各画一张「在听」的面板
-    if first.as_deref() == Some("--ear-sheet") {
-        let dir = std::path::PathBuf::from(args.next().unwrap_or_else(|| ".".into()));
-        for (name, ear) in panel::EAR_CHOICES {
-            let _ = panel::render_png(
-                panel::Look::Listening,
-                0.,
-                3.,
-                "",
-                &dir.join(format!("ear-{name}.png")),
-                ear,
-            );
-        }
-        return;
-    }
     if first.as_deref() == Some("--panel-render") {
         let dir = std::path::PathBuf::from(args.next().unwrap_or_else(|| ".".into()));
         for (name, look, level) in [

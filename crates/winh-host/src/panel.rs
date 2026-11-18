@@ -795,12 +795,13 @@ pub struct EarStyle {
     pub pink: bool,
 }
 
+/// 主人 2026-11-19 定：G3（介于小圆耳和小尖耳之间的圆、耳尖朝外、靠里）再大一点
 pub const EAR: EarStyle = EarStyle {
-    width: 50.,
-    height: 23.,
-    inset: 38.,
-    round: 0.5,
-    lean: 0.,
+    width: 42.,
+    height: 20.,
+    inset: 46.,
+    round: 0.62,
+    lean: 6.,
     pink: true,
 };
 
@@ -1024,79 +1025,3 @@ pub fn render_png(
         result
     }
 }
-
-/// 挑耳朵用的几款（主人定下后删掉，只留 EAR）
-pub const EAR_CHOICES: [(&str, EarStyle); 6] = [
-    // A 小圆耳：很小、很圆，像小猫刚冒出的耳朵
-    (
-        "A",
-        EarStyle {
-            width: 30.,
-            height: 13.,
-            inset: 30.,
-            round: 0.9,
-            lean: 0.,
-            pink: true,
-        },
-    ),
-    // B 小尖耳：小，三角感明显但耳尖带一点圆
-    (
-        "B",
-        EarStyle {
-            width: 30.,
-            height: 16.,
-            inset: 30.,
-            round: 0.35,
-            lean: 0.,
-            pink: true,
-        },
-    ),
-    // C 小耳朝外：小三角，耳尖往外撇一点，更像猫
-    (
-        "C",
-        EarStyle {
-            width: 32.,
-            height: 16.,
-            inset: 30.,
-            round: 0.4,
-            lean: 4.,
-            pink: true,
-        },
-    ),
-    // D 中等、不要粉：干净的灰白，只靠形状
-    (
-        "D",
-        EarStyle {
-            width: 36.,
-            height: 17.,
-            inset: 32.,
-            round: 0.45,
-            lean: 2.,
-            pink: false,
-        },
-    ),
-    // E 极小：只是两个小凸起，存在感最低
-    (
-        "E",
-        EarStyle {
-            width: 24.,
-            height: 10.,
-            inset: 28.,
-            round: 0.8,
-            lean: 0.,
-            pink: false,
-        },
-    ),
-    // F 小耳靠里：离边更远，像猫头顶
-    (
-        "F",
-        EarStyle {
-            width: 30.,
-            height: 15.,
-            inset: 40.,
-            round: 0.5,
-            lean: 3.,
-            pink: true,
-        },
-    ),
-];
