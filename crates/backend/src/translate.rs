@@ -341,26 +341,30 @@ fn translate_piece(
         ("智谱", zhipu_request(keys, text, target), parse_google),
     ];
     let mut reason = String::new();
-    for (service, request, parse) in attempts {
-        let Some(request) = request else { continue };
-        // 免费档每分钟次数有限（谷歌约 10 次）：长文分段连着发会撞上 429。
-        // 和工具站一样，撞上了等一会儿再试同一家，最多等两轮，还不行再换下一家
-        for wait in [0, 8, 20] {
-            if wait > 0 {
-                pause(wait);
-            }
-            match send(&request) {
+    // 免费档每分钟次数有限（谷歌约 10 次）。为了体感，被限流的那家先跳过、马上换下一家；
+    // 只有每一家都被限流时才等一会儿再从头试（8 秒、20 秒）。主人 2026-11-19：不能影响体感
+    for wait in [0, 8, 20] {
+        if wait > 0 {
+            pause(wait);
+        }
+        let mut limited = false;
+        for (service, request, parse) in &attempts {
+            let Some(request) = request else { continue };
+            match send(request) {
                 Ok((200, body)) => match parse(&body) {
                     Ok(text) => return Ok(text),
                     Err(error) => reason = error,
                 },
                 Ok((429, _)) => {
                     reason = status_reason(service, 429);
-                    continue;
+                    limited = true;
                 }
                 Ok((status, _)) => reason = status_reason(service, status),
                 Err(error) => reason = format!("{service} 连不上（{error}）"),
             }
+        }
+        // 不是限流（Key 不对、连不上）的错，等也没用
+        if !limited {
             break;
         }
     }
@@ -405,11 +409,9 @@ mod tests {
             hosts,
             [
                 "api.cognitive.microsofttranslator.com",
-                "api.cognitive.microsofttranslator.com",
-                "api.cognitive.microsofttranslator.com",
                 "generativelanguage.googleapis.com"
             ],
-            "微软限流先等着重试两次，再换谷歌"
+            "微软限流马上换谷歌"
         );
     }
 
@@ -469,7 +471,7 @@ mod tests {
             ))
         });
         assert_eq!(out.as_deref(), Ok("Hello"));
-        assert_eq!(google, 3, "谷歌限流要先等着重试两次");
+        assert_eq!(google, 1, "谷歌限流就马上换智谱，不干等");
         // 第二次重试成功就不用换
         let mut calls = 0;
         let out = translate_with(&keys, "你好", |_| {
@@ -501,6 +503,37 @@ mod tests {
             ))
         });
         assert_eq!(out.as_deref(), Ok("你好"));
+    }
+
+    #[test]
+    fn only_when_every_service_is_limited_does_it_wait_and_retry() {
+        let keys = Keys {
+            google_key: "g".into(),
+            zhipu_key: "z".into(),
+            ..Keys::default()
+        };
+        let mut calls = Vec::new();
+        let out = translate_with(&keys, "你好", |r| {
+            calls.push(r.host);
+            // 第一轮两家都限流，第二轮谷歌好了
+            Ok(if calls.len() <= 2 {
+                (429, vec![])
+            } else {
+                (
+                    200,
+                    br#"{"choices":[{"message":{"content":"Hi"}}]}"#.to_vec(),
+                )
+            })
+        });
+        assert_eq!(out.as_deref(), Ok("Hi"));
+        assert_eq!(
+            calls,
+            [
+                "generativelanguage.googleapis.com",
+                "open.bigmodel.cn",
+                "generativelanguage.googleapis.com"
+            ]
+        );
     }
 
     #[test]
