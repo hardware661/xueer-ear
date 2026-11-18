@@ -109,6 +109,16 @@ impl Hotwords {
                 Some((end, right)) => {
                     out.push_str(&self.apply_words(&text[plain_from..i]));
                     out.push_str(right);
+                    // 被换掉的英文后面那个空格，原本是隔开英文和汉字用的；换成汉字收尾后，
+                    // 后面紧跟汉字时这个空格就多余了（「雪儿 DAR 里面」→「雪耳里面」）
+                    let mut end = end;
+                    let rest = &text[end..];
+                    if right.chars().next_back().is_some_and(is_han)
+                        && rest.starts_with(' ')
+                        && rest[1..].chars().next().is_some_and(is_han)
+                    {
+                        end += 1;
+                    }
                     i = end;
                     plain_from = end;
                 }
@@ -334,4 +344,8 @@ fn fuzzy(p: &str) -> String {
         }
     }
     s
+}
+
+fn is_han(c: char) -> bool {
+    matches!(c, '\u{3400}'..='\u{4dbf}' | '\u{4e00}'..='\u{9fff}' | '\u{f900}'..='\u{faff}')
 }

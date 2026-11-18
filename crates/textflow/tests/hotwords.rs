@@ -124,3 +124,12 @@ fn adding_a_line_keeps_existing_content_and_skips_duplicates() {
     assert_eq!(add_hotword_line(file, "=只有右边"), None);
     assert_eq!(add_hotword_line("", "第一个").unwrap(), "第一个\n");
 }
+
+#[test]
+fn a_rule_that_swallows_english_leaves_no_stray_space_before_chinese() {
+    // 「雪儿 DAR 里面」按「雪儿 DAR=雪耳」改完，原来英文后面的空格不该留在两个汉字之间
+    let h = Hotwords::parse("雪儿 DAR=雪耳\n");
+    assert_eq!(h.apply("加到雪儿 DAR 里面"), "加到雪耳里面");
+    let h = Hotwords::parse("uout=右 Alt\n");
+    assert_eq!(h.apply("通过uout发送"), "通过右 Alt发送");
+}
