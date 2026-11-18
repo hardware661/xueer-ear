@@ -420,20 +420,29 @@ unsafe fn paint_graphics(
         } else {
             0.
         };
-        soft_ear(g, 30., BODY_TOP + 14., 50., 30., -twitch, PANEL_FILL);
+        // 卡片和两只耳朵画成同一条轮廓（主人 2026-11-19：耳朵和窗口的衔接有点怪）：
+        // 顶边从左耳外侧顺着弧线爬上耳尖，再弧线落回顶边，中间平直，右耳对称
+        cat_card(g, card_w, body_h, twitch, PANEL_FILL);
+        // 内耳一抹淡粉，放在耳朵正中
+        let inner = 3. + 10. + 25.;
         soft_ear(
             g,
-            card_w - 30.,
-            BODY_TOP + 14.,
-            50.,
-            30.,
-            twitch,
-            PANEL_FILL,
+            inner - twitch,
+            BODY_TOP - 1.,
+            18.,
+            16.,
+            -twitch,
+            INNER_EAR,
         );
-        rounded(g, 3., BODY_TOP, card_w - 6., body_h, 28., PANEL_FILL, false);
-        // 内耳一抹淡粉（椭圆，跟着外耳一起歪）
-        soft_ear(g, 30., BODY_TOP + 6., 22., 19., -twitch, INNER_EAR);
-        soft_ear(g, card_w - 30., BODY_TOP + 6., 22., 19., twitch, INNER_EAR);
+        soft_ear(
+            g,
+            card_w - inner + twitch,
+            BODY_TOP - 1.,
+            18.,
+            16.,
+            twitch,
+            INNER_EAR,
+        );
         // 中间：同一种中灰圆底，没开口时是白麦克风，出字时是白波浪
         let (cx, cy) = (card_w / 2., BODY_TOP + body_h / 2.);
         // 两边：左设置（齿轮）、右翻译（「译」字），出错提示时不画
@@ -741,6 +750,75 @@ unsafe fn mic(g: *mut gp::GpGraphics, x: f32, y: f32, size: f32, color: u32) {
             size * 0.08,
             color,
         );
+    }
+}
+
+/// 卡片 + 两只耳朵的整体轮廓：圆角矩形，顶边上鼓起两只圆角三角耳朵，接缝处是顺滑的凹弧
+unsafe fn cat_card(g: *mut gp::GpGraphics, card_w: f32, body_h: f32, twitch: f32, fill: u32) {
+    unsafe {
+        let mut path = ptr::null_mut();
+        if gp::GdipCreatePath(gp::FillModeAlternate, &mut path) != 0 {
+            return;
+        }
+        let (x0, x1) = (3., card_w - 3.);
+        let (top, bottom) = (BODY_TOP, BODY_TOP + body_h);
+        let r = 28.;
+        // 一只耳朵：从顶边 (a, top) 起，经耳尖，落到 (b, top)；tilt 是耳尖横向偏移
+        let ear = |path: *mut gp::GpPath, a: f32, b: f32, tilt: f32| {
+            let mid = (a + b) / 2. + tilt;
+            let tip = top - 23.;
+            let w = b - a;
+            // 起脚处切线水平（和顶边顺接），侧边外鼓，耳尖圆
+            gp::GdipAddPathBezier(
+                path,
+                a,
+                top,
+                a + w * 0.18,
+                top - 2.,
+                mid - w * 0.16,
+                tip + 4.,
+                mid - w * 0.08,
+                tip,
+            );
+            gp::GdipAddPathBezier(
+                path,
+                mid - w * 0.08,
+                tip,
+                mid - w * 0.02,
+                tip - 1.5,
+                mid + w * 0.02,
+                tip - 1.5,
+                mid + w * 0.08,
+                tip,
+            );
+            gp::GdipAddPathBezier(
+                path,
+                mid + w * 0.08,
+                tip,
+                mid + w * 0.16,
+                tip + 4.,
+                b - w * 0.18,
+                top - 2.,
+                b,
+                top,
+            );
+        };
+        // 左上角 → 左耳 → 顶边 → 右耳 → 右上角 → 右下 → 左下。耳朵中心在 x=30 / card_w-30，和内耳粉色对齐
+        // 上面两个角用小圆角，耳朵从角上直接长出来；下面两个角照旧大圆角
+        let rt = 10.;
+        gp::GdipAddPathArc(path, x0, top, rt * 2., rt * 2., 180., 90.);
+        ear(path, x0 + rt, x0 + rt + 50., -twitch);
+        ear(path, x1 - rt - 50., x1 - rt, twitch);
+        gp::GdipAddPathArc(path, x1 - rt * 2., top, rt * 2., rt * 2., 270., 90.);
+        gp::GdipAddPathArc(path, x1 - r * 2., bottom - r * 2., r * 2., r * 2., 0., 90.);
+        gp::GdipAddPathArc(path, x0, bottom - r * 2., r * 2., r * 2., 90., 90.);
+        gp::GdipClosePathFigure(path);
+        let mut brush = ptr::null_mut();
+        if gp::GdipCreateSolidFill(fill, &mut brush) == 0 {
+            gp::GdipFillPath(g, brush.cast(), path);
+            gp::GdipDeleteBrush(brush.cast());
+        }
+        gp::GdipDeletePath(path);
     }
 }
 

@@ -111,7 +111,7 @@ unsafe fn ask(window: HWND, state: &mut State) {
         state.last_source.clear();
         state.note.clear();
         state.busy = false;
-        InvalidateRect(window, ptr::null(), 1);
+        InvalidateRect(window, ptr::null(), 0);
         return;
     }
     if source == state.last_source {
@@ -124,7 +124,7 @@ unsafe fn ask(window: HWND, state: &mut State) {
     // 翻译中：收起译文框，露出底下跳动的小点
     ShowWindow(GetDlgItem(window, RESULT as i32), SW_HIDE);
     SetTimer(window, DOTS_TIMER, 60, None);
-    InvalidateRect(window, ptr::null(), 1);
+    InvalidateRect(window, ptr::null(), 0);
     let (id, sender, target) = (state.asked, state.sender.clone(), window as usize);
     thread::spawn(move || {
         let result = xueer_ear_backend::translate::translate(&source);
@@ -251,7 +251,7 @@ unsafe extern "system" fn procedure(
                         Err(reason) => state.note = reason,
                     }
                 }
-                InvalidateRect(hwnd, ptr::null(), 1);
+                InvalidateRect(hwnd, ptr::null(), 0);
             }
             0
         }
@@ -272,7 +272,7 @@ unsafe extern "system" fn procedure(
                 let target = Target::for_text(&text_of(hwnd, SOURCE));
                 if target != state.target {
                     state.target = target;
-                    InvalidateRect(hwnd, ptr::null(), 1);
+                    InvalidateRect(hwnd, ptr::null(), 0);
                 }
             }
             0
@@ -285,12 +285,19 @@ unsafe extern "system" fn procedure(
                 }
                 DOTS_TIMER => {
                     state.phase += 0.35;
-                    InvalidateRect(hwnd, ptr::null(), 0);
+                    let d = state.dpi;
+                    let strip = RECT {
+                        left: scale(PAD, d),
+                        top: scale(DIVIDER + 12, d),
+                        right: scale(PAD + 60, d),
+                        bottom: scale(DIVIDER + 36, d),
+                    };
+                    InvalidateRect(hwnd, &strip, 0);
                 }
                 _ => {
                     KillTimer(hwnd, COPIED_TIMER);
                     state.copied = false;
-                    InvalidateRect(hwnd, ptr::null(), 1);
+                    InvalidateRect(hwnd, ptr::null(), 0);
                 }
             }
             0
@@ -308,7 +315,7 @@ unsafe extern "system" fn procedure(
                     Err(reason) => state.note = format!("翻译失败：{reason}"),
                 }
             }
-            InvalidateRect(hwnd, ptr::null(), 1);
+            InvalidateRect(hwnd, ptr::null(), 0);
             0
         }
         WM_ERASEBKGND => 1,
@@ -371,7 +378,9 @@ unsafe fn open(at: Option<(i32, i32)>) -> HWND {
         ..mem::zeroed()
     };
     RegisterClassW(&class);
-    let style = WS_POPUP | WS_SYSMENU;
+    // 屏幕上要 WS_CLIPCHILDREN：不然卡片每次重画都盖过输入框，输入、等翻译时整窗狂闪（主人 2026-11-19）。
+    // 离屏拍照不加：PrintWindow 截图里子控件会是黑块
+    let style = WS_POPUP | WS_SYSMENU | if at.is_some() { 0 } else { WS_CLIPCHILDREN };
     let extended = WS_EX_TOPMOST
         | if at.is_some() {
             WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE

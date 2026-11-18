@@ -419,7 +419,7 @@ pub unsafe fn translate_card(
     };
     let w = width as f32 * 96. / dpi as f32;
     let _ = height;
-    c.line(20., divider_y, w - 20., divider_y, 1., 0xffe5e5ea);
+    c.line(20., divider_y, w - 20., divider_y, 1.4, 0xffc7c7cc);
     let (x, y, pw, ph) = pill;
     c.rounded(x, y, pw, ph, ph / 2., 0xfff2f2f7, false);
     if let Some(phase) = busy_phase {
