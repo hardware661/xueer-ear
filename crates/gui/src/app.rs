@@ -2032,15 +2032,21 @@ pub fn snapshot(dir: &std::path::Path) -> Result<(), String> {
             DeleteObject(bitmap);
             result
         };
-        let translator = crate::translate_window::offscreen();
-        let translated = if translator.is_null() {
-            Err("无法创建翻译小窗".to_owned())
-        } else {
-            settle(400);
-            let result = capture(translator, &dir.join("translate-window.png"));
-            DestroyWindow(translator);
-            result
-        };
+        let mut translated = Ok(());
+        for (busy, name) in [
+            (false, "translate-window.png"),
+            (true, "translate-busy.png"),
+        ] {
+            let translator = crate::translate_window::offscreen(busy);
+            translated = translated.and(if translator.is_null() {
+                Err("无法创建翻译小窗".to_owned())
+            } else {
+                settle(400);
+                let result = capture(translator, &dir.join(name));
+                DestroyWindow(translator);
+                result
+            });
+        }
         DestroyWindow(hwnd);
         panel.and(asked).and(tray).and(hotwords).and(translated)
     }

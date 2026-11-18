@@ -402,3 +402,36 @@ pub unsafe fn button(
         );
     }
 }
+
+/// 翻译小窗的底：白卡片、中间一条细分隔线，线中间一个小标签（「中 → 英」）的底（字由调用方写）。
+/// `pill` 是标签在 96 DPI 下的 (x, y, 宽, 高)；`busy_phase` 有值时在译文区左上画三个跳动的小点。
+pub unsafe fn translate_card(
+    dc: HDC,
+    dpi: u32,
+    width: i32,
+    height: i32,
+    divider_y: f32,
+    pill: (f32, f32, f32, f32),
+    busy_phase: Option<f32>,
+) {
+    let Some(c) = Canvas::new(dc, dpi) else {
+        return;
+    };
+    let w = width as f32 * 96. / dpi as f32;
+    let _ = height;
+    c.line(20., divider_y, w - 20., divider_y, 1., 0xffe5e5ea);
+    let (x, y, pw, ph) = pill;
+    c.rounded(x, y, pw, ph, ph / 2., 0xfff2f2f7, false);
+    if let Some(phase) = busy_phase {
+        for i in 0..3 {
+            let lift = ((phase - i as f32 * 0.6).sin().max(0.)) * 3.;
+            c.ellipse(
+                24. + i as f32 * 10.,
+                divider_y + 26. - lift,
+                5.,
+                5.,
+                0xffaeaeb2,
+            );
+        }
+    }
+}
