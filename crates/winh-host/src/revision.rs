@@ -108,6 +108,10 @@ impl Revision {
     pub fn clear(&mut self) {
         self.pending.clear();
     }
+    /// 屏幕上接着多打了这些字
+    pub fn append(&mut self, text: &str) {
+        self.pending.push_str(text);
+    }
 }
 
 #[cfg(test)]

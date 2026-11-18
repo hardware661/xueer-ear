@@ -682,6 +682,9 @@ fn send_to_qt(key: &Key) -> bool {
     }
 }
 
+/// 一批最多发这么多个字（或退格），批与批之间等 flush 里的 20 ms
+const BATCH_UNITS: usize = 12;
+
 fn send_keys(keys: &[Key]) {
     let mut inputs: Vec<INPUT> = Vec::new();
     // 热键可能是 Alt/Ctrl/Shift：先把它们抬起，免得和要键入的字凑成组合键
@@ -700,8 +703,13 @@ fn send_keys(keys: &[Key]) {
             }
         }
         match k {
+            // 分小批发，每批之间 flush 会等一下，让目标程序来得及处理（2026-11-19：一次塞一长串，
+            // 终端、微信、网页都会漏字）
             Key::Text(text) => {
-                for unit in text.encode_utf16() {
+                for (i, unit) in text.encode_utf16().enumerate() {
+                    if i > 0 && i % BATCH_UNITS == 0 {
+                        flush(&mut inputs);
+                    }
                     inputs.push(key(0, unit, KEYEVENTF_UNICODE));
                     inputs.push(key(0, unit, KEYEVENTF_UNICODE | KEYEVENTF_KEYUP));
                 }
@@ -713,7 +721,10 @@ fn send_keys(keys: &[Key]) {
                 inputs.push(key(VK_CONTROL, 0, KEYEVENTF_KEYUP));
             }
             Key::Backspace(count) => {
-                for _ in 0..*count {
+                for i in 0..*count {
+                    if i > 0 && i % BATCH_UNITS == 0 {
+                        flush(&mut inputs);
+                    }
                     inputs.extend(tap(VK_BACK));
                 }
             }

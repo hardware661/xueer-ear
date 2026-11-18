@@ -150,7 +150,6 @@ pub struct Live {
     revision: Revision,
     typist: Typist,
     terminal: bool,
-    last_rewrite: Option<std::time::Instant>,
     /// 主人按 Enter 时屏幕上那截还没说定的文字（已经被发走了），这句后续结果要去掉它
     sent: Option<String>,
     /// 主人在这句说到一半时动了键盘或鼠标：光标可能已经不在原处，这句剩下的时间只往后接字。
@@ -160,16 +159,12 @@ pub struct Live {
     early: Option<String>,
 }
 
-/// 退格改字离上次屏幕变化至少隔这么久
-const REWRITE_GAP: std::time::Duration = std::time::Duration::from_millis(250);
-
 impl Live {
     pub fn new(terminal: bool) -> Self {
         Self {
             revision: Revision::default(),
             typist: Typist::default(),
             terminal,
-            last_rewrite: None,
             sent: None,
             frozen: None,
             early: None,
@@ -334,30 +329,22 @@ impl Live {
         self.partial_at(text, std::time::Instant::now())
     }
 
-    /// 同上，带时间。只往后加字的立刻打；要退格改前面的字，离上次屏幕变化至少隔 `REWRITE_GAP`，
-    /// 其间的修订先攒着（下一次或定稿时一起改），免得云端频繁修订时屏幕来回删写、一直闪。
-    pub fn partial_at(&mut self, text: &str, now: std::time::Instant) -> Vec<Key> {
+    /// 同上，带时间。说话中途只往后接字，不退格改前面（2026-11-19：中途反复「退格再重打」时
+    /// 终端、微信、网页都会漏字）。云端改了前面的字，屏幕上先留着，定稿时一次改好。
+    pub fn partial_at(&mut self, text: &str, _now: std::time::Instant) -> Vec<Key> {
+        use unicode_segmentation::UnicodeSegmentation;
         let text = self.separated(&clean(text));
         if self.frozen.is_some() {
             return self.append_only(&text);
         }
-        let Ok(update) = self.revision.prepare(&text, false) else {
-            return vec![];
-        };
-        // 要退格改字时，离上次屏幕变化（打字或改字）不到 REWRITE_GAP 就先不动
-        if update.erase > 0
-            && self
-                .last_rewrite
-                .is_some_and(|at| now.duration_since(at) < REWRITE_GAP)
-        {
+        let shown = self.revision.pending_graphemes();
+        let graphemes: Vec<&str> = text.graphemes(true).collect();
+        if graphemes.len() <= shown {
             return vec![];
         }
-        if update.erase > 0 || !update.insert.is_empty() {
-            self.last_rewrite = Some(now);
-        }
-        let keys = edit(update.erase, &update.insert);
-        self.revision.accept(update);
-        keys
+        let extra: String = graphemes[shown..].concat();
+        self.revision.append(&extra);
+        vec![Key::Text(extra)]
     }
 
     /// 定稿：把屏幕上没说定的那一截整个换成整理后的文字，或者擦掉后执行指令。
@@ -384,6 +371,7 @@ impl Live {
         if early && matches!(&output, Output::Text(t) if t.trim().is_empty()) {
             return edit(erase, "");
         }
+        let shown = self.revision.pending().to_string();
         let mut keys = edit(erase, "");
         keys.extend(match output {
             Output::Text(text) => self.typist.text(&clean(&text), self.terminal),
@@ -394,7 +382,7 @@ impl Live {
                 keys
             }
         });
-        keys
+        keep_common_prefix(&shown, keys)
     }
 
     /// 冻结状态下的定稿：不退格、不替换，按原话补上还没上屏的尾巴；会删东西的指令不执行。
@@ -436,6 +424,27 @@ impl Live {
         }
         xueer_ear_textflow::terminal_append(self.typist.previous(), text)
     }
+}
+
+/// 定稿时屏幕上已经是 `shown`：开头一样的字不用退格重打，只改从第一个不同的字开始的部分
+fn keep_common_prefix(shown: &str, mut keys: Vec<Key>) -> Vec<Key> {
+    use unicode_segmentation::UnicodeSegmentation;
+    let [Key::Backspace(erase), Key::Text(text), ..] = keys.as_mut_slice() else {
+        return keys;
+    };
+    let common = shown
+        .graphemes(true)
+        .zip(text.graphemes(true))
+        .take_while(|(a, b)| a == b)
+        .count();
+    if common == 0 {
+        return keys;
+    }
+    let cut: usize = text.graphemes(true).take(common).map(str::len).sum();
+    *erase -= common;
+    *text = text[cut..].to_string();
+    keys.retain(|k| !matches!(k, Key::Backspace(0)) && !matches!(k, Key::Text(t) if t.is_empty()));
+    keys
 }
 
 /// 最后一小句（去掉标点和空格），用来记住说出来的指令词
@@ -617,7 +626,8 @@ mod tests {
         // 下一句恢复正常的边说边改
         type_into(&mut doc, &live.partial_at("第二剧", ms(1000)));
         type_into(&mut doc, &live.partial_at("第二句话", ms(1400)));
-        assert_eq!(doc, "第一句。第二句话");
+        type_into(&mut doc, &live.finalize(Output::Text("第二句话。".into())));
+        assert_eq!(doc, "第一句。第二句话。");
     }
 
     #[test]
@@ -683,29 +693,38 @@ mod tests {
     }
 
     #[test]
-    fn live_rewrites_are_throttled_but_appends_flow() {
+    fn while_speaking_only_appends_and_fixes_once_at_the_end() {
+        // 2026-11-19 主人：漏字发生在说话中途反复「退格再重打」时（「功能」只剩「功」），终端、微信、网页都有。
+        // 改法：说话时只往后接字，前面的错字等这句定稿时一次改好。
         let t0 = std::time::Instant::now();
         let ms = |n| t0 + std::time::Duration::from_millis(n);
         let mut live = Live::new(false);
-        let mut doc = String::new();
-        type_into(&mut doc, &live.partial_at("今天", ms(0)));
-        // 只往后加字：马上打
-        type_into(&mut doc, &live.partial_at("今天天", ms(40)));
-        assert_eq!(doc, "今天天");
-        // 要改前面的字：离上次改不到 250 ms 就先不动，免得屏幕来回删写
-        assert!(live.partial_at("今天田", ms(80)).is_empty());
-        let keys = live.partial_at("今天天气", ms(120));
-        assert!(keys.iter().all(|k| matches!(k, Key::Text(_))), "{keys:?}");
-        type_into(&mut doc, &keys);
-        assert_eq!(doc, "今天天气");
-        type_into(&mut doc, &live.partial_at("今天天器很", ms(500)));
-        assert_eq!(doc, "今天天器很");
-        // 定稿永远照写
-        type_into(
-            &mut doc,
-            &live.finalize(Output::Text("今天天气很好".into())),
+        let mut doc = String::from("原有");
+        let mut all = Vec::new();
+        for (text, at) in [
+            ("今天", 0),
+            ("今天天器", 300),
+            ("今天天气很", 600),
+            ("今天田气很好", 900),
+        ] {
+            let keys = live.partial_at(text, ms(at));
+            all.extend(keys.clone());
+            type_into(&mut doc, &keys);
+        }
+        assert!(
+            all.iter().all(|k| matches!(k, Key::Text(_))),
+            "说话中途不该退格：{all:?}"
         );
-        assert_eq!(doc, "今天天气很好");
+        assert_eq!(doc, "原有今天天器很好");
+        let keys = live.finalize(Output::Text("今天天气很好。".into()));
+        assert_eq!(
+            keys.iter()
+                .filter(|k| matches!(k, Key::Backspace(_)))
+                .count(),
+            1
+        );
+        type_into(&mut doc, &keys);
+        assert_eq!(doc, "原有今天天气很好。");
     }
 
     #[test]
@@ -717,7 +736,7 @@ mod tests {
         type_into(&mut doc, &live.partial_at("今天", ms(0)));
         type_into(&mut doc, &live.partial_at("今天天气", ms(300)));
         type_into(&mut doc, &live.partial_at("今天天器很好", ms(600)));
-        assert_eq!(doc, "原有内容今天天器很好");
+        assert_eq!(doc, "原有内容今天天气很好");
         type_into(
             &mut doc,
             &live.finalize(Output::Text("今天天气很好。".into())),
