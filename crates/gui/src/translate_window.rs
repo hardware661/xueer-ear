@@ -141,8 +141,9 @@ impl Layout {
             self.h - 44 - top,
         )
     }
-    fn buttons(&self) -> [(i32, i32, i32, i32); 5] {
+    fn buttons(&self) -> [(i32, i32, i32, i32); 6] {
         [
+            self.swap(),
             self.close(),
             self.maximize(),
             self.minimize(),
@@ -166,6 +167,8 @@ struct State {
     note: String,
     copied: bool,
     target: Target,
+    /// 主人点了 ⇄：这次按手动方向翻，不再按内容自动判断；原文一改就回到自动
+    manual: bool,
     /// 离屏拍照用的窗口
     offscreen: bool,
     /// 正在拖哪个框的滚动条
@@ -339,6 +342,8 @@ unsafe fn swap_direction(window: HWND, state: &mut State) {
         set_text(window, SOURCE, &result);
         set_text(window, RESULT, "");
     }
+    // 放在搬字之后：搬字会触发原文 EN_CHANGE，把手动标记清掉
+    state.manual = true;
     InvalidateRect(window, ptr::null(), 0);
     translate_now(window, state);
 }
@@ -385,6 +390,14 @@ unsafe fn ask(window: HWND, state: &mut State) {
         ));
     }
     let (id, sender, target) = (state.asked, state.sender.clone(), window as usize);
+    // 默认按内容自动定方向：有中文就中译英，纯英文就英译中
+    if !state.manual {
+        let detected = Target::for_text(&source);
+        if detected != state.target {
+            state.target = detected;
+            InvalidateRect(window, ptr::null(), 0);
+        }
+    }
     let target_language = state.target;
     thread::spawn(move || {
         let result = xueer_ear_backend::translate::translate_into(&source, target_language);
@@ -691,6 +704,7 @@ unsafe extern "system" fn procedure(
                 PostMessageW(hwnd, SCROLLED, 0, 0);
             }
             if id == SOURCE && code == EN_CHANGE {
+                state.manual = false;
                 if text_of(hwnd, SOURCE).trim().is_empty() {
                     // 清空了：节奏从头算，译文也清掉
                     KillTimer(hwnd, SETTLE_TIMER);
@@ -904,6 +918,7 @@ unsafe fn open(at: Option<(i32, i32)>) -> HWND {
         note: String::new(),
         copied: false,
         target: Target::English,
+        manual: false,
         offscreen: at.is_some(),
         dragging: None,
         pressed: None,
@@ -1116,4 +1131,26 @@ pub unsafe fn offscreen(busy: bool) -> HWND {
         ShowWindow(window, SW_SHOWNOACTIVATE);
     }
     window
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // 点了没反应的老毛病：按钮不在 buttons() 里，命中测试就当标题栏拖窗口，松手消息根本收不到
+    #[test]
+    fn every_clickable_part_is_a_button_for_hit_testing() {
+        let layout = Layout { w: 420, h: 300, divider: 144 };
+        let buttons = layout.buttons();
+        for part in [
+            layout.swap(),
+            layout.close(),
+            layout.maximize(),
+            layout.minimize(),
+            layout.copy(),
+            layout.go(),
+        ] {
+            assert!(buttons.contains(&part), "{part:?} 不在 buttons() 里");
+        }
+    }
 }
