@@ -1601,13 +1601,6 @@ unsafe extern "system" fn procedure(
             SetCursor(LoadCursorW(ptr::null_mut(), IDC_HAND));
             1
         }
-        WM_MEASUREITEM if lparam != 0 => {
-            if crate::menu::measure(hwnd, lparam as *mut _) {
-                1
-            } else {
-                DefWindowProcW(hwnd, message, wparam, lparam)
-            }
-        }
         WM_NCCALCSIZE => 0,
         WM_NCHITTEST => {
             let mut point = POINT {
@@ -1748,9 +1741,6 @@ unsafe extern "system" fn procedure(
         }
         WM_DRAWITEM => {
             let draw = &*(lparam as *const DRAWITEMSTRUCT);
-            if crate::menu::draw(draw) {
-                return 1;
-            }
             let id = draw.CtlID as usize;
             if VALUE_BUTTONS.contains(&id)
                 || [

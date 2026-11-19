@@ -2,7 +2,6 @@
 #![allow(unsafe_op_in_unsafe_fn)]
 use std::{mem, ptr};
 use windows_sys::Win32::{
-    Foundation::RECT,
     Graphics::{Gdi::HDC, GdiPlus as gp},
 };
 
@@ -233,26 +232,6 @@ pub unsafe fn value_button(dc: HDC, dpi: u32, width: i32, height: i32, pressed: 
     }
     c.line(w - 12., h / 2. - 4., w - 8., h / 2., 1.6, 0xffc7c7cc);
     c.line(w - 8., h / 2., w - 12., h / 2. + 4., 1.6, 0xffc7c7cc);
-}
-
-/// 菜单一行（macOS 菜单式）：悬停是一块浅灰圆角，选中的项左边一个细对勾
-pub unsafe fn menu_row(dc: HDC, dpi: u32, rect: &RECT, hover: bool, checked: bool) {
-    let Some(c) = Canvas::new(dc, dpi) else {
-        return;
-    };
-    let ratio = dpi as f32 / 96.;
-    let x = rect.left as f32 / ratio;
-    let y = rect.top as f32 / ratio;
-    let w = (rect.right - rect.left) as f32 / ratio;
-    let h = (rect.bottom - rect.top) as f32 / ratio;
-    if hover {
-        c.rounded(x + 5., y + 1., w - 10., h - 2., 6., 0xffe8e8ed, false);
-    }
-    if checked {
-        let m = y + h / 2.;
-        c.line(x + 15., m, x + 18., m + 3., 1.6, GREEN);
-        c.line(x + 18., m + 3., x + 24., m - 4., 1.6, GREEN);
-    }
 }
 
 pub unsafe fn update_bubble(dc: HDC, dpi: u32, available: bool) {
