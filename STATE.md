@@ -401,3 +401,11 @@
 - **回滚**：`git revert 24d1c72 4db1a97 d9d2c46 3ce9ec5 90eb1c5`，或从 workspace members 去掉两个 crate。
 
 **已有提交（上一会话）**：`095d4e7` 改名 + 接受 26200.9974 指纹；`deab5ea` recognize-wave-wetype 命令。都只在本地，没推送、没在真机验证。
+
+## 2026-11-19 发版与翻译服务
+
+- [x] v1.1.17 已推送并发版：https://github.com/hardware661/xueer-ear/releases/tag/v1.1.17 （CI 第一次 cargo fmt 没过，补格式后重打同名 tag 通过）
+- 翻译服务定为**谷歌（主）+ 智谱 glm-4.7-flash（兜底）**，本机 translate.json 两把都在，实测中译英、英译中都通。
+- Azure：主人账号注册免费账户被拒（"没有资格"），改即用即付也"无法完成注册"，卡上有约 2 美元预授权（应会退回）。不再折腾 Azure，代码里的 Azure 支持保留（填了 Key 就会用）。
+- 腾讯云机器翻译：2026-10-01 起停发免费资源包、QPS 逐月砍、2027-10 归零，不接。主人在自己研究别的服务。
+- Win+H 相关旧待办（G6/G7/G8）主人说暂不用 Win+H，搁置。
