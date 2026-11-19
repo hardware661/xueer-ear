@@ -20,7 +20,7 @@ use windows_sys::Win32::{
     Graphics::Gdi::*,
     System::{
         LibraryLoader::GetModuleHandleW,
-        SystemServices::{SS_CENTER, SS_ENDELLIPSIS, SS_LEFT},
+        SystemServices::{SS_ENDELLIPSIS, SS_LEFT},
         Threading::*,
     },
     UI::{
@@ -53,7 +53,6 @@ const UPDATE_BODY: usize = 223;
 const APP_TITLE: usize = 221;
 const LABEL_STATUS: usize = 203;
 const LABEL_ERROR: usize = 206;
-const LABEL_SERVICE: usize = 208;
 const LABEL_MIC_TITLE: usize = 210;
 const LABEL_SILENCE: usize = 211;
 const LABEL_HOTKEY: usize = 212;
@@ -68,6 +67,9 @@ const LABEL_HISTORY: usize = 229;
 const LABEL_HISTORY_VALUE: usize = 230;
 const LABEL_TRANSLATE: usize = 231;
 const LABEL_TRANSLATE_VALUE: usize = 232;
+/// 分组小标题：「听写」「文字」
+const GROUP_DICTATION: usize = 233;
+const GROUP_TEXT: usize = 234;
 /// 右边带小箭头、点了出菜单的那几个按钮
 const VALUE_BUTTONS: [usize; 7] = [
     LABEL_HOTKEY_VALUE,
@@ -84,7 +86,7 @@ const HOTWORDS_HEADER: &str = "# 雪耳热词表：一行一个词，读音像�
 // COLORREF 是 BGR；深灰，和 view 的主色一致
 const GREEN: u32 = 0x002e2c2c;
 const INK: u32 = 0x00251e18;
-const MUTED: u32 = 0x00776d65;
+const MUTED: u32 = 0x00938e8e;
 
 fn data_dir() -> Result<PathBuf, String> {
     std::env::var_os("LOCALAPPDATA")
@@ -375,8 +377,10 @@ struct App {
     font_family: &'static str,
     controls: Vec<(usize, HWND)>,
     fonts: Vec<HFONT>,
-    white: HBRUSH,
-    caption: HBRUSH,
+    /// 页面浅灰底
+    page: HBRUSH,
+    /// 卡片白
+    card: HBRUSH,
     icon: HICON,
     github_icon: HICON,
     taskbar_created: u32,
@@ -438,8 +442,8 @@ impl App {
             font_family: "Microsoft YaHei UI",
             controls: Vec::new(),
             fonts: Vec::new(),
-            white: CreateSolidBrush(view::BACKGROUND),
-            caption: CreateSolidBrush(0x00fcf7f2),
+            page: CreateSolidBrush(view::BACKGROUND),
+            card: CreateSolidBrush(view::CARD),
             icon,
             github_icon: LoadIconW(module, 101_usize as *const u16),
             taskbar_created: RegisterWindowMessageW(wide("TaskbarCreated").as_ptr()),
@@ -489,11 +493,7 @@ impl App {
             wide(text).as_ptr(),
             WS_CHILD
                 | WS_VISIBLE
-                | if matches!(id, LABEL_STATUS | LABEL_ERROR) {
-                    SS_CENTER
-                } else {
-                    SS_LEFT
-                }
+                | SS_LEFT
                 | SS_ENDELLIPSIS,
             0,
             0,
@@ -512,7 +512,8 @@ impl App {
             (APP_TITLE, APP_NAME),
             (LABEL_STATUS, "正在读取状态"),
             (LABEL_ERROR, ""),
-            (LABEL_SERVICE, "后台服务"),
+            (GROUP_DICTATION, "听写"),
+            (GROUP_TEXT, "文字"),
             (LABEL_HOTKEY, "快捷键"),
             (LABEL_MIC_TITLE, "麦克风"),
             (LABEL_SILENCE, "静音收句"),
@@ -536,7 +537,7 @@ impl App {
             (LABEL_HOTWORDS_VALUE, "添加", BS_OWNERDRAW),
             (LABEL_HISTORY_VALUE, "最近 7 天", BS_OWNERDRAW),
             (LABEL_TRANSLATE_VALUE, "打开", BS_OWNERDRAW),
-            (LABEL_TEXT_VALUE, "设置", BS_OWNERDRAW),
+            (LABEL_TEXT_VALUE, "", BS_OWNERDRAW),
             (UPDATE_DOWNLOAD, "下载更新", BS_OWNERDRAW),
             (UPDATE_SKIP, "跳过此版本", BS_OWNERDRAW),
             (UPDATE_CLOSE, "关闭更新提示", BS_OWNERDRAW),
@@ -606,42 +607,39 @@ impl App {
             );
             self.fonts.push(font);
         }
-        let mut client: RECT = mem::zeroed();
-        GetClientRect(self.hwnd, &mut client);
-        let width = client.right * 96 / self.dpi as i32;
-        let inner = width - 40;
-        let positions = [
-            (LABEL_STATUS, 20, 190, inner, 28, 2),
-            (LABEL_ERROR, 20, 217, inner, 12, 1),
-            (LABEL_SERVICE, 52, 249, 230, 22, 0),
-            (TOGGLE, 336, 245, 44, 28, 3),
-            (LABEL_HOTKEY, 52, 307, 130, 22, 0),
-            (LABEL_HOTKEY_VALUE, 264, 299, 116, 36, 3),
-            (LABEL_MIC_TITLE, 52, 365, 130, 22, 0),
-            (LABEL_MIC_VALUE, 212, 357, 168, 36, 3),
-            (LABEL_SILENCE, 52, 423, 130, 22, 0),
-            (LABEL_SILENCE_VALUE, 264, 415, 116, 36, 3),
-            (LABEL_HOTWORDS, 52, 481, 130, 22, 0),
-            (LABEL_HOTWORDS_VALUE, 264, 473, 116, 36, 3),
-            (LABEL_HISTORY, 52, 539, 130, 22, 0),
-            (LABEL_HISTORY_VALUE, 264, 531, 116, 36, 3),
-            (LABEL_TRANSLATE, 52, 597, 130, 22, 0),
-            (LABEL_TRANSLATE_VALUE, 264, 589, 116, 36, 3),
-            (LABEL_TEXT, 52, 655, 130, 22, 0),
-            (LABEL_TEXT_VALUE, 264, 647, 116, 36, 3),
-            (UPDATE_TITLE, 28, 107, 216, 22, 4),
-            (UPDATE_BODY, 28, 134, 216, 18, 1),
-            (UPDATE_DOWNLOAD, 28, 164, 85, 30, 3),
-            (UPDATE_SKIP, 119, 164, 105, 30, 3),
-            (UPDATE_CLOSE, 246, 99, 24, 24, 3),
+        // 一行 44 高；卡片位置和 view::CARDS 对应
+        let row = |card: usize, i: i32| view::CARDS[card].0 as i32 + i * view::ROW as i32;
+        let mut positions = vec![
+            (LABEL_STATUS, 92, 70, 220, 22, 4),
+            (LABEL_ERROR, 92, 95, 220, 16, 1),
+            (TOGGLE, 324, 74, 44, 28, 3),
+            (GROUP_DICTATION, 32, 150, 120, 16, 1),
+            (GROUP_TEXT, 32, 316, 120, 16, 1),
+            (UPDATE_TITLE, 136, 61, 216, 22, 4),
+            (UPDATE_BODY, 136, 88, 216, 18, 1),
+            (UPDATE_DOWNLOAD, 136, 118, 85, 30, 3),
+            (UPDATE_SKIP, 227, 118, 105, 30, 3),
+            (UPDATE_CLOSE, 354, 53, 24, 24, 3),
         ];
+        for (card, i, label, value) in [
+            (1, 0, LABEL_HOTKEY, LABEL_HOTKEY_VALUE),
+            (1, 1, LABEL_MIC_TITLE, LABEL_MIC_VALUE),
+            (1, 2, LABEL_SILENCE, LABEL_SILENCE_VALUE),
+            (2, 0, LABEL_HOTWORDS, LABEL_HOTWORDS_VALUE),
+            (2, 1, LABEL_HISTORY, LABEL_HISTORY_VALUE),
+            (2, 2, LABEL_TRANSLATE, LABEL_TRANSLATE_VALUE),
+            (3, 0, LABEL_TEXT, LABEL_TEXT_VALUE),
+        ] {
+            positions.push((label, 32, row(card, i) + 11, 110, 22, 0));
+            positions.push((value, 148, row(card, i) + 4, 228, 36, 0));
+        }
         for (id, x, y, w, h, font) in positions {
             let control = self.control(id);
             SetWindowPos(
                 control,
                 ptr::null_mut(),
                 scale(x, self.dpi),
-                scale(view::body_y(y), self.dpi),
+                scale(y, self.dpi),
                 scale(w, self.dpi),
                 scale(h, self.dpi),
                 SWP_NOZORDER | SWP_NOACTIVATE,
@@ -652,7 +650,7 @@ impl App {
             (APP_TITLE, 50, 10, 80, 24),
             (MINIMIZE, 312, 0, 44, 42),
             (CLOSE, 356, 0, 44, 42),
-            (GITHUB, 12, 50, 36, 36),
+            (GITHUB, 272, 3, 36, 36),
         ] {
             SetWindowPos(
                 self.control(id),
@@ -810,6 +808,7 @@ impl App {
             _ => error,
         };
         self.set_text(LABEL_ERROR, &line.chars().take(180).collect::<String>());
+        self.show_error_line();
         let available = self.busy.is_none();
         let mut buttons_changed = previous.1 != self.installed;
         if (IsWindowEnabled(self.control(TOGGLE)) != 0) != available {
@@ -848,10 +847,10 @@ impl App {
         }
         if previous.0 != self.ready || previous.2 != self.animate {
             let rect = RECT {
-                left: scale(80, self.dpi),
-                top: scale(50, self.dpi),
-                right: scale(320, self.dpi),
-                bottom: scale(187, self.dpi),
+                left: scale(28, self.dpi),
+                top: scale(60, self.dpi),
+                right: scale(232, self.dpi),
+                bottom: scale(116, self.dpi),
             };
             InvalidateRect(self.hwnd, &rect, 0);
         }
@@ -987,10 +986,10 @@ impl App {
         self.update_visible = show;
         // Native STATIC children paint above the parent's buffered canvas.
         // Hide the labels covered by the popover instead of cutting holes in it.
-        let covered = show && self.update_release.is_some();
-        for id in [LABEL_STATUS, LABEL_ERROR] {
-            ShowWindow(self.control(id), if covered { SW_HIDE } else { SW_SHOW });
+        for id in [LABEL_STATUS, TOGGLE, GROUP_DICTATION] {
+            ShowWindow(self.control(id), if show { SW_HIDE } else { SW_SHOW });
         }
+        self.show_error_line();
         for id in [UPDATE_TITLE, UPDATE_BODY, UPDATE_CLOSE] {
             ShowWindow(self.control(id), if show { SW_SHOW } else { SW_HIDE });
         }
@@ -1005,12 +1004,22 @@ impl App {
             );
         }
         let rect = RECT {
-            left: scale(8, self.dpi),
-            top: scale(84, self.dpi),
-            right: scale(288, self.dpi),
-            bottom: scale(232, self.dpi),
+            left: scale(112, self.dpi),
+            top: scale(38, self.dpi),
+            right: scale(392, self.dpi),
+            bottom: scale(180, self.dpi),
         };
         InvalidateRect(self.hwnd, &rect, 0);
+    }
+
+    /// 状态下面那行字：有字才露出来（空的时候让出位置给波形），更新气泡盖着时藏起来
+    unsafe fn show_error_line(&self) {
+        let control = self.control(LABEL_ERROR);
+        let visible = !self.update_visible && GetWindowTextLengthW(control) > 0;
+        if (IsWindowVisible(control) != 0) != visible {
+            ShowWindow(control, if visible { SW_SHOW } else { SW_HIDE });
+            InvalidateRect(self.hwnd, ptr::null(), 0);
+        }
     }
 
     unsafe fn dismiss_update(&mut self, skip: bool) {
@@ -1391,9 +1400,14 @@ impl App {
     unsafe fn draw_button_content(&self, draw: &DRAWITEMSTRUCT) {
         let disabled = draw.itemState & ODS_DISABLED != 0;
         let pressed = draw.itemState & ODS_SELECTED != 0;
-        FillRect(draw.hDC, &draw.rcItem, self.white);
+        // 标题栏上的按钮是页面灰底，其余都在白卡片（或更新气泡）上
+        let on_page = matches!(draw.CtlID as usize, GITHUB | MINIMIZE | CLOSE);
+        FillRect(
+            draw.hDC,
+            &draw.rcItem,
+            if on_page { self.page } else { self.card },
+        );
         if draw.CtlID == GITHUB as u32 {
-            FillRect(draw.hDC, &draw.rcItem, self.white);
             DrawIconEx(
                 draw.hDC,
                 (draw.rcItem.right - scale(18, self.dpi)) / 2,
@@ -1425,11 +1439,11 @@ impl App {
                 pressed,
             );
             SetBkMode(draw.hDC, TRANSPARENT as i32);
-            SetTextColor(draw.hDC, INK);
-            SelectObject(draw.hDC, self.fonts[3]);
+            SetTextColor(draw.hDC, MUTED);
+            SelectObject(draw.hDC, self.fonts[0]);
             let mut rect = draw.rcItem;
-            rect.left += scale(12, self.dpi);
-            rect.right -= scale(30, self.dpi);
+            rect.left += scale(8, self.dpi);
+            rect.right -= scale(20, self.dpi);
             let mut text = [0u16; 512];
             let len = GetWindowTextW(draw.hwndItem, text.as_mut_ptr(), 512);
             DrawTextW(
@@ -1437,14 +1451,13 @@ impl App {
                 text.as_ptr(),
                 len,
                 &mut rect,
-                DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS,
+                DT_RIGHT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS,
             );
             return;
         }
         if matches!(draw.CtlID as usize, MINIMIZE | CLOSE) {
-            FillRect(draw.hDC, &draw.rcItem, self.caption);
             if pressed {
-                let b = CreateSolidBrush(0x00eee7e0);
+                let b = CreateSolidBrush(0x00ebe5e5);
                 FillRect(draw.hDC, &draw.rcItem, b);
                 DeleteObject(b);
             }
@@ -1549,8 +1562,8 @@ impl Drop for App {
                     DeleteObject(*font);
                 }
             }
-            DeleteObject(self.white);
-            DeleteObject(self.caption);
+            DeleteObject(self.page);
+            DeleteObject(self.card);
         }
     }
 }
@@ -1604,7 +1617,7 @@ unsafe extern "system" fn procedure(
             if point.y >= 0
                 && point.y < scale(view::HEADER, app.dpi)
                 && point.x >= scale(40, app.dpi)
-                && point.x < scale(312, app.dpi)
+                && point.x < scale(272, app.dpi)
             {
                 HTCAPTION as isize
             } else {
@@ -1644,10 +1657,10 @@ unsafe extern "system" fn procedure(
                     KillTimer(hwnd, 2);
                 } else {
                     let rect = RECT {
-                        left: scale(80, app.dpi),
-                        top: scale(160, app.dpi),
-                        right: scale(320, app.dpi),
-                        bottom: scale(187, app.dpi),
+                        left: scale(88, app.dpi),
+                        top: scale(92, app.dpi),
+                        right: scale(232, app.dpi),
+                        bottom: scale(112, app.dpi),
                     };
                     InvalidateRect(hwnd, &rect, 0);
                 }
@@ -1694,8 +1707,11 @@ unsafe extern "system" fn procedure(
         }
         WM_CTLCOLORSTATIC => {
             let dc = wparam as HDC;
-            let title = lparam as HWND == app.control(APP_TITLE);
-            SetBkColor(dc, if title { 0x00fcf7f2 } else { view::BACKGROUND });
+            // 标题、分组小标题在灰底上，其余在白卡片上
+            let title = [APP_TITLE, GROUP_DICTATION, GROUP_TEXT]
+                .iter()
+                .any(|&id| lparam as HWND == app.control(id));
+            SetBkColor(dc, if title { view::BACKGROUND } else { view::CARD });
             SetTextColor(
                 dc,
                 if lparam as HWND == app.control(LABEL_ERROR) {
@@ -1707,7 +1723,6 @@ unsafe extern "system" fn procedure(
                     APP_TITLE,
                     UPDATE_TITLE,
                     LABEL_STATUS,
-                    LABEL_SERVICE,
                     LABEL_HOTKEY,
                     LABEL_MIC_TITLE,
                     LABEL_SILENCE,
@@ -1725,9 +1740,9 @@ unsafe extern "system" fn procedure(
                 },
             );
             if title {
-                app.caption as isize
+                app.page as isize
             } else {
-                app.white as isize
+                app.card as isize
             }
         }
         WM_DRAWITEM => {
@@ -1766,14 +1781,7 @@ unsafe extern "system" fn procedure(
             let memory = CreateCompatibleDC(dc);
             let bitmap = CreateCompatibleBitmap(dc, client.right, client.bottom);
             let old = SelectObject(memory, bitmap);
-            FillRect(memory, &client, app.white);
-            let caption = RECT {
-                left: 0,
-                top: 0,
-                right: client.right,
-                bottom: scale(view::HEADER, app.dpi),
-            };
-            FillRect(memory, &caption, app.caption);
+            FillRect(memory, &client, app.page);
             DrawIconEx(
                 memory,
                 scale(16, app.dpi),
@@ -1926,7 +1934,7 @@ unsafe fn open_window(app: &mut App, offscreen: bool) -> HWND {
         cyBottomHeight: 1,
     };
     DwmExtendFrameIntoClientArea(hwnd, &margins);
-    let caption = 0x00fcf7f2_u32;
+    let caption = view::BACKGROUND;
     let rounded = 2_u32;
     DwmSetWindowAttribute(
         hwnd,

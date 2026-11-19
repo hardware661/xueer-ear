@@ -6,13 +6,11 @@ use windows_sys::Win32::{
     Graphics::{Gdi::HDC, GdiPlus as gp},
 };
 
-pub const BACKGROUND: u32 = 0x00fffcfa;
+/// 页面底色 #F2F2F7（COLORREF 是 BGR）
+pub const BACKGROUND: u32 = 0x00f7f2f2;
 pub const WIDTH: i32 = 400;
 pub const HEADER: i32 = 42;
-pub const HEIGHT: i32 = 704;
-pub fn body_y(y: i32) -> i32 {
-    y
-}
+pub const HEIGHT: i32 = 544;
 // 主色：深灰（雪耳黑白灰，原来是绿色）
 const GREEN: u32 = 0xff2c2c2e;
 const LINE: u32 = 0xffe5eaf0;
@@ -171,139 +169,70 @@ impl Drop for Canvas {
     }
 }
 
+/// 卡片的位置（96 DPI）：状态卡、「听写」组、「文字」组、更多设置
+pub const CARDS: [(f32, f32); 4] = [(52., 72.), (170., 132.), (336., 132.), (484., 44.)];
+/// 一行多高
+pub const ROW: f32 = 44.;
+/// 卡片白
+pub const CARD: u32 = 0x00ffffff;
+
+/// 系统设置式：浅灰底上几张白色圆角卡片；状态卡里是小麦克风、波形（文字和开关是子控件）
 pub unsafe fn background(dc: HDC, dpi: u32, enabled: bool, peak: u32, frame: u64) {
     let Some(c) = Canvas::new(dc, dpi) else {
         return;
     };
-    let accent = if enabled { GREEN } else { 0xff8190a2 };
-    c.ellipse(
-        150.,
-        58.,
-        100.,
-        100.,
-        if enabled { 0xffe8e8ed } else { 0xfff0f3f7 },
-    );
-    c.ellipse(162., 70., 76., 76., accent);
-    c.rounded(193., 86., 14., 28., 7., 0xffffffff, false);
-    c.arc(186., 96., 28., 28., 0., 180., 2.5, 0xffffffff);
-    c.line(200., 124., 200., 134., 2.5, 0xffffffff);
-    c.line(192., 134., 208., 134., 2.5, 0xffffffff);
-    for i in 0..28 {
+    for (i, (y, h)) in CARDS.into_iter().enumerate() {
+        c.rounded(16., y, 368., h, 10., 0xffffffff, false);
+        if i == 0 {
+            continue;
+        }
+        // 卡片里的行之间一条细线，从字的左边开始（像 macOS 设置）
+        let mut line = y + ROW;
+        while line < y + h - 1. {
+            c.line(32., line, 384., line, 1., 0xffe5e5ea);
+            line += ROW;
+        }
+    }
+    // 小麦克风：开着是深灰底白麦，关着是浅灰底灰麦
+    let (fill, ink) = if enabled {
+        (GREEN, 0xffffffff)
+    } else {
+        (0xffe5e5ea, 0xff8e8e93)
+    };
+    c.ellipse(32., 66., 44., 44., fill);
+    c.rounded(49., 76., 10., 17., 5., ink, false);
+    c.arc(45., 82., 18., 18., 0., 180., 1.8, ink);
+    c.line(54., 100., 54., 104., 1.8, ink);
+    // 波形：说话时随音量跳，平时是一排小点
+    for i in 0..22 {
         let activity = (peak as f32 / 8000.).clamp(0., 1.);
         let shape = ((i as f32 * 1.13 - frame as f32 * 0.32).sin().abs() * 0.75 + 0.25)
-            * (1. - (i as f32 - 14.).abs() / 22.);
-        let h = if peak > 0 {
-            5. + 16. * activity * shape
-        } else {
-            4. + 2. * ((i as f32 * 1.13).sin().abs())
-        };
+            * (1. - (i as f32 - 11.).abs() / 16.);
+        let h = if peak > 0 { 3. + 12. * activity * shape } else { 3. };
         c.rounded(
-            90.5 + i as f32 * 8.,
-            174. - h / 2.,
+            92. + i as f32 * 6.,
+            102. - h / 2.,
             3.,
             h,
             1.5,
-            if peak > 0 && enabled {
-                accent
-            } else {
-                0xffcbd4df
-            },
+            if peak > 0 && enabled { GREEN } else { 0xffd1d1d6 },
             false,
         );
     }
-    for y in [230., 288., 346., 404., 462., 520., 578., 636.] {
-        c.line(20., y, 380., y, 1., LINE);
-    }
-    // 每行左边的小图标：服务、快捷键、麦克风、静音收句、热词、历史、更多设置
-    let gear = (0..48)
-        .map(|i| {
-            let a = i as f32 * std::f32::consts::TAU / 48.;
-            let r = if matches!(i % 6, 1..=3) { 9. } else { 7. };
-            (30. + a.cos() * r, 259. + a.sin() * r)
-        })
-        .collect::<Vec<_>>();
-    c.polygon(&gear, MUTED, true);
-    c.arc(27., 256., 6., 6., 0., 360., 1.5, MUTED);
-    // 快捷键：一块小键盘
-    c.rounded(20., 310., 20., 14., 2.5, MUTED, true);
-    for row in 0..2 {
-        for col in 0..5 {
-            c.ellipse(
-                23. + col as f32 * 3.5,
-                313. + row as f32 * 3.5,
-                1.3,
-                1.3,
-                MUTED,
-            );
-        }
-    }
-    c.line(25., 321., 35., 321., 1.3, MUTED);
-    // 麦克风
-    c.rounded(27., 365., 6., 11., 3., MUTED, true);
-    c.arc(24., 369., 12., 12., 0., 180., 1.5, MUTED);
-    c.line(30., 381., 30., 385., 1.5, MUTED);
-    c.line(27., 385., 33., 385., 1.5, MUTED);
-    // 静音收句：钟
-    c.arc(21., 424., 18., 18., 0., 360., 1.5, MUTED);
-    c.line(30., 427., 30., 433., 1.5, MUTED);
-    c.line(30., 433., 34., 435., 1.5, MUTED);
-    // 热词：书签
-    c.polygon(
-        &[
-            (24., 482.),
-            (36., 482.),
-            (36., 500.),
-            (30., 495.),
-            (24., 500.),
-        ],
-        MUTED,
-        true,
-    );
-    // 历史：三行字
-    for (i, w) in [18., 12., 15.].iter().enumerate() {
-        c.line(
-            21.,
-            544. + i as f32 * 5.5,
-            21. + w,
-            544. + i as f32 * 5.5,
-            1.5,
-            MUTED,
-        );
-    }
-    // 翻译：「文」「A」两块错开叠着
-    c.rounded(20., 598., 12., 12., 2.5, MUTED, true);
-    c.rounded(27., 605., 12., 12., 2.5, 0xffffffff, false);
-    c.rounded(27., 605., 12., 12., 2.5, MUTED, true);
-    c.line(23., 601.5, 29., 601.5, 1.2, MUTED);
-    c.line(26., 601.5, 26., 607., 1.2, MUTED);
-    c.line(30., 615., 33., 607.5, 1.2, MUTED);
-    c.line(33., 607.5, 36., 615., 1.2, MUTED);
-    c.line(31., 612.5, 35., 612.5, 1.2, MUTED);
-    // 更多设置：两条滑杆
-    for (y, knob) in [(661., 26.), (669., 34.)] {
-        c.line(21., y, 39., y, 1.5, MUTED);
-        c.ellipse(knob - 2.5, y - 2.5, 5., 5., MUTED);
-    }
 }
 
+/// 行右边的值：灰字（由调用方写）+ 一个小 ›；按下时整块浅灰
 pub unsafe fn value_button(dc: HDC, dpi: u32, width: i32, height: i32, pressed: bool) {
     let Some(c) = Canvas::new(dc, dpi) else {
         return;
     };
     let w = width as f32 * 96. / dpi as f32;
     let h = height as f32 * 96. / dpi as f32;
-    c.rounded(
-        0.5,
-        0.5,
-        w - 1.,
-        h - 1.,
-        6.,
-        if pressed { 0xffedf3f8 } else { 0xfffcfdff },
-        false,
-    );
-    c.rounded(0.5, 0.5, w - 1., h - 1., 6., 0xffdbe3ec, true);
-    c.line(w - 23., h / 2. - 2., w - 19., h / 2. + 2., 1.5, MUTED);
-    c.line(w - 19., h / 2. + 2., w - 15., h / 2. - 2., 1.5, MUTED);
+    if pressed {
+        c.rounded(0., 2., w, h - 4., 6., 0xfff2f2f7, false);
+    }
+    c.line(w - 12., h / 2. - 4., w - 8., h / 2., 1.6, 0xffc7c7cc);
+    c.line(w - 8., h / 2., w - 12., h / 2. + 4., 1.6, 0xffc7c7cc);
 }
 
 pub unsafe fn menu_row(dc: HDC, dpi: u32, rect: &RECT, hover: bool, checked: bool) {
@@ -344,10 +273,10 @@ pub unsafe fn update_bubble(dc: HDC, dpi: u32, available: bool) {
         return;
     };
     let h = if available { 126. } else { 78. };
-    c.rounded(14., 95., 268., h, 10., 0x180f172a, false);
-    c.rounded(12., 92., 268., h, 10., 0xfffafcff, false);
-    c.rounded(12., 92., 268., h, 10., 0xffdbe3ec, true);
-    c.polygon(&[(24., 93.), (30., 86.), (36., 93.)], 0xfffafcff, false);
+    c.rounded(122., 49., 264., h, 10., 0x180f172a, false);
+    c.rounded(120., 46., 264., h, 10., 0xffffffff, false);
+    c.rounded(120., 46., 264., h, 10., 0xffd1d1d6, true);
+    c.polygon(&[(278., 47.), (284., 40.), (290., 47.)], 0xffffffff, false);
 }
 
 pub unsafe fn update_badge(dc: HDC, dpi: u32) {
