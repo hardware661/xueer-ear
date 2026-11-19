@@ -7,6 +7,9 @@ use windows_sys::Win32::{
     UI::{Controls::*, WindowsAndMessaging::*},
 };
 
+/// 菜单底色：纯白（和面板的白卡片一致）
+const BACKGROUND: u32 = 0x00ffffff;
+
 struct Item {
     text: Vec<u16>,
     font: HFONT,
@@ -31,6 +34,18 @@ pub unsafe fn popup(
     dpi: u32,
 ) -> usize {
     show(hwnd, x, y, choices, font, dpi, TPM_LEFTALIGN | TPM_TOPALIGN)
+}
+
+/// 在按钮下面弹出（右上角对齐）
+pub unsafe fn popup_right(
+    hwnd: HWND,
+    x: i32,
+    y: i32,
+    choices: &[(usize, String, bool)],
+    font: HFONT,
+    dpi: u32,
+) -> usize {
+    show(hwnd, x, y, choices, font, dpi, TPM_RIGHTALIGN | TPM_TOPALIGN)
 }
 
 /// 在鼠标处弹出（托盘用：任务栏在下面时往上长、在右边时往左长，由系统按屏幕边缘自动翻）
@@ -101,8 +116,16 @@ unsafe fn show(
         info.cch = (item.text.len() - 1) as u32;
         InsertMenuItemW(menu, u32::MAX, 1, &info);
     }
+    // 行之间、上下留白的地方也是白底
+    let back = CreateSolidBrush(BACKGROUND);
+    let mut info: MENUINFO = mem::zeroed();
+    info.cbSize = mem::size_of::<MENUINFO>() as u32;
+    info.fMask = MIM_BACKGROUND;
+    info.hbrBack = back;
+    SetMenuInfo(menu, &info);
     let chosen = TrackPopupMenu(menu, TPM_RETURNCMD | align, x, y, 0, hwnd, ptr::null());
     DestroyMenu(menu);
+    DeleteObject(back);
     PostMessageW(hwnd, WM_NULL, 0, 0);
     chosen as usize
 }
@@ -114,7 +137,7 @@ pub unsafe fn measure(hwnd: HWND, value: *mut MEASUREITEMSTRUCT) -> bool {
     }
     let item = &*(value.itemData as *const Item);
     if item.separator {
-        value.itemHeight = scale(9, item.dpi) as u32;
+        value.itemHeight = scale(11, item.dpi) as u32;
         value.itemWidth = scale(170, item.dpi) as u32;
         return true;
     }
@@ -129,9 +152,9 @@ pub unsafe fn measure(hwnd: HWND, value: *mut MEASUREITEMSTRUCT) -> bool {
     );
     SelectObject(dc, previous);
     ReleaseDC(hwnd, dc);
-    value.itemHeight = scale(32, item.dpi) as u32;
+    value.itemHeight = scale(30, item.dpi) as u32;
     value.itemWidth =
-        (size.cx + scale(54, item.dpi)).clamp(scale(170, item.dpi), scale(410, item.dpi)) as u32;
+        (size.cx + scale(56, item.dpi)).clamp(scale(180, item.dpi), scale(410, item.dpi)) as u32;
     true
 }
 
@@ -141,16 +164,16 @@ pub unsafe fn draw(value: &DRAWITEMSTRUCT) -> bool {
     }
     let item = &*(value.itemData as *const Item);
     let selected = value.itemState & ODS_SELECTED != 0 && !item.label;
-    let brush = CreateSolidBrush(0x00fdfdfd);
+    let brush = CreateSolidBrush(BACKGROUND);
     FillRect(value.hDC, &value.rcItem, brush);
     DeleteObject(brush);
     if item.separator {
-        let line = CreateSolidBrush(0x00f0eae5);
+        let line = CreateSolidBrush(0x00eae5e5);
         let middle = (value.rcItem.top + value.rcItem.bottom) / 2;
         let rect = windows_sys::Win32::Foundation::RECT {
-            left: value.rcItem.left + scale(12, item.dpi),
+            left: value.rcItem.left + scale(14, item.dpi),
             top: middle,
-            right: value.rcItem.right - scale(12, item.dpi),
+            right: value.rcItem.right - scale(14, item.dpi),
             bottom: middle + 1,
         };
         FillRect(value.hDC, &rect, line);
@@ -159,11 +182,12 @@ pub unsafe fn draw(value: &DRAWITEMSTRUCT) -> bool {
     }
     crate::view::menu_row(value.hDC, item.dpi, &value.rcItem, selected, item.checked);
     SetBkMode(value.hDC, TRANSPARENT as i32);
-    SetTextColor(value.hDC, if item.label { 0x00857a70 } else { 0x00382f27 });
+    // 只读的说明行灰字，能点的近黑字
+    SetTextColor(value.hDC, if item.label { 0x00938e8e } else { 0x001e1c1c });
     let previous = SelectObject(value.hDC, item.font);
     let mut rect = value.rcItem;
-    rect.left += scale(if item.label { 14 } else { 34 }, item.dpi);
-    rect.right -= scale(14, item.dpi);
+    rect.left += scale(if item.label { 15 } else { 32 }, item.dpi);
+    rect.right -= scale(15, item.dpi);
     DrawTextW(
         value.hDC,
         item.text.as_ptr(),
@@ -188,15 +212,15 @@ pub unsafe fn render(
         .iter()
         .map(|(_, text, _)| {
             let separator = text.is_empty();
-            (scale(if separator { 9 } else { 32 }, dpi), separator)
+            (scale(if separator { 11 } else { 30 }, dpi), separator)
         })
         .collect();
-    let pad = scale(4, dpi);
+    let pad = scale(5, dpi);
     let height = rows.iter().map(|(h, _)| h).sum::<i32>() + pad * 2;
     let dc = CreateCompatibleDC(screen);
     let bitmap = CreateCompatibleBitmap(screen, width, height);
     let old = SelectObject(dc, bitmap);
-    let background = CreateSolidBrush(0x00fdfdfd);
+    let background = CreateSolidBrush(BACKGROUND);
     let whole = windows_sys::Win32::Foundation::RECT {
         left: 0,
         top: 0,

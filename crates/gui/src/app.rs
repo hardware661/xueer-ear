@@ -1239,10 +1239,11 @@ impl App {
     unsafe fn popup_under(&self, button: usize, choices: &[(usize, String, bool)]) -> usize {
         let mut rect = mem::zeroed();
         GetWindowRect(self.control(button), &mut rect);
-        crate::menu::popup(
+        // 值是右对齐的灰字，菜单也贴着它的右边往下弹
+        crate::menu::popup_right(
             self.hwnd,
-            rect.left,
-            rect.bottom + scale(4, self.dpi),
+            rect.right,
+            rect.bottom + scale(2, self.dpi),
             choices,
             self.fonts[3],
             self.dpi,
