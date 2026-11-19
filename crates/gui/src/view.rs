@@ -1,9 +1,7 @@
 //! Antialiased Fluent decoration; native child controls retain input and focus.
 #![allow(unsafe_op_in_unsafe_fn)]
 use std::{mem, ptr};
-use windows_sys::Win32::{
-    Graphics::{Gdi::HDC, GdiPlus as gp},
-};
+use windows_sys::Win32::Graphics::{Gdi::HDC, GdiPlus as gp};
 
 /// 页面底色 #F2F2F7（COLORREF 是 BGR）
 pub const BACKGROUND: u32 = 0x00f7f2f2;
@@ -207,14 +205,22 @@ pub unsafe fn background(dc: HDC, dpi: u32, enabled: bool, peak: u32, frame: u64
         let activity = (peak as f32 / 8000.).clamp(0., 1.);
         let shape = ((i as f32 * 1.13 - frame as f32 * 0.32).sin().abs() * 0.75 + 0.25)
             * (1. - (i as f32 - 11.).abs() / 16.);
-        let h = if peak > 0 { 3. + 12. * activity * shape } else { 3. };
+        let h = if peak > 0 {
+            3. + 12. * activity * shape
+        } else {
+            3.
+        };
         c.rounded(
             92. + i as f32 * 6.,
             102. - h / 2.,
             3.,
             h,
             1.5,
-            if peak > 0 && enabled { GREEN } else { 0xffd1d1d6 },
+            if peak > 0 && enabled {
+                GREEN
+            } else {
+                0xffd1d1d6
+            },
             false,
         );
     }

@@ -491,10 +491,7 @@ impl App {
             0,
             wide("STATIC").as_ptr(),
             wide(text).as_ptr(),
-            WS_CHILD
-                | WS_VISIBLE
-                | SS_LEFT
-                | SS_ENDELLIPSIS,
+            WS_CHILD | WS_VISIBLE | SS_LEFT | SS_ENDELLIPSIS,
             0,
             0,
             0,

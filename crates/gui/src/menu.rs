@@ -105,7 +105,10 @@ impl Menu {
             let mut size: SIZE = mem::zeroed();
             GetTextExtentPoint32W(dc, row.text.as_ptr(), row.text.len() as i32, &mut size);
             let left = if row.label { LABEL_LEFT } else { TEXT_LEFT };
-            widest = f32::max(widest, size.cx as f32 * 96. / dpi as f32 * 1.12 + left + TEXT_RIGHT);
+            widest = f32::max(
+                widest,
+                size.cx as f32 * 96. / dpi as f32 * 1.12 + left + TEXT_RIGHT,
+            );
         }
         SelectObject(dc, old);
         DeleteDC(dc);
@@ -219,7 +222,14 @@ unsafe fn paint(menu: &Menu, backdrop: Option<u32>) -> (HBITMAP, i32, i32) {
     info.bmiHeader.biBitCount = 32;
     info.bmiHeader.biCompression = BI_RGB;
     let mut bits = ptr::null_mut();
-    let bitmap = CreateDIBSection(ptr::null_mut(), &info, DIB_RGB_COLORS, &mut bits, ptr::null_mut(), 0);
+    let bitmap = CreateDIBSection(
+        ptr::null_mut(),
+        &info,
+        DIB_RGB_COLORS,
+        &mut bits,
+        ptr::null_mut(),
+        0,
+    );
     if bitmap.is_null() {
         return (bitmap, w, h);
     }
@@ -271,7 +281,15 @@ unsafe fn paint(menu: &Menu, backdrop: Option<u32>) -> (HBITMAP, i32, i32) {
     for (i, row) in menu.rows.iter().enumerate() {
         let rh = row.height();
         if row.separator {
-            line(g, x + 12., top + rh / 2., x + cw - 12., top + rh / 2., 1., SEPARATOR);
+            line(
+                g,
+                x + 12.,
+                top + rh / 2.,
+                x + cw - 12.,
+                top + rh / 2.,
+                1.,
+                SEPARATOR,
+            );
             top += rh;
             continue;
         }
@@ -302,7 +320,15 @@ unsafe fn paint(menu: &Menu, backdrop: Option<u32>) -> (HBITMAP, i32, i32) {
             let mut brush = ptr::null_mut();
             if gp::GdipCreateSolidFill(ink, &mut brush) == 0 {
                 gp::GdipResetWorldTransform(g);
-                gp::GdipDrawString(g, row.text.as_ptr(), row.text.len() as i32, font, &rect, format, brush.cast());
+                gp::GdipDrawString(
+                    g,
+                    row.text.as_ptr(),
+                    row.text.len() as i32,
+                    font,
+                    &rect,
+                    format,
+                    brush.cast(),
+                );
                 gp::GdipScaleWorldTransform(g, s, s, gp::MatrixOrderPrepend);
                 gp::GdipDeleteBrush(brush.cast());
             }
@@ -341,7 +367,9 @@ unsafe fn present(window: HWND, menu: &Menu) {
         SourceConstantAlpha: menu.alpha,
         AlphaFormat: AC_SRC_ALPHA as u8,
     };
-    UpdateLayeredWindow(window, screen, &position, &size, memory, &source, 0, &blend, ULW_ALPHA);
+    UpdateLayeredWindow(
+        window, screen, &position, &size, memory, &source, 0, &blend, ULW_ALPHA,
+    );
     SelectObject(memory, old);
     DeleteDC(memory);
     ReleaseDC(ptr::null_mut(), screen);
@@ -355,7 +383,12 @@ unsafe fn finish(menu: &mut Menu, chosen: usize) {
     }
 }
 
-unsafe extern "system" fn procedure(hwnd: HWND, message: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
+unsafe extern "system" fn procedure(
+    hwnd: HWND,
+    message: u32,
+    wparam: WPARAM,
+    lparam: LPARAM,
+) -> LRESULT {
     if message == WM_NCCREATE {
         let creation = &*(lparam as *const CREATESTRUCTW);
         SetWindowLongPtrW(hwnd, GWLP_USERDATA, creation.lpCreateParams as isize);
@@ -365,7 +398,12 @@ unsafe extern "system" fn procedure(hwnd: HWND, message: u32, wparam: WPARAM, lp
         return DefWindowProcW(hwnd, message, wparam, lparam);
     }
     let menu = &mut *raw;
-    let point = || ((lparam & 0xffff) as i16 as i32, ((lparam >> 16) & 0xffff) as i16 as i32);
+    let point = || {
+        (
+            (lparam & 0xffff) as i16 as i32,
+            ((lparam >> 16) & 0xffff) as i16 as i32,
+        )
+    };
     match message {
         WM_MOUSEACTIVATE => MA_NOACTIVATE as isize,
         WM_MOUSEMOVE => {
@@ -459,12 +497,18 @@ unsafe fn show(
     RegisterClassW(&class);
     let mut menu = Box::new(Menu::new(choices, font, dpi));
     let (w, h) = menu.size();
-    let (card_w, card_h) = (scale(menu.width, dpi) as i32, scale(menu.height, dpi) as i32);
+    let (card_w, card_h) = (
+        scale(menu.width, dpi) as i32,
+        scale(menu.height, dpi) as i32,
+    );
     let shadow = scale(SHADOW, dpi) as i32;
     // 卡片左上角，再按屏幕工作区收进来；下面放不下就翻到上面
     let mut monitor: MONITORINFO = mem::zeroed();
     monitor.cbSize = mem::size_of::<MONITORINFO>() as u32;
-    GetMonitorInfoW(MonitorFromPoint(POINT { x, y }, MONITOR_DEFAULTTONEAREST), &mut monitor);
+    GetMonitorInfoW(
+        MonitorFromPoint(POINT { x, y }, MONITOR_DEFAULTTONEAREST),
+        &mut monitor,
+    );
     let work: RECT = monitor.rcWork;
     let (mut left, mut top) = match anchor {
         Anchor::Left => (x, y),
@@ -478,7 +522,10 @@ unsafe fn show(
     }
     left = left.clamp(work.left, (work.right - card_w).max(work.left));
     top = top.clamp(work.top, (work.bottom - card_h).max(work.top));
-    menu.origin = POINT { x: left - shadow, y: top - shadow };
+    menu.origin = POINT {
+        x: left - shadow,
+        y: top - shadow,
+    };
     menu.lift = if upward { 6. } else { -6. };
     let raw: *mut Menu = &mut *menu;
     let window = CreateWindowExW(
@@ -528,22 +575,48 @@ unsafe fn show(
 }
 
 /// 在按钮下面弹出（左上角对齐）
-pub unsafe fn popup(hwnd: HWND, x: i32, y: i32, choices: &[(usize, String, bool)], font: HFONT, dpi: u32) -> usize {
+pub unsafe fn popup(
+    hwnd: HWND,
+    x: i32,
+    y: i32,
+    choices: &[(usize, String, bool)],
+    font: HFONT,
+    dpi: u32,
+) -> usize {
     show(hwnd, x, y, choices, font, dpi, Anchor::Left)
 }
 
 /// 在按钮下面弹出（右上角对齐）
-pub unsafe fn popup_right(hwnd: HWND, x: i32, y: i32, choices: &[(usize, String, bool)], font: HFONT, dpi: u32) -> usize {
+pub unsafe fn popup_right(
+    hwnd: HWND,
+    x: i32,
+    y: i32,
+    choices: &[(usize, String, bool)],
+    font: HFONT,
+    dpi: u32,
+) -> usize {
     show(hwnd, x, y, choices, font, dpi, Anchor::Right)
 }
 
 /// 在鼠标处弹出（托盘用：往左上长，碰到屏幕边自动收进来）
-pub unsafe fn popup_at(hwnd: HWND, x: i32, y: i32, choices: &[(usize, String, bool)], font: HFONT, dpi: u32) -> usize {
+pub unsafe fn popup_at(
+    hwnd: HWND,
+    x: i32,
+    y: i32,
+    choices: &[(usize, String, bool)],
+    font: HFONT,
+    dpi: u32,
+) -> usize {
     show(hwnd, x, y, choices, font, dpi, Anchor::Cursor)
 }
 
 /// 离屏把一份菜单画成位图（核对外观用），垫页面灰底；`hover` 是高亮第几项。返回位图和宽高。
-pub unsafe fn render(choices: &[(usize, String, bool)], font: HFONT, dpi: u32, hover: usize) -> (HBITMAP, i32, i32) {
+pub unsafe fn render(
+    choices: &[(usize, String, bool)],
+    font: HFONT,
+    dpi: u32,
+    hover: usize,
+) -> (HBITMAP, i32, i32) {
     let mut menu = Menu::new(choices, font, dpi);
     menu.hover = Some(hover).filter(|&i| menu.rows.get(i).is_some_and(Row::clickable));
     paint(&menu, Some(BACKDROP))

@@ -1140,7 +1140,11 @@ mod tests {
     // 点了没反应的老毛病：按钮不在 buttons() 里，命中测试就当标题栏拖窗口，松手消息根本收不到
     #[test]
     fn every_clickable_part_is_a_button_for_hit_testing() {
-        let layout = Layout { w: 420, h: 300, divider: 144 };
+        let layout = Layout {
+            w: 420,
+            h: 300,
+            divider: 144,
+        };
         let buttons = layout.buttons();
         for part in [
             layout.swap(),
