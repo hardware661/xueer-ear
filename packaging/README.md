@@ -2,7 +2,7 @@
 
 `windows.yml` 在 push、PR 和手动触发时运行 Windows 单元测试、MSVC release 构建、静态 CRT/资源检查，并生成便携版与安装版。只有 `v*` tag 的成功构建会发布 Release；tag 必须与 Cargo workspace 当前版本一致。版本没有写死在脚本里。
 
-GitHub runner 使用 `windows-2022`，原生 x64 MSVC、Rust stable 和 `-C target-feature=+crt-static`。通过预装 Visual Studio developer shell 提供 cl/link/rc，Opus 和 VAD 从 Cargo 已锁定的源码静态构建。`verify_payload.py` 检查三份 PE 为 x64、无动态 CRT/Opus 依赖，以及 GUI 图标资源 100/101、manifest 的 highestAvailable/PerMonitorV2；不运行 GUI。
+GitHub runner 使用 `windows-2022`，原生 x64 MSVC、Rust stable 和 `-C target-feature=+crt-static`。通过预装 Visual Studio developer shell 提供 cl/link/rc，Opus 和 VAD 从 Cargo 已锁定的源码静态构建。`verify_payload.py` 检查三份 PE 为 x64、无动态 CRT/Opus 依赖，以及 GUI 图标资源 100/101、manifest 的 asInvoker/PerMonitorV2；不运行 GUI。
 
 ## 本地调用
 
@@ -24,7 +24,7 @@ GitHub runner 使用 `windows-2022`，原生 x64 MSVC、Rust stable 和 `-C targ
 
 ## 安装与卸载契约
 
-用户级默认目录为 `%LOCALAPPDATA%\Programs\雪耳`，开始菜单名称为“雪耳”，桌面快捷方式可选。升级安装前提取新 GUI 和 broker 到临时目录，调用新 GUI `--quit`；卸载前调用安装目录 GUI `--quit`。两者都等待进程退出码 0，失败中止。ShellExec 允许 GUI 自身 highestAvailable 清单在需要时提示 UAC，拒绝授权不会继续覆盖文件。
+用户级默认目录为 `%LOCALAPPDATA%\Programs\雪耳`，开始菜单名称为“雪耳”，桌面快捷方式可选。升级安装前提取新 GUI 和 broker 到临时目录，调用新 GUI `--quit`；卸载前调用安装目录 GUI `--quit`。两者都等待进程退出码 0，失败中止。GUI 默认普通权限运行（1.2.0 起 asInvoker）；正在运行的旧版或打开了「以管理员身份运行」的雪耳是管理员身份，普通权限的 `--quit` 发不过去，这时以 `runas` 再请求一次（会提示 UAC），拒绝授权不会继续覆盖文件。
 
 编译器目录存在 `Languages\ChineseSimplified.isl` 时提供简体中文向导，否则使用内置英文向导；两种情况下应用名称、目录和快捷方式均为中文，不依赖下载社区译本。
 

@@ -82,6 +82,14 @@ begin
   Result := ShellExec('open', Application, '--quit', WorkingDirectory, SW_HIDE, ewWaitUntilTerminated, ExitCode);
   if Result then
     Result := ExitCode = 0;
+  // 1.2.0 以前的雪耳（以及打开了「以管理员身份运行」的）是管理员身份，
+  // 普通权限的退出请求发不过去：再以管理员身份请求一次（会弹 UAC）
+  if not Result then
+  begin
+    Result := ShellExec('runas', Application, '--quit', WorkingDirectory, SW_HIDE, ewWaitUntilTerminated, ExitCode);
+    if Result then
+      Result := ExitCode = 0;
+  end;
 end;
 
 function PrepareToInstall(var NeedsRestart: Boolean): String;

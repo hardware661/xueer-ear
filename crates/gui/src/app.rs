@@ -123,6 +123,23 @@ unsafe fn open_data_file(name: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// 文件最后 `bytes` 字节（日志可能很大），切在完整的一行开头
+fn tail(path: &std::path::Path, bytes: u64) -> Option<String> {
+    use std::io::{Seek, SeekFrom};
+    let mut file = File::open(path).ok()?;
+    let len = file.metadata().ok()?.len();
+    file.seek(SeekFrom::Start(len.saturating_sub(bytes))).ok()?;
+    let mut data = Vec::new();
+    file.read_to_end(&mut data).ok()?;
+    let text = String::from_utf8_lossy(&data).into_owned();
+    Some(if len > bytes {
+        text.split_once('\n')
+            .map_or(text.clone(), |(_, rest)| rest.to_owned())
+    } else {
+        text
+    })
+}
+
 /// 热词表的内容；不存在返回空，太大或读不了返回错误。
 fn read_hotwords() -> Result<String, String> {
     let path = data_dir()?.join("hotwords.txt");
@@ -429,6 +446,8 @@ struct App {
     update_visible: bool,
     update_dismissed: Option<String>,
     update_error: String,
+    /// 第一次打开：后台服务自动开好，状态那里写「点一下右 Alt 说话试试」，说过一次话就不再写
+    first_run: bool,
 }
 
 impl App {
@@ -489,6 +508,7 @@ impl App {
             update_visible: false,
             update_dismissed: None,
             update_error,
+            first_run: false,
         }
     }
 
@@ -764,7 +784,23 @@ impl App {
         }
         self.healthy = self.status.as_ref().is_some_and(|s| alive(s.pid));
         let headline = self.headline();
-        self.set_text(LABEL_STATUS, headline);
+        if self.first_run
+            && self
+                .status
+                .as_ref()
+                .is_some_and(|s| matches!(s.phase.as_str(), "armed" | "recognizing" | "connecting"))
+        {
+            self.first_run = false;
+        }
+        if self.first_run && headline == "待机" {
+            let hint = format!(
+                "点一下{}说话试试",
+                crate::prefs::key_name(self.settings.hotkey_vk)
+            );
+            self.set_text(LABEL_STATUS, &hint);
+        } else {
+            self.set_text(LABEL_STATUS, headline);
+        }
         let microphone = self
             .settings
             .microphone
@@ -1372,9 +1408,51 @@ impl App {
     /// 更多设置：文字整理开关、提示音、接管 Win+H、历史保留天数、一次最长听多久。
     unsafe fn text_menu(&mut self) {
         let selected = self.popup_under(LABEL_TEXT_VALUE, &crate::prefs::choices(&self.settings));
-        if let Some(candidate) = crate::prefs::toggle(&self.settings, selected) {
-            self.apply(candidate);
+        if selected == crate::prefs::COPY_DIAGNOSTICS {
+            let text = self.diagnostics();
+            match copy_text(self.hwnd, &text) {
+                Ok(()) => self.say("诊断信息已复制，提 issue 时贴上就行"),
+                Err(error) => {
+                    self.command_error = error;
+                    self.refresh();
+                }
+            }
+            return;
         }
+        if let Some(candidate) = crate::prefs::toggle(&self.settings, selected) {
+            let admin = candidate.run_as_admin;
+            let changed = admin != self.settings.run_as_admin;
+            self.apply(candidate);
+            if changed && self.settings.run_as_admin == admin {
+                self.say("重新打开雪耳后生效");
+            }
+        }
+    }
+
+    /// 「复制诊断信息」：版本、系统、几项设置、后台状态、service.log 最后几行（不含说过的话）
+    unsafe fn diagnostics(&self) -> String {
+        let log = data_dir()
+            .ok()
+            .and_then(|dir| tail(&dir.join("service.log"), 64 * 1024))
+            .unwrap_or_default();
+        let headline = self.headline();
+        let status = match self.status.as_ref() {
+            Some(s) if !s.last_error.is_empty() => format!("{headline}（{}）", s.last_error),
+            _ => headline.to_owned(),
+        };
+        let folders: Vec<(&str, String)> = ["TEMP", "LOCALAPPDATA", "APPDATA", "USERPROFILE"]
+            .into_iter()
+            .filter_map(|name| std::env::var(name).ok().map(|path| (name, path)))
+            .collect();
+        let folders: Vec<(&str, &str)> = folders.iter().map(|(n, p)| (*n, p.as_str())).collect();
+        crate::prefs::diagnostics(
+            env!("CARGO_PKG_VERSION"),
+            &crate::system::windows_version(),
+            &self.settings,
+            &status,
+            &log,
+            &folders,
+        )
     }
 
     unsafe fn draw_button(&self, draw: &DRAWITEMSTRUCT) {
@@ -1959,6 +2037,20 @@ unsafe fn open_window(app: &mut App, offscreen: bool) -> HWND {
 pub fn run() {
     unsafe {
         SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
+        let settings = xueer_ear_backend::settings::Settings::load_default().unwrap_or_default();
+        // 「以管理员身份运行」开着、自己又不是：以管理员身份重开（会弹 UAC），这个进程退出；
+        // 点了「否」就照常以普通身份运行。要在占住单实例之前做，新进程才能接着占
+        if settings.run_as_admin && !crate::system::elevated() {
+            let args: Vec<String> = std::env::args().skip(1).collect();
+            if crate::system::relaunch_elevated(&args.join(" ")) {
+                return;
+            }
+        }
+        // 第一次打开（还没有设置文件）：存一份默认设置，直接开好后台服务
+        let first_run = xueer_ear_backend::settings::Settings::modified_default().is_none();
+        if first_run {
+            let _ = settings.save_default();
+        }
         let mutex = Handle(CreateMutexW(
             ptr::null(),
             0,
@@ -1973,14 +2065,17 @@ pub fn run() {
             return;
         }
         let mut app = Box::new(App::new());
+        app.first_run = first_run;
         let hwnd = open_window(&mut app, false);
         if hwnd.is_null() {
             return;
         }
-        // 开机自启：不弹窗，只在托盘，并自动开启后台服务
-        if std::env::args_os().any(|arg| arg == "--autostart") {
+        // 开机自启：不弹窗，只在托盘，并自动开启后台服务。第一次打开也直接开好后台服务
+        let autostart = std::env::args_os().any(|arg| arg == "--autostart");
+        if autostart || first_run {
             PostMessageW(hwnd, WM_COMMAND, START, 0);
-        } else {
+        }
+        if !autostart {
             ShowWindow(hwnd, SW_SHOW);
         }
         let mut message: MSG = mem::zeroed();

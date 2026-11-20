@@ -95,7 +95,8 @@ def check_stage(path, version, static_crt=True):
         if name == "xueer-ear.exe":
             assert pe.resource(14, 100) and pe.resource(14, 101), "both GUI icons required"
             manifest = pe.resource(24, 1).decode("utf-8-sig")
-            assert 'level="highestAvailable"' in manifest and "PerMonitorV2" in manifest
+            # 1.2.0 起默认普通权限运行（打开时不弹确认框），要管理员身份在设置里开
+            assert 'level="asInvoker"' in manifest and "PerMonitorV2" in manifest
 
 
 def check_zip(path, version):

@@ -31,6 +31,8 @@ pub struct Settings {
     pub max_listen_minutes: u32,
     /// 晓晓提示音（没听清、系统更新后退回），本地播放
     pub sounds_enabled: bool,
+    /// 以管理员身份运行（往管理员权限的窗口里打字要用）。默认关：普通权限就够，打开时不弹确认框
+    pub run_as_admin: bool,
 }
 
 impl Default for Settings {
@@ -46,6 +48,7 @@ impl Default for Settings {
             hotkey_vk: HOTKEY_RIGHT_ALT,
             sounds_enabled: true,
             max_listen_minutes: 30,
+            run_as_admin: false,
         }
     }
 }

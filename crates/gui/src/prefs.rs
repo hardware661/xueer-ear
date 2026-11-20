@@ -11,6 +11,7 @@ pub const ADD_HOTWORD: usize = 1102;
 pub const BUILTIN_HOTWORDS: usize = 1103;
 pub const OPEN_TRANSLATOR: usize = 1104;
 pub const OPEN_TRANSLATE_KEYS: usize = 1105;
+pub const COPY_DIAGNOSTICS: usize = 1106;
 const BASE: usize = 1110;
 const KEY_BASE: usize = 1200;
 const HISTORY_BASE: usize = 1300;
@@ -32,7 +33,7 @@ type Switch = (&'static str, fn(&mut Settings) -> &mut bool);
 type Choice = (usize, String, bool);
 
 /// 「更多设置」里的开关，顺序就是菜单顺序；`GROUPS` 说明每组几个，组之间画分隔线。
-const SWITCHES: [Switch; 10] = [
+const SWITCHES: [Switch; 11] = [
     ("去掉口头禅", |s| &mut s.text.strip_fillers),
     ("中文数字转阿拉伯数字", |s| {
         &mut s.text.normalize_numbers
@@ -48,10 +49,11 @@ const SWITCHES: [Switch; 10] = [
     }),
     ("提示音", |s| &mut s.sounds_enabled),
     ("同时接管 Win+H", |s| &mut s.winh_enabled),
+    ("以管理员身份运行", |s| &mut s.run_as_admin),
     ("记录历史", |s| &mut s.history_enabled),
 ];
-/// 文字整理 7 个、提示音和 Win+H 2 个；「记录历史」和保留天数一组
-const GROUPS: [usize; 2] = [7, 9];
+/// 文字整理 7 个、提示音、Win+H、管理员 3 个；「记录历史」和保留天数一组
+const GROUPS: [usize; 2] = [7, 10];
 
 fn separator() -> Choice {
     (0, String::new(), false)
@@ -83,8 +85,44 @@ pub fn choices(s: &Settings) -> Vec<Choice> {
             s.max_listen_minutes == *minutes,
         )
     }));
+    out.push(separator());
+    out.push((COPY_DIAGNOSTICS, "复制诊断信息".to_owned(), false));
     out
 }
+
+/// 报问题时贴上的诊断信息：版本、系统、几项设置、后台状态、日志最后几行。
+/// 日志里只有数字和错误原因，不记说过的话；用户目录换成环境变量名，不带出用户名
+pub fn diagnostics(
+    version: &str,
+    windows: &str,
+    s: &Settings,
+    status: &str,
+    log: &str,
+    folders: &[(&str, &str)],
+) -> String {
+    let lines: Vec<&str> = log.lines().collect();
+    let tail = lines[lines.len().saturating_sub(DIAGNOSTIC_LINES)..].join("\n");
+    let mut out = format!(
+        "雪耳 {version}\nWindows {windows}\n快捷键 {}；接管 Win+H {}；管理员身份 {}；一次最长听 {} 分钟\n后台：{status}\n\n--- service.log 最后 {} 行 ---\n{tail}\n",
+        key_name(s.hotkey_vk),
+        if s.winh_enabled { "开" } else { "关" },
+        if s.run_as_admin { "开" } else { "关" },
+        s.max_listen_minutes,
+        DIAGNOSTIC_LINES,
+    );
+    // 长的先换（LOCALAPPDATA 在 USERPROFILE 里面）
+    let mut folders = folders.to_vec();
+    folders.sort_by_key(|(_, path)| std::cmp::Reverse(path.len()));
+    for (name, path) in folders {
+        if path.len() > 3 {
+            out = out.replace(path, &format!("%{name}%"));
+        }
+    }
+    out
+}
+
+/// 诊断信息里带几行日志
+const DIAGNOSTIC_LINES: usize = 50;
 
 /// 点了「更多设置」里某项后的新设置；不认识的命令号返回 None。
 pub fn toggle(s: &Settings, id: usize) -> Option<Settings> {
@@ -370,6 +408,7 @@ mod tests {
         assert!(!find(&c, "去掉末尾句号").1);
         assert!(!find(&c, "说「发送」时按回车").1);
         assert!(!find(&c, "同时接管 Win+H").1);
+        assert!(!find(&c, "以管理员身份运行").1);
         assert!(find(&c, "提示音").1);
         assert!(find(&c, "保留 7 天历史").1);
         assert!(!find(&c, "保留 30 天历史").1);
@@ -382,7 +421,10 @@ mod tests {
     fn each_switch_flips_only_itself() {
         let s = Settings::default();
         for (id, text, on) in choices(&s) {
-            if text.is_empty() || text.starts_with("保留") || text.starts_with("一次最长听")
+            if text.is_empty()
+                || text.starts_with("保留")
+                || text.starts_with("一次最长听")
+                || id == COPY_DIAGNOSTICS
             {
                 continue;
             }
@@ -399,7 +441,7 @@ mod tests {
         let s = Settings::default();
         let c = choices(&s);
         let separators = c.iter().filter(|(_, t, _)| t.is_empty()).count();
-        assert_eq!(separators, 3);
+        assert_eq!(separators, 4);
         assert!(c.iter().all(|(id, t, _)| t.is_empty() == (*id == 0)));
         assert!(!c.first().unwrap().1.is_empty() && !c.last().unwrap().1.is_empty());
         assert!(toggle(&s, 0).is_none());
@@ -538,6 +580,38 @@ mod tests {
         assert!(off.iter().any(|(id, t, _)| *id == 2 && t == "开启雪耳"));
         let busy = tray_choices("正在开启", 0xA5, false, true, 1, 2, 3);
         assert!(!busy.iter().any(|(id, _, _)| *id == 2));
+    }
+
+    #[test]
+    fn diagnostics_have_the_essentials_and_no_user_folder() {
+        let log = (1..=60)
+            .map(|i| format!("第 {i} 行"))
+            .collect::<Vec<_>>()
+            .join("\n")
+            + "\n打不开 C:\\Users\\someone\\AppData\\Local\\XueerEar\\history.jsonl";
+        let text = diagnostics(
+            "1.2.0",
+            "11 25H2（26200.7462）",
+            &Settings::default(),
+            "聆听中",
+            &log,
+            &[
+                ("USERPROFILE", "C:\\Users\\someone"),
+                ("LOCALAPPDATA", "C:\\Users\\someone\\AppData\\Local"),
+            ],
+        );
+        assert!(text.starts_with("雪耳 1.2.0\nWindows 11 25H2"), "{text}");
+        assert!(
+            text.contains("快捷键 右 Alt；接管 Win+H 关；管理员身份 关"),
+            "{text}"
+        );
+        assert!(text.contains("后台：聆听中"), "{text}");
+        assert!(
+            !text.contains("第 10 行\n") && text.contains("第 12 行"),
+            "只带最后 50 行"
+        );
+        assert!(text.contains("%LOCALAPPDATA%\\XueerEar"), "{text}");
+        assert!(!text.contains("someone"), "{text}");
     }
 
     #[test]

@@ -9,6 +9,8 @@ mod model;
 #[cfg(any(windows, test))]
 mod prefs;
 #[cfg(windows)]
+mod system;
+#[cfg(windows)]
 mod translate_window;
 mod update;
 #[cfg(windows)]

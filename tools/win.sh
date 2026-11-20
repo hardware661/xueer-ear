@@ -18,7 +18,7 @@ if [ "${1:-}" = pwsh-script ]; then
   args="$(printf ' %s' "$@")"
   # 打包脚本要 cargo、python 和 ISCC；本机都装在 D:\devtool，不在 Windows 的 PATH 里
   # 必须写成一行：多行的 -Command 经 WSL 传到 Windows 后，参数会被拆成单独一行而失效
-  # GUI 清单要求 highestAvailable；测试进程按调用者权限跑（RunAsInvoker），免得 cargo test 报 740
+  # 测试进程按调用者权限跑（RunAsInvoker）：1.2.0 以前 GUI 清单要求 highestAvailable，cargo test 会报 740
   exec "$PWSH" -NoProfile -ExecutionPolicy Bypass -Command "\$env:Path = 'D:\devtool\rust\cargo\bin;D:\devtool\Python\python314;' + \$env:Path; \$env:XUEER_EAR_ISCC = 'D:\devtool\InnoSetup6\ISCC.exe'; \$env:__COMPAT_LAYER = 'RunAsInvoker'; & '$WIN_MIRROR\\${script//\//\\}'$args; exit \$LASTEXITCODE" 2>&1 | tr -d '\r'
   # 带管道的 exec 不会结束本脚本（它跑在管道的子进程里），不在这里退出就会落到下面，把剩下的参数当命令再跑一遍
   exit "${PIPESTATUS[0]}"
@@ -31,7 +31,7 @@ exec "$PWSH" -NoProfile -ExecutionPolicy Bypass -Command "
 \$vs = & \"\${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe\" -latest -products * -property installationPath
 & \"\$vs\Common7\Tools\Launch-VsDevShell.ps1\" -Arch amd64 -HostArch amd64 -SkipAutomaticLocation | Out-Null
 \$env:RUSTFLAGS='-C target-feature=+crt-static'
-# GUI 清单要求 highestAvailable；测试进程按调用者权限跑，免得 cargo test 报 740
+# 测试进程按调用者权限跑（1.2.0 以前 GUI 清单要求 highestAvailable，cargo test 会报 740）
 \$env:__COMPAT_LAYER='RunAsInvoker'
 Set-Location '$WIN_MIRROR'
 $cmd
