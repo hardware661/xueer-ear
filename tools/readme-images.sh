@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # 重新生成 README 配图（docs/images/）：先 tools/win.sh cargo build --release，再跑本脚本。
-# 全是离屏渲染（不在屏幕上弹窗）：听写面板用 --panel-render，控制面板和翻译小窗用 --snapshot；
+# 全是离屏渲染（不在屏幕上弹窗）：听写面板动图用 --panel-frames，控制面板和翻译小窗用 --snapshot；
 # 窗口截图补上 Windows 11 的圆角和阴影。需要 WSL 里的 ImageMagick 7（magick）。
 set -euo pipefail
 root=$(cd "$(dirname "$0")/.." && pwd)
@@ -9,7 +9,9 @@ work_win='D:\projects\_build\ear-readme'
 work=/mnt/d/projects/_build/ear-readme
 out="$root/docs/images"
 rm -rf "$work" && mkdir -p "$work/shots" "$out"
+mkdir -p "$work/frames"
 (cd /mnt/d/projects/_build && cmd.exe /c "$build_win\\xueer-ear-host.exe --panel-render $work_win clear" \
+  && cmd.exe /c "$build_win\\xueer-ear-host.exe --panel-frames $work_win\\frames" \
   && cmd.exe /c "$build_win\\xueer-ear.exe --snapshot $work_win\\shots")
 
 # 窗口截图：圆角 12（1.5 倍缩放下的 8px）+ 柔和阴影，透明底
@@ -24,10 +26,12 @@ window() {
     -define png:color-type=6 "$2"
 }
 
-# 听写面板：说话中（3 倍渲染缩到 2 倍）
+# 听写面板：说话中的动图（2 倍，30 帧每秒，首尾接上），浅色、深色各一张；静图只给分享预览图用
 for theme in "" "-dark"; do
-  magick "$work/panel-speaking$theme.png" -resize 66.67% "$out/panel$theme.png"
+  magick -delay 33x1000 -loop 0 -dispose Background "$work/frames/frame$theme"-0*.png \
+    -quality 82 -define webp:method=6 "$out/panel$theme.webp"
 done
+magick "$work/panel-speaking.png" -resize 66.67% "$work/panel.png"
 # 控制面板：浅色、深色并排
 window "$work/shots/control-panel.png" "$work/cp-light.png"
 window "$work/shots/dark/control-panel.png" "$work/cp-dark.png"
@@ -47,7 +51,7 @@ magick -size 1280x640 gradient:'#f7f7f9-#ebebf0' \
   -font "$fonts/msyh.ttc" -fill '#6e6e73' -pointsize 22 -annotate +96+446 'Windows 11 中文语音输入' \
   -font "$fonts/msyh.ttc" -fill '#6e6e73' -pointsize 22 -annotate +96+482 '终端里也能用 · 不用下载模型 · 安装包不到 4 MB' \
   \( "$work/cp-light.png" -resize x560 \) -geometry +730+52 -composite \
-  \( "$out/panel.png" -resize 90% \) -geometry +612+58 -composite \
+  \( "$work/panel.png" -resize 90% \) -geometry +612+58 -composite \
   "$out/social-preview.png"
 # 去掉 PNG 里的生成时间，图没变就不会出现在 git diff 里
 magick mogrify -strip -define png:exclude-chunks=date,time "$out"/*.png

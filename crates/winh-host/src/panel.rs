@@ -1071,6 +1071,7 @@ unsafe fn soft_ear(
 pub fn render_png(
     look: Look,
     level: f32,
+    phase: f32,
     scale: f32,
     text: &str,
     out: &std::path::Path,
@@ -1108,7 +1109,7 @@ pub fn render_png(
                 0xffffffff
             };
             gp::GdipGraphicsClear(g, backdrop);
-            paint_graphics(g, scale, look, level, 0., text, ear);
+            paint_graphics(g, scale, look, level, phase, text, ear);
             gp::GdipDeleteGraphics(g);
             let clsid = windows_sys::core::GUID::from_u128(0x557cf406_1a04_11d3_9a73_0000f81ef32e);
             let path: Vec<u16> = out

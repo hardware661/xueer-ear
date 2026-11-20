@@ -17,8 +17,8 @@ Recognition runs on WeChat Input Method's cloud service: no model download, no s
 [Download](https://github.com/hardware661/xueer-ear/releases/latest) · [中文说明](README.md) · [Changelog](CHANGELOG.md) · [Issues](https://github.com/hardware661/xueer-ear/issues)
 
 <picture>
-  <source media="(prefers-color-scheme: dark)" srcset="docs/images/panel-dark.png">
-  <img src="docs/images/panel.png" width="352" alt="The cat-eared dictation panel at the top of the screen: settings on the left, a live waveform in the middle, translate on the right" />
+  <source media="(prefers-color-scheme: dark)" srcset="docs/images/panel-dark.webp">
+  <img src="docs/images/panel.webp" width="352" alt="The cat-eared dictation panel at the top of the screen: settings on the left, a live waveform in the middle, translate on the right" />
 </picture>
 
 </div>

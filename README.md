@@ -17,8 +17,8 @@ Windows 11 的中文语音输入。Claude Code、Codex 这类终端程序里也�
 [下载](https://github.com/hardware661/xueer-ear/releases/latest) · [English](README.en.md) · [更新记录](CHANGELOG.md) · [提问题](https://github.com/hardware661/xueer-ear/issues)
 
 <picture>
-  <source media="(prefers-color-scheme: dark)" srcset="docs/images/panel-dark.png">
-  <img src="docs/images/panel.png" width="352" alt="屏幕顶上的小猫听写面板：左边设置，中间的波形跟着声音跳，右边是翻译" />
+  <source media="(prefers-color-scheme: dark)" srcset="docs/images/panel-dark.webp">
+  <img src="docs/images/panel.webp" width="352" alt="屏幕顶上的小猫听写面板：左边设置，中间的波形跟着声音跳，右边是翻译" />
 </picture>
 
 </div>

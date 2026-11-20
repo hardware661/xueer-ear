@@ -50,6 +50,48 @@ fn main() {
         hotkey::wave_probe(delay);
         return;
     }
+    // README 动图：`--panel-frames 目录`，「说话中」的面板按真实节奏（33 毫秒一帧，和面板的定时器一样）
+    // 画一圈能首尾接上的帧，浅色、深色各一套，透明底
+    if first.as_deref() == Some("--panel-frames") {
+        let dir = std::path::PathBuf::from(args.next().unwrap_or_else(|| ".".into()));
+        // 波浪的起伏周期是 2π/1.7：画 82 帧正好转 4 圈，每帧约 0.18（面板每帧也是 0.18）
+        const FRAMES: usize = 82;
+        let step = std::f32::consts::TAU * 4. / 1.7 / FRAMES as f32;
+        for (dark, suffix) in [(false, ""), (true, "-dark")] {
+            panel::set_dark(dark);
+            let mut smooth = 0.0_f32;
+            // 先空转一圈，让平滑后的音量也首尾接上
+            for pass in 0..2 {
+                for i in 0..FRAMES {
+                    let t = i as f32 / FRAMES as f32;
+                    // 像说话的音量：一圈里三个起伏的字句，中间各有一点停顿
+                    let speech = (t * std::f32::consts::PI * 3.).sin().abs();
+                    let target = 0.15
+                        + 0.7 * speech * (0.75 + 0.25 * (t * std::f32::consts::TAU * 2.).sin());
+                    smooth += (target - smooth) * 0.35;
+                    if pass == 0 {
+                        continue;
+                    }
+                    let out = dir.join(format!("frame{suffix}-{i:03}.png"));
+                    let result = panel::render_png(
+                        panel::Look::Speaking,
+                        smooth,
+                        i as f32 * step,
+                        2.,
+                        "",
+                        &out,
+                        panel::EAR,
+                        true,
+                    );
+                    if let Err(e) = result {
+                        eprintln!("{e}");
+                        std::process::exit(1);
+                    }
+                }
+            }
+        }
+        return;
+    }
     if first.as_deref() == Some("--panel-render") {
         let dir = std::path::PathBuf::from(args.next().unwrap_or_else(|| ".".into()));
         let clear = args.next().as_deref() == Some("clear");
@@ -66,6 +108,7 @@ fn main() {
                 if let Err(e) = panel::render_png(
                     look,
                     level,
+                    0.,
                     3.,
                     text,
                     &dir.join(format!("panel-{name}{suffix}.png")),
