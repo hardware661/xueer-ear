@@ -87,6 +87,7 @@ impl Drop for Hotkey {
 struct Session {
     release: Arc<AtomicBool>,
     cancel: Arc<AtomicBool>,
+    superseded: Arc<AtomicBool>,
     /// 主人自己按 Enter 的次数（轮询线程加，听写线程读），用来去掉已发走的文字
     sent: Arc<std::sync::atomic::AtomicU32>,
     /// 主人动了键盘或鼠标的次数（点别处、打字）：听写线程看到变化就不再往回改字
@@ -194,6 +195,7 @@ fn poll_loop(vk: u32, stop: &AtomicBool, status: &Status) {
                     // 轮询线程不卡（审查 R9：原来直接取消上一轮，最后一句定稿丢了）
                     let previous = session.take();
                     if let Some(old) = &previous {
+                        old.superseded.store(true, Ordering::Release);
                         old.finish();
                     }
                     panel.set(Look::Connecting);
@@ -222,9 +224,11 @@ fn poll_loop(vk: u32, stop: &AtomicBool, status: &Status) {
 fn begin(panel: PanelHandle, status: Status, previous: Option<Session>) -> Session {
     let release = Arc::new(AtomicBool::new(false));
     let cancel = Arc::new(AtomicBool::new(false));
+    let superseded = Arc::new(AtomicBool::new(false));
     let sent = Arc::new(std::sync::atomic::AtomicU32::new(0));
     let touched = Arc::new(std::sync::atomic::AtomicU32::new(0));
     let worker_touched = touched.clone();
+    let worker_superseded = superseded.clone();
     let (worker_release, worker_cancel, worker_sent) =
         (release.clone(), cancel.clone(), sent.clone());
     let worker = thread::spawn(move || {
@@ -241,6 +245,7 @@ fn begin(panel: PanelHandle, status: Status, previous: Option<Session>) -> Sessi
         let result = record(
             worker_release,
             worker_cancel,
+            worker_superseded,
             worker_sent,
             worker_touched,
             &panel,
@@ -269,6 +274,7 @@ fn begin(panel: PanelHandle, status: Status, previous: Option<Session>) -> Sessi
     Session {
         release,
         cancel,
+        superseded,
         sent,
         touched,
         worker,
@@ -280,6 +286,7 @@ fn begin(panel: PanelHandle, status: Status, previous: Option<Session>) -> Sessi
 fn record(
     release: Arc<AtomicBool>,
     cancel: Arc<AtomicBool>,
+    superseded: Arc<AtomicBool>,
     sent: Arc<std::sync::atomic::AtomicU32>,
     touched: Arc<std::sync::atomic::AtomicU32>,
     panel: &PanelHandle,
@@ -291,6 +298,7 @@ fn record(
     let settings = crate::broker::settings().0;
     let post = crate::broker::postprocess();
     let mut live = Live::new(foreground_is_terminal());
+    let target = foreground_text_target();
     live.set_terminal_newline(settings.text.terminal_newline);
     // 排查用：XUEER_EAR_TEST_WAVE=文件.wav 时用录好的音代替麦克风，走完全一样的上屏和指令流程
     let source = match std::env::var_os("XUEER_EAR_TEST_WAVE") {
@@ -328,6 +336,16 @@ fn record(
     let mut pending_command: Option<(String, Instant)> = None;
     // 这轮最后说了「翻译」
     let mut translate = false;
+    let mut translation_input = None;
+    let mut translation = None;
+    let still_current = |(sent_at_command, touched_at_command)| {
+        !stopped.load(Ordering::Acquire)
+            && !superseded.load(Ordering::Acquire)
+            && sent.load(Ordering::Acquire) == sent_at_command
+            && touched.load(Ordering::Acquire) == touched_at_command
+            && target.is_some()
+            && foreground_text_target() == target
+    };
     let result = engine::run_wetype(source, engine_stop.clone(), |event| {
         if stopped.load(Ordering::Acquire) {
             return Ok(());
@@ -443,6 +461,16 @@ fn record(
             }
             _ => {}
         }
+        if translate && translation_input.is_none() {
+            let input = (seen_sent, seen_touched);
+            translation_input = Some(input);
+            // 和「发送」一样，指令确认时正文已上屏。不必等听写连接收完才发翻译请求。
+            if still_current(input) {
+                if let Some(text) = live.round_text().filter(|text| !text.trim().is_empty()) {
+                    translation = VoiceTranslation::start(text).ok();
+                }
+            }
+        }
         Ok(())
     });
     if let Err(error) = result {
@@ -456,8 +484,8 @@ fn record(
         "这轮结束：说了翻译={translate} 取消={} 已出字={typed_any}",
         stopped.load(Ordering::Acquire)
     );
-    if translate && !stopped.load(Ordering::Acquire) {
-        translate_round(&mut live, panel);
+    if let Some(input) = translation_input {
+        translate_round(&mut live, panel, translation, || still_current(input));
         return Ok(());
     }
     if !typed_any && !stopped.load(Ordering::Acquire) {
@@ -489,9 +517,48 @@ fn wants_translation(output: &Output) -> bool {
     )
 }
 
+struct VoiceTranslation {
+    source: String,
+    result: mpsc::Receiver<Result<String, String>>,
+}
+
+impl VoiceTranslation {
+    fn start(source: String) -> Result<Self, String> {
+        let text = source.clone();
+        let (sender, result) = mpsc::channel();
+        thread::Builder::new()
+            .spawn(move || {
+                let _ = sender.send(xueer_ear_backend::translate::translate(&text));
+            })
+            .map_err(|error| error.to_string())?;
+        Ok(Self { source, result })
+    }
+
+    fn wait(self, still_current: &impl Fn() -> bool) -> Option<Result<String, String>> {
+        while still_current() {
+            match self.result.recv_timeout(Duration::from_millis(25)) {
+                Ok(result) => return Some(result),
+                Err(mpsc::RecvTimeoutError::Timeout) => {}
+                Err(mpsc::RecvTimeoutError::Disconnected) => {
+                    return Some(Err("翻译线程意外退出".into()));
+                }
+            }
+        }
+        None
+    }
+}
+
 /// 主人在一轮最后说了「翻译」：把这一轮雪耳打出去的字整段换成译文（中文→英文）。
 /// 翻译失败、或这轮动过键鼠（不知道光标在哪），屏幕上的字不动，面板写一句原因。
-fn translate_round(live: &mut Live, panel: &PanelHandle) {
+fn translate_round(
+    live: &mut Live,
+    panel: &PanelHandle,
+    translation: Option<VoiceTranslation>,
+    still_current: impl Fn() -> bool,
+) {
+    if !still_current() {
+        return;
+    }
     let Some(text) = live.round_text() else {
         panel.notice("这轮动过键盘鼠标，没法整段替换，请用翻译小窗");
         return;
@@ -501,7 +568,19 @@ fn translate_round(live: &mut Live, panel: &PanelHandle) {
         return;
     }
     panel.set(Look::Connecting);
-    match xueer_ear_backend::translate::translate(&text) {
+    // 收尾时若又补了正文，只能用最终正文翻译，不能把旧快照的译文写回去。
+    let translation = match translation.filter(|job| job.source == text) {
+        Some(job) => Ok(job),
+        None => VoiceTranslation::start(text),
+    };
+    let result = match translation {
+        Ok(job) => job.wait(&still_current),
+        Err(error) => Some(Err(error)),
+    };
+    let Some(result) = result.filter(|_| still_current()) else {
+        return;
+    };
+    match result {
         Ok(english) => {
             send_keys(&live.replace_round(&english));
             panel.set(Look::Hidden);
@@ -511,6 +590,22 @@ fn translate_round(live: &mut Live, panel: &PanelHandle) {
             panel.notice(&format!("翻译失败：{reason}"));
         }
     }
+}
+
+/// 比较前台窗口和当前得到焦点的控件，防止迟到的译文被打到别处。
+fn foreground_text_target() -> Option<(usize, usize)> {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{GUITHREADINFO, GetGUIThreadInfo};
+    let window = unsafe { GetForegroundWindow() };
+    if window.is_null() {
+        return None;
+    }
+    let mut info: GUITHREADINFO = unsafe { std::mem::zeroed() };
+    info.cbSize = size_of::<GUITHREADINFO>() as u32;
+    let focused = unsafe { GetGUIThreadInfo(0, &mut info) } != 0;
+    Some((
+        window as usize,
+        if focused { info.hwndFocus as usize } else { 0 },
+    ))
 }
 
 /// 正在往前台发我们自己的按键：这期间看到的按键状态不是主人的
