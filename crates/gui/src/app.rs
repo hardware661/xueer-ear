@@ -2303,15 +2303,24 @@ unsafe fn capture(window: HWND, path: &std::path::Path) -> Result<(), String> {
     let dc = CreateCompatibleDC(screen);
     let bitmap = CreateCompatibleBitmap(screen, width, height);
     let old = SelectObject(dc, bitmap);
-    // 先把还没画的子控件当场画完（不然刚改过字的值按钮会是黑块）
-    RedrawWindow(
-        window,
-        ptr::null(),
-        ptr::null_mut(),
-        RDW_INVALIDATE | RDW_UPDATENOW | RDW_ALLCHILDREN,
-    );
-    // 2 = PW_RENDERFULLCONTENT：连同圆角和子控件一起画
-    let printed = PrintWindow(window, dc, 2) != 0;
+    // 屏幕外的窗口，PW_RENDERFULLCONTENT 偶尔拿到还没合成的子控件（整块纯黑）。
+    // 界面里没有纯黑的大块，看到就重画、等 DWM 合成后再拍，最多试 5 次
+    let mut printed = false;
+    for _ in 0..5 {
+        RedrawWindow(
+            window,
+            ptr::null(),
+            ptr::null_mut(),
+            RDW_INVALIDATE | RDW_UPDATENOW | RDW_ALLCHILDREN,
+        );
+        windows_sys::Win32::Graphics::Dwm::DwmFlush();
+        settle(150);
+        // 2 = PW_RENDERFULLCONTENT：连同圆角和子控件一起画
+        printed = PrintWindow(window, dc, 2) != 0;
+        if printed && black_pixels(dc, bitmap, width, height) < 2000 {
+            break;
+        }
+    }
     SelectObject(dc, old);
     let result = if printed {
         save_bitmap(bitmap, path)
@@ -2322,6 +2331,34 @@ unsafe fn capture(window: HWND, path: &std::path::Path) -> Result<(), String> {
     DeleteDC(dc);
     ReleaseDC(ptr::null_mut(), screen);
     result
+}
+
+/// 截图里纯黑像素有多少
+unsafe fn black_pixels(dc: HDC, bitmap: HBITMAP, width: i32, height: i32) -> usize {
+    let mut info: BITMAPINFO = mem::zeroed();
+    info.bmiHeader.biSize = mem::size_of::<BITMAPINFOHEADER>() as u32;
+    info.bmiHeader.biWidth = width;
+    info.bmiHeader.biHeight = -height;
+    info.bmiHeader.biPlanes = 1;
+    info.bmiHeader.biBitCount = 32;
+    info.bmiHeader.biCompression = BI_RGB;
+    let mut pixels = vec![0_u32; (width.max(0) * height.max(0)) as usize];
+    // 位图选进 DC 时 GetDIBits 不可靠：先换回占位位图
+    let held = SelectObject(dc, CreateCompatibleBitmap(dc, 1, 1));
+    let lines = GetDIBits(
+        dc,
+        bitmap,
+        0,
+        height as u32,
+        pixels.as_mut_ptr().cast(),
+        &mut info,
+        DIB_RGB_COLORS,
+    );
+    DeleteObject(SelectObject(dc, held));
+    if lines == 0 {
+        return 0;
+    }
+    pixels.iter().filter(|&&p| p & 0x00ff_ffff == 0).count()
 }
 
 /// 离屏把控制面板、更新气泡、「添加热词」对话框、菜单和翻译小窗各拍一张 PNG（核对外观、README 配图用）：
