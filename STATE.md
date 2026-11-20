@@ -3,6 +3,14 @@
 > 任何 AI 接手先读这里；每次会话收尾在最上面追加一节（最新在上），写清做了什么、验证了什么、还差什么。
 > 计划原文：主人桌面 `雪耳xueer-ear计划-v1.md`（v1.1）。
 
+## 2026-11-21 03:55 · v1.2.0 已推送、已发布（主人授权这一轮不用一步步问）
+
+- 雪耳：`bc66638` 推到 GitHub 并打 `v1.2.0`，CI 构建、测试、发布成功，发布说明取自 CHANGELOG。匿名下载两个包和 SHA256SUMS.txt，`sha256sum -c` 全部 OK，便携包 ZIP 完整（8 个文件）。CI 出的包和主人电脑上装的本地包哈希不同（构建环境不同），源码相同。
+- 补了 1.1.17、1.1.18 两个发布页的说明（从 CHANGELOG 取）。仓库简介加英文，加 12 个关键词，打开 Discussions。
+- README 头图换成会动的听写面板（`d46eb7e`，`--panel-frames` 离屏画 82 帧合成 WebP），GitHub 页面上浅色、深色都能加载。
+- 雪儿 speaker：打 `v1.2.0`（标签身份照旧用 xueer），CI 发布成功（7 个文件）。线上早已是 `f66dccf`，这次没动服务器。
+- 还差：分享预览图要主人在仓库 Settings → Social preview 手动传 `docs/images/social-preview.png`（GitHub 没有接口）；真机核对见上一节「没验」。
+
 ## 2026-11-21 03:45 · 1.2.0 全部做完并装机（主人："no need to ask me step by step - just do it all at once"）
 
 - **听写时 speaker 先等**（`41ff488`）：status.json 加 `dictating`，快捷键听写和接管 Win+H 两条路都按「轮」计数（新一轮可能在上一轮收尾时就开始），出错、取消、panic 都会减回去。speaker 那边（公开仓 `f66dccf`，已上线）读它排队。README 把字段写成对外约定。
