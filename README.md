@@ -51,7 +51,7 @@ Windows 11 的语音输入。屏幕顶上一个小猫面板，边说边出字，
 
 翻译小窗：上面输入或粘贴，下面出译文；中间「中 ⇄ 英」点一下反转方向。边打字边自动翻（间隔 1 秒起，翻得越多间隔越长：2、4、8 秒），点「翻译」或按回车立刻翻（Shift+回车换行）。「复制」放进剪贴板，Ctrl+A 全选；窗口可拖边改大小、最大化，Esc 关闭。
 
-翻译服务按 微软翻译（每月 200 万字免费）→ 谷歌 Gemini → 智谱 的顺序用，哪家限流或出错马上换下一家。Key 填在 `%LOCALAPPDATA%\XueerEar\translate.json`，只在你自己电脑上：
+翻译服务按 微软翻译（每月 200 万字免费）→ 谷歌 Gemini → 智谱 的顺序用，一家限流或出错会尝试下一家；已配置的服务都限流时，会先等待再重试。Key 填在 `%LOCALAPPDATA%\XueerEar\translate.json`，只在你自己电脑上：
 
 ```json
 {"azure_key": "微软翻译的密钥", "azure_region": "eastasia", "google_key": "Google AI Studio 的 Key", "zhipu_key": "智谱的 Key"}

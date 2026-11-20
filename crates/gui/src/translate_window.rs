@@ -158,6 +158,8 @@ struct State {
     fonts: [HFONT; 3],
     white: isize,
     asked: usize,
+    in_flight: bool,
+    queued: bool,
     replies: mpsc::Receiver<(usize, Result<String, String>)>,
     sender: mpsc::Sender<(usize, Result<String, String>)>,
     last_source: String,
@@ -374,6 +376,14 @@ unsafe fn ask(window: HWND, state: &mut State) {
     if source == state.last_source {
         return;
     }
+    if state.in_flight {
+        state.asked += 1;
+        state.queued = true;
+        state.note = "等上一条翻译结束…".into();
+        invalidate(window, state.dpi, Layout::of(window, state.dpi).note());
+        return;
+    }
+    state.in_flight = true;
     state.last_source = source.clone();
     state.asked += 1;
     state.busy = true;
@@ -705,6 +715,16 @@ unsafe extern "system" fn procedure(
             }
             if id == SOURCE && code == EN_CHANGE {
                 state.manual = false;
+                state.asked += 1;
+                state.queued = false;
+                state.last_source.clear();
+                state.note.clear();
+                set_text(hwnd, RESULT, "");
+                state.busy = false;
+                KillTimer(hwnd, DOTS_TIMER);
+                let layout = Layout::of(hwnd, state.dpi);
+                invalidate(hwnd, state.dpi, layout.dots());
+                invalidate(hwnd, state.dpi, layout.note());
                 if text_of(hwnd, SOURCE).trim().is_empty() {
                     // 清空了：节奏从头算，译文也清掉
                     KillTimer(hwnd, SETTLE_TIMER);
@@ -744,6 +764,7 @@ unsafe extern "system" fn procedure(
         }
         DONE => {
             while let Ok((id, result)) = state.replies.try_recv() {
+                state.in_flight = false;
                 if id != state.asked {
                     continue;
                 }
@@ -754,6 +775,9 @@ unsafe extern "system" fn procedure(
                     Ok(text) => set_text(hwnd, RESULT, &text),
                     Err(reason) => state.note = format!("翻译失败：{reason}"),
                 }
+            }
+            if std::mem::take(&mut state.queued) {
+                ask(hwnd, state);
             }
             invalidate(hwnd, state.dpi, Layout::of(hwnd, state.dpi).dots());
             invalidate(hwnd, state.dpi, Layout::of(hwnd, state.dpi).note());
@@ -910,6 +934,8 @@ unsafe fn open(at: Option<(i32, i32)>) -> HWND {
         fonts: [ptr::null_mut(); 3],
         white: CreateSolidBrush(0x00ffffff) as isize,
         asked: 0,
+        in_flight: false,
+        queued: false,
         replies,
         sender,
         last_source: String::new(),
