@@ -308,6 +308,7 @@ fn record(
             release: release.clone(),
         },
     };
+    let wave_probe = matches!(&source, Source::Wave(_));
     // 「被新一轮取消」要单独记：引擎收完一轮正常结束时也会把传进去的 stop 置位（Capture 的 Drop），
     // 直接拿 cancel 判断的话，每轮正常结束都像被取消，说「翻译」整段替换就永远不执行（2026-11-19 复现）
     let stopped = cancel.clone();
@@ -334,10 +335,8 @@ fn record(
     let (mut loudest, mut last_gain) = (0_u32, 1_f32);
     // 中间结果整句是指令、或者句尾是指令：（此刻的中间结果, 从什么时候开始没变）
     let mut pending_command: Option<(String, Instant)> = None;
-    // 这轮最后说了「翻译」
-    let mut translate = false;
-    let mut translation_input = None;
-    let mut translation = None;
+    let mut translated_requested = false;
+    let mut translation: Option<VoiceTranslation> = None;
     let still_current = |(sent_at_command, touched_at_command)| {
         !stopped.load(Ordering::Acquire)
             && !superseded.load(Ordering::Acquire)
@@ -350,6 +349,8 @@ fn record(
         if stopped.load(Ordering::Acquire) {
             return Ok(());
         }
+        let mut request_translation = None;
+        let mut sentence_finished = false;
         match event {
             Event::Input { name, .. } => status.microphone(name),
             // 停顿只是一句说完（定稿上屏），不结束：一直听到主人再点一下、点麦克风、Esc，
@@ -359,12 +360,14 @@ fn record(
                 // 一句说完（paused）后其实还在接着听，控制面板上照样显示「聆听中」
                 status.phase(if phase == "paused" { "armed" } else { phase });
                 if phase == "paused" {
+                    last_heard.clear();
+                    sentence_finished = true;
                     println!("一句说完：原始峰值 {loudest}，自动放大 {last_gain:.1} 倍");
                     loudest = 0;
                 }
                 // 主人已经点了停止（面板收起了），这轮还在收最后一句：别再把面板叫出来。
                 // 原来收尾时的「一句说完」会把面板重新显示一下、轮询线程又马上收起——看起来就是闪两下（2026-11-19）
-                if !release.load(Ordering::Acquire) {
+                if !release.load(Ordering::Acquire) && translation.is_none() {
                     panel.set(if matches!(phase, "connecting" | "reconnecting") {
                         Look::Connecting
                     } else {
@@ -386,20 +389,17 @@ fn record(
                     if since.elapsed() >= COMMAND_SETTLE {
                         let keys = match post.command_only(text) {
                             Some(command) => {
-                                translate |= command == VoiceCommand::Translate;
+                                request_translation =
+                                    (command == VoiceCommand::Translate).then_some(true);
                                 live.early_command(command)
                             }
                             // 句尾指令：前面的话先定稿上屏（会记进历史），再按指令
                             None => {
                                 let output = post.finalize(text, crate::broker::now_ms());
-                                translate |= wants_translation(&output);
+                                request_translation = wants_translation(&output).then_some(true);
                                 live.early_finish(output, text)
                             }
                         };
-                        // 说了「翻译」：这轮到此为止，收完最后一句后整段翻译
-                        if translate {
-                            release.store(true, Ordering::Release);
-                        }
                         pending_command = None;
                         typed_any |= keys.iter().any(|k| matches!(k, Key::Text(_)));
                         send_keys(&keys);
@@ -407,7 +407,10 @@ fn record(
                 }
                 status.progress(peak, partials, finals);
                 panel.level(peak);
-                if last_text.elapsed() >= WAVE_HOLD && !release.load(Ordering::Acquire) {
+                if last_text.elapsed() >= WAVE_HOLD
+                    && !release.load(Ordering::Acquire)
+                    && translation.is_none()
+                {
                     panel.set_if_changed(Look::Listening);
                 }
                 // 到「最长听写时间」，或者 10 秒没识别出新字，就自己结束
@@ -416,7 +419,14 @@ fn record(
                 }
             }
             Event::Speech(speech) => {
-                if speech.text != last_heard {
+                // 定稿只补标点不算新字，不能给本轮的空闲计时续命。
+                if !speech.text.trim().is_empty()
+                    && !speech
+                        .text
+                        .chars()
+                        .filter(|c| c.is_alphanumeric())
+                        .eq(last_heard.chars().filter(|c| c.is_alphanumeric()))
+                {
                     last_heard = speech.text.clone();
                     last_text = Instant::now();
                     if !release.load(Ordering::Acquire) {
@@ -436,13 +446,19 @@ fn record(
                     live.user_touched();
                 }
                 let text = live.unsent(&speech.text);
+                if !text.trim().is_empty()
+                    && translation
+                        .as_ref()
+                        .is_some_and(|job| !job.in_command_sentence)
+                {
+                    // 开始说下一句了。不能拿上一版译文覆盖新输入。
+                    translation = None;
+                }
                 let keys = if speech.final_result {
                     pending_command = None;
+                    sentence_finished = true;
                     let output = post.finalize(&text, crate::broker::now_ms());
-                    if wants_translation(&output) {
-                        translate = true;
-                        release.store(true, Ordering::Release);
-                    }
+                    request_translation = wants_translation(&output).then_some(false);
                     live.finalize_from(&text, output)
                 } else {
                     // 整句只有指令词，或者句尾单独一小句是指令（「今天吃什么，发送」）：
@@ -461,15 +477,41 @@ fn record(
             }
             _ => {}
         }
-        if translate && translation_input.is_none() {
+        translated_requested |= request_translation.is_some();
+        if release.load(Ordering::Acquire) && !wave_probe {
+            translation = None;
+            return Ok(());
+        }
+        if translation
+            .as_ref()
+            .is_some_and(|job| !still_current(job.input))
+        {
+            translation = None;
+        }
+        if let Some(in_command_sentence) = request_translation {
             let input = (seen_sent, seen_touched);
-            translation_input = Some(input);
             // 和「发送」一样，指令确认时正文已上屏。不必等听写连接收完才发翻译请求。
             if still_current(input) {
-                if let Some(text) = live.round_text().filter(|text| !text.trim().is_empty()) {
-                    translation = VoiceTranslation::start(text).ok();
-                }
+                translation = start_translation(&live, panel, input, in_command_sentence);
             }
+        } else if sentence_finished
+            && let Some(job) = translation.as_mut()
+            && job.in_command_sentence
+        {
+            job.in_command_sentence = false;
+            // 指令那句定稿时若真的又补了正文，只翻最终稿。
+            if !job.matches(&live) {
+                translation = start_translation(&live, panel, job.input, false);
+            }
+        }
+        if let Some(job) = translation.as_ref()
+            && live.leftover().is_empty()
+            && let Some(result) = job.try_result()
+        {
+            if still_current(job.input) && job.matches(&live) && !release.load(Ordering::Acquire) {
+                apply_translation(result, &mut live, panel);
+            }
+            translation = None;
         }
         Ok(())
     });
@@ -481,14 +523,21 @@ fn record(
         return Err(error);
     }
     println!(
-        "这轮结束：说了翻译={translate} 取消={} 已出字={typed_any}",
+        "这轮结束：说了翻译={translated_requested} 取消={} 已出字={typed_any}",
         stopped.load(Ordering::Acquire)
     );
-    if let Some(input) = translation_input {
-        translate_round(&mut live, panel, translation, || still_current(input));
-        return Ok(());
+    // 文件探针没有持续监听。保留它在音频 EOF 后等候译文的行为。
+    if wave_probe
+        && let Some(job) = translation
+        && job.matches(&live)
+    {
+        if let Some(result) = job.wait(|| still_current(job.input))
+            && still_current(job.input)
+        {
+            apply_translation(result, &mut live, panel);
+        }
     }
-    if !typed_any && !stopped.load(Ordering::Acquire) {
+    if !typed_any && !translated_requested && !stopped.load(Ordering::Acquire) {
         crate::sound::play(crate::sound::Cue::Missed, settings.sounds_enabled);
     }
     Ok(())
@@ -520,10 +569,12 @@ fn wants_translation(output: &Output) -> bool {
 struct VoiceTranslation {
     source: String,
     result: mpsc::Receiver<Result<String, String>>,
+    input: (u32, u32),
+    in_command_sentence: bool,
 }
 
 impl VoiceTranslation {
-    fn start(source: String) -> Result<Self, String> {
+    fn start(source: String, input: (u32, u32), in_command_sentence: bool) -> Result<Self, String> {
         let text = source.clone();
         let (sender, result) = mpsc::channel();
         thread::Builder::new()
@@ -531,10 +582,27 @@ impl VoiceTranslation {
                 let _ = sender.send(xueer_ear_backend::translate::translate(&text));
             })
             .map_err(|error| error.to_string())?;
-        Ok(Self { source, result })
+        Ok(Self {
+            source,
+            result,
+            input,
+            in_command_sentence,
+        })
     }
 
-    fn wait(self, still_current: &impl Fn() -> bool) -> Option<Result<String, String>> {
+    fn matches(&self, live: &Live) -> bool {
+        live.round_text().is_some_and(|text| text == self.source)
+    }
+
+    fn try_result(&self) -> Option<Result<String, String>> {
+        match self.result.try_recv() {
+            Ok(result) => Some(result),
+            Err(mpsc::TryRecvError::Empty) => None,
+            Err(mpsc::TryRecvError::Disconnected) => Some(Err("翻译线程意外退出".into())),
+        }
+    }
+
+    fn wait(&self, still_current: impl Fn() -> bool) -> Option<Result<String, String>> {
         while still_current() {
             match self.result.recv_timeout(Duration::from_millis(25)) {
                 Ok(result) => return Some(result),
@@ -548,46 +616,42 @@ impl VoiceTranslation {
     }
 }
 
-/// 主人在一轮最后说了「翻译」：把这一轮雪耳打出去的字整段换成译文（中文→英文）。
-/// 翻译失败、或这轮动过键鼠（不知道光标在哪），屏幕上的字不动，面板写一句原因。
-fn translate_round(
-    live: &mut Live,
+/// 「翻译」是这一轮里的动作，不结束听写。保留原文，等有效译文才替换。
+fn start_translation(
+    live: &Live,
     panel: &PanelHandle,
-    translation: Option<VoiceTranslation>,
-    still_current: impl Fn() -> bool,
-) {
-    if !still_current() {
-        return;
-    }
+    input: (u32, u32),
+    in_command_sentence: bool,
+) -> Option<VoiceTranslation> {
     let Some(text) = live.round_text() else {
-        panel.notice("这轮动过键盘鼠标，没法整段替换，请用翻译小窗");
-        return;
+        panel.listening_notice("这轮动过键盘鼠标，没法整段替换，请用翻译小窗");
+        return None;
     };
     if text.trim().is_empty() {
-        panel.notice("这一轮还没说要翻译的话");
-        return;
+        panel.listening_notice("这一轮还没说要翻译的话");
+        return None;
     }
-    panel.set(Look::Connecting);
-    // 收尾时若又补了正文，只能用最终正文翻译，不能把旧快照的译文写回去。
-    let translation = match translation.filter(|job| job.source == text) {
-        Some(job) => Ok(job),
-        None => VoiceTranslation::start(text),
-    };
-    let result = match translation {
-        Ok(job) => job.wait(&still_current),
-        Err(error) => Some(Err(error)),
-    };
-    let Some(result) = result.filter(|_| still_current()) else {
-        return;
-    };
+    match VoiceTranslation::start(text, input, in_command_sentence) {
+        Ok(job) => {
+            panel.set(Look::Connecting);
+            Some(job)
+        }
+        Err(reason) => {
+            panel.listening_notice(&format!("翻译失败：{reason}"));
+            None
+        }
+    }
+}
+
+fn apply_translation(result: Result<String, String>, live: &mut Live, panel: &PanelHandle) {
     match result {
         Ok(english) => {
             send_keys(&live.replace_round(&english));
-            panel.set(Look::Hidden);
+            panel.set(Look::Listening);
         }
         Err(reason) => {
             eprintln!("翻译失败：{reason}");
-            panel.notice(&format!("翻译失败：{reason}"));
+            panel.listening_notice(&format!("翻译失败：{reason}"));
         }
     }
 }

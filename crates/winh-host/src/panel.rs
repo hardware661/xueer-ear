@@ -82,6 +82,11 @@ impl PanelHandle {
         self.post();
     }
 
+    pub fn listening_notice(&self, text: &str) {
+        self.board().listening_notice(text, Instant::now());
+        self.post();
+    }
+
     fn board(&self) -> std::sync::MutexGuard<'_, Board> {
         self.shared.board.lock().unwrap_or_else(|e| e.into_inner())
     }
