@@ -153,14 +153,28 @@ fn save_hotword(line: &str) -> Result<bool, String> {
 }
 
 /// 最近说过的几句（新的在前）。读不了就当没有。
-fn recent_history(count: usize) -> Vec<String> {
+fn recent_history(count: usize, settings: &xueer_ear_backend::settings::Settings) -> Vec<String> {
     let Ok(dir) = data_dir() else {
         return Vec::new();
     };
-    xueer_ear_history::History::new(dir.join("history.jsonl"), Default::default())
-        .recent(count)
-        .map(|entries| entries.into_iter().map(|entry| entry.text).collect())
-        .unwrap_or_default()
+    let cutoff =
+        crate::model::now_ms().saturating_sub(u64::from(settings.history_keep_days) * 86_400_000);
+    xueer_ear_history::History::new(
+        dir.join("history.jsonl"),
+        xueer_ear_history::Settings {
+            enabled: settings.history_enabled,
+            keep_days: settings.history_keep_days,
+        },
+    )
+    .recent(count)
+    .map(|entries| {
+        entries
+            .into_iter()
+            .filter(|entry| entry.at_ms >= cutoff)
+            .map(|entry| entry.text)
+            .collect()
+    })
+    .unwrap_or_default()
 }
 
 /// 把一段文字放进剪贴板。
@@ -1336,7 +1350,11 @@ impl App {
 
     /// 历史：列最近说过的几句，点一句就复制；也能用记事本打开全部。
     unsafe fn history_menu(&mut self) {
-        let texts = recent_history(crate::prefs::HISTORY_SHOWN);
+        if !self.settings.history_enabled {
+            self.say("历史记录已关闭");
+            return;
+        }
+        let texts = recent_history(crate::prefs::HISTORY_SHOWN, &self.settings);
         let selected =
             self.popup_under(LABEL_HISTORY_VALUE, &crate::prefs::history_choices(&texts));
         let result = if selected == crate::prefs::OPEN_HISTORY {

@@ -88,3 +88,13 @@ fn text_with_newlines_round_trips() {
     h.append(&entry(1, "第一行\n第二行")).unwrap();
     assert_eq!(h.recent(1).unwrap()[0].text, "第一行\n第二行");
 }
+
+#[test]
+fn damaged_utf8_does_not_hide_other_entries() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("history.jsonl");
+    let history = History::new(path.clone(), Settings::default());
+    std::fs::write(path, b"\xff\n").unwrap();
+    history.append(&entry(5, "still readable")).unwrap();
+    assert_eq!(history.recent(1).unwrap(), [entry(5, "still readable")]);
+}

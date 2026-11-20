@@ -102,8 +102,8 @@ impl History {
             Err(e) => return Err(e),
         };
         let mut out = Vec::new();
-        for line in BufReader::new(file).lines() {
-            if let Ok(entry) = serde_json::from_str::<Entry>(&line?) {
+        for line in BufReader::new(file).split(b'\n') {
+            if let Ok(entry) = serde_json::from_slice::<Entry>(&line?) {
                 out.push(entry);
             }
         }
