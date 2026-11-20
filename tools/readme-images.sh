@@ -27,16 +27,28 @@ window() {
 # 听写面板：说话中（3 倍渲染缩到 2 倍）
 for theme in "" "-dark"; do
   magick "$work/panel-speaking$theme.png" -resize 66.67% "$out/panel$theme.png"
-  magick "$work/panel-notice$theme.png" -resize 66.67% "$out/panel-notice$theme.png"
 done
 # 控制面板：浅色、深色并排
 window "$work/shots/control-panel.png" "$work/cp-light.png"
 window "$work/shots/dark/control-panel.png" "$work/cp-dark.png"
 magick "$work/cp-light.png" "$work/cp-dark.png" -background none +smush -40 -define png:color-type=6 "$out/control-panel.png"
-# 翻译小窗、托盘菜单：浅色、深色各一张
+# 翻译小窗：浅色、深色各一张
 for theme in "" "dark/"; do
   suffix=${theme:+-dark}
   window "$work/shots/${theme}translate-window.png" "$out/translate$suffix.png"
-  magick "$work/shots/${theme}tray-menu.png" -alpha off "$out/tray-menu$suffix.png"
 done
+# GitHub 分享预览图 1280×640（仓库 Settings → Social preview 上传）
+fonts=/mnt/c/Windows/Fonts
+magick -size 1280x640 gradient:'#f7f7f9-#ebebf0' \
+  \( "$root/assets/app-icon.png" -resize 88x88 \) -geometry +96+150 -composite \
+  -font "$fonts/msyhbd.ttc" -fill '#1d1d1f' -pointsize 58 -annotate +96+318 '雪耳' \
+  -font "$fonts/msyh.ttc" -fill '#8e8e93' -pointsize 26 -annotate +262+316 'xueer-ear' \
+  -font "$fonts/msyh.ttc" -fill '#1d1d1f' -pointsize 34 -annotate +96+392 '点一下右 Alt，边说边出字' \
+  -font "$fonts/msyh.ttc" -fill '#6e6e73' -pointsize 22 -annotate +96+446 'Windows 11 中文语音输入' \
+  -font "$fonts/msyh.ttc" -fill '#6e6e73' -pointsize 22 -annotate +96+482 '终端里也能用 · 不用下载模型 · 安装包不到 4 MB' \
+  \( "$work/cp-light.png" -resize x560 \) -geometry +730+52 -composite \
+  \( "$out/panel.png" -resize 90% \) -geometry +612+58 -composite \
+  "$out/social-preview.png"
+# 去掉 PNG 里的生成时间，图没变就不会出现在 git diff 里
+magick mogrify -strip -define png:exclude-chunks=date,time "$out"/*.png
 ls -la "$out"
