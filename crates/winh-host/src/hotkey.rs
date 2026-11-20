@@ -934,38 +934,36 @@ fn tap(vk: u16) -> [INPUT; 2] {
     [key(vk, 0, 0), key(vk, 0, KEYEVENTF_KEYUP)]
 }
 
-/// Qt 程序（微信 4 是 Qt 5.15）单独处理：SendInput 的 Unicode 方式在 Qt 里会把每批第一个字
-/// 认成上一批的最后一个字（Qt 把连续的 VK_PACKET 当成同一个键的自动重复）。
-/// 所以对 Qt 窗口：文字发 WM_CHAR、退格发 VK_BACK 的按下/抬起（Qt 不认 WM_CHAR 里的 \b，
-/// 2026-11-15 退格也走 WM_CHAR 时，微信里每句都重复一次）。其他程序照旧 SendInput。
-/// 返回 false 表示不是 Qt 窗口或发不过去，调用方退回 SendInput。
+/// 雪耳自己的翻译小窗（xueer-ear.exe 里的系统输入框）
+const TRANSLATE_WINDOW_CLASS: &str = "XueerEar.TranslateWindow";
+
+/// 不走 SendInput、直接发消息给有焦点的输入框的两种窗口：
+/// - Qt 程序（微信 4 是 Qt 5.15）：SendInput 的 Unicode 方式在 Qt 里会把每批第一个字
+///   认成上一批的最后一个字（Qt 把连续的 VK_PACKET 当成同一个键的自动重复）。
+///   文字发 WM_CHAR、退格发 VK_BACK 的按下/抬起（Qt 不认 WM_CHAR 里的 \b，
+///   2026-11-15 退格也走 WM_CHAR 时，微信里每句都重复一次）。
+/// - 雪耳的翻译小窗：中文输入法开着时，SendInput 打进去的英文字母被输入法当拼音接走，
+///   出来一串乱码（主人 2026-11-21）。系统输入框认 WM_CHAR 里的 \b 和 \r，全走 WM_CHAR。
+///
+/// 其他程序照旧 SendInput。返回 false 表示不是这两种窗口或发不过去，调用方退回 SendInput。
 fn send_to_qt(key: &Key) -> bool {
     use windows_sys::Win32::UI::WindowsAndMessaging::{
         GUITHREADINFO, GetGUIThreadInfo, GetWindowThreadProcessId, SMTO_ABORTIFHUNG, SMTO_BLOCK,
-        SendMessageTimeoutW, WM_CHAR, WM_KEYDOWN, WM_KEYUP,
+        SendMessageTimeoutW,
     };
-    let messages: Vec<(u32, usize, isize)> = match key {
-        Key::Text(text) => text
-            .encode_utf16()
-            .map(|u| (WM_CHAR, usize::from(u), 1))
-            .collect(),
-        Key::Backspace(count) => (0..*count)
-            .flat_map(|_| {
-                [
-                    (WM_KEYDOWN, VK_BACK as usize, 0x000e_0001),
-                    (WM_KEYUP, VK_BACK as usize, 0xc00e_0001_u32 as isize),
-                ]
-            })
-            .collect(),
-        _ => return false,
-    };
+    if !matches!(key, Key::Text(_) | Key::Backspace(_)) {
+        return false;
+    }
     unsafe {
         let window = GetForegroundWindow();
         let mut class = [0_u16; 64];
         let count = GetClassNameW(window, class.as_mut_ptr(), class.len() as i32);
-        if count <= 0 || !String::from_utf16_lossy(&class[..count as usize]).starts_with("Qt") {
+        let class = String::from_utf16_lossy(&class[..count.max(0) as usize]);
+        let edit = class == TRANSLATE_WINDOW_CLASS;
+        if !edit && !class.starts_with("Qt") {
             return false;
         }
+        let messages = window_messages(key, edit);
         let thread = GetWindowThreadProcessId(window, std::ptr::null_mut());
         let mut info: GUITHREADINFO = std::mem::zeroed();
         info.cbSize = size_of::<GUITHREADINFO>() as u32;
@@ -988,6 +986,31 @@ fn send_to_qt(key: &Key) -> bool {
             }
         }
         true
+    }
+}
+
+/// `send_to_qt` 要发的消息。`edit` = 系统输入框（翻译小窗）：退格是 WM_CHAR \b，换行是 WM_CHAR \r；
+/// 否则（Qt）退格发 VK_BACK 的按下/抬起
+fn window_messages(key: &Key, edit: bool) -> Vec<(u32, usize, isize)> {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{WM_CHAR, WM_KEYDOWN, WM_KEYUP};
+    match key {
+        Key::Text(text) => text
+            .encode_utf16()
+            .map(|u| match u {
+                0x0A if edit => (WM_CHAR, 0x0D, 1),
+                _ => (WM_CHAR, usize::from(u), 1),
+            })
+            .collect(),
+        Key::Backspace(count) if edit => (0..*count).map(|_| (WM_CHAR, 0x08, 1)).collect(),
+        Key::Backspace(count) => (0..*count)
+            .flat_map(|_| {
+                [
+                    (WM_KEYDOWN, VK_BACK as usize, 0x000e_0001),
+                    (WM_KEYUP, VK_BACK as usize, 0xc00e_0001_u32 as isize),
+                ]
+            })
+            .collect(),
+        _ => Vec::new(),
     }
 }
 
@@ -1122,4 +1145,38 @@ fn flush(inputs: &mut Vec<INPUT>) {
         );
     }
     inputs.clear();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use windows_sys::Win32::UI::WindowsAndMessaging::{WM_CHAR, WM_KEYDOWN, WM_KEYUP};
+
+    // 主人 2026-11-21：在翻译小窗里说话，打进去的英文被中文输入法当拼音接走、出来乱码。
+    // 小窗里的文字、退格、换行都直接发 WM_CHAR 给输入框，不经过输入法
+    #[test]
+    fn the_translate_window_gets_plain_characters() {
+        assert_eq!(
+            window_messages(&Key::Text("Hi\n好".into()), true),
+            [
+                (WM_CHAR, 'H' as usize, 1),
+                (WM_CHAR, 'i' as usize, 1),
+                (WM_CHAR, 0x0D, 1),
+                (WM_CHAR, '好' as usize, 1)
+            ]
+        );
+        assert_eq!(
+            window_messages(&Key::Backspace(2), true),
+            [(WM_CHAR, 0x08, 1), (WM_CHAR, 0x08, 1)]
+        );
+        // Qt（微信）不认 WM_CHAR 里的退格，照旧按键
+        assert_eq!(
+            window_messages(&Key::Backspace(1), false),
+            [
+                (WM_KEYDOWN, VK_BACK as usize, 0x000e_0001),
+                (WM_KEYUP, VK_BACK as usize, 0xc00e_0001_u32 as isize)
+            ]
+        );
+        assert!(window_messages(&Key::Enter, true).is_empty());
+    }
 }

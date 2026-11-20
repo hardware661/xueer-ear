@@ -56,7 +56,7 @@ const COPIED_TIMER: usize = 3;
 /// 译文回来了
 const DONE: u32 = WM_APP + 21;
 /// 长文翻好了几段（wparam = 第几次请求，lparam = 已翻 << 16 | 一共几段）
-const PROGRESS: u32 = WM_APP + 22;
+const PROGRESS: u32 = WM_APP + 23;
 
 /// 初始卡片尺寸（96 DPI）：上半白底原文，下半浅灰底译文。窗口可以拖边改大小、最大化，
 /// 下面的位置都按当前大小算（`Layout`）
@@ -606,6 +606,11 @@ unsafe extern "system" fn procedure(
     let state = &mut *raw;
     match message {
         WM_NCCALCSIZE => 0,
+        // 整个窗口都是自己画的，没有边框和标题栏。系统默认处理这两条时会沿窗口边画一圈旧式灰边框，
+        // 点住边缘拖大小时最明显，要等下次重画才消失（主人 2026-11-21）。
+        // lparam 传 -1：照常切换激活状态，但不画非客户区
+        WM_NCACTIVATE => DefWindowProcW(hwnd, message, wparam, -1),
+        WM_NCPAINT => 0,
         WM_NCHITTEST => {
             let mut point = POINT {
                 x: (lparam as i16) as i32,
