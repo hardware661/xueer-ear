@@ -3,6 +3,13 @@
 > 任何 AI 接手先读这里；每次会话收尾在最上面追加一节（最新在上），写清做了什么、验证了什么、还差什么。
 > 计划原文：主人桌面 `雪耳xueer-ear计划-v1.md`（v1.1）。
 
+## 2026-11-21 04:10 · 主人真机验收通过，分享预览图已上传
+
+- 主人真机试过（原话："The \"stay quiet until the round ends\" feature works just fine … you started talking right away"）：用雪耳听写时雪儿先不出声，说完马上念；翻译小窗拖边缘不再变灰；对着翻译小窗说话不再乱码。
+- 主人说明原来那个小窗 bug：在小窗里说话、点「翻译」时，译文没像现在这样直接出在下面，而是整句被翻乱了；现在说话的字直接进上面的框（不经输入法），下面跟着出译文，主人确认不再出现。
+- 分享预览图：主人不想自己传，让雪儿用主人 Chrome 里已登录的 GitHub 传。经 chrome-cdp 在自己新建的标签里打开仓库设置，往 `#repo-image-file-input` 放 `docs/images/social-preview.png`；GraphQL 回读 `usesCustomOpenGraphImage=true`，下载回来和仓库里的图逐像素一致。标签已关，没碰主人开着的页。
+- 主人定：README 真机录屏动图、VirusTotal 上传扫描都不做。
+
 ## 2026-11-21 03:55 · v1.2.0 已推送、已发布（主人授权这一轮不用一步步问）
 
 - 雪耳：`bc66638` 推到 GitHub 并打 `v1.2.0`，CI 构建、测试、发布成功，发布说明取自 CHANGELOG。匿名下载两个包和 SHA256SUMS.txt，`sha256sum -c` 全部 OK，便携包 ZIP 完整（8 个文件）。CI 出的包和主人电脑上装的本地包哈希不同（构建环境不同），源码相同。
