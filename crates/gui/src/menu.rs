@@ -1,6 +1,7 @@
 //! 弹出菜单：自己画的分层窗口（macOS 菜单式：白底圆角、柔和阴影、石墨色高亮、淡入），不用系统菜单。
 //! 用法和 TrackPopupMenu 一样：弹出后在这里转消息循环，选中返回命令号，点外面、Esc 返回 0。
 #![allow(unsafe_op_in_unsafe_fn)]
+use crate::view::argb;
 use std::{mem, ptr, time::Instant};
 use windows_sys::Win32::{
     Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, SIZE, WPARAM},
@@ -25,15 +26,6 @@ const TEXT_RIGHT: f32 = 18.;
 const FADE_MS: f32 = 140.;
 /// GDI+ 预乘透明 32 位
 const PARGB: i32 = 0x000e_200b;
-
-const CARD: u32 = 0xffffffff;
-const BORDER: u32 = 0x1a000000;
-const HOVER: u32 = 0xff3a3a3c;
-const INK: u32 = 0xff1d1d1f;
-const MUTED: u32 = 0xff8e8e93;
-const SEPARATOR: u32 = 0xffe5e5ea;
-/// 离屏拍照时垫在下面的页面灰（真菜单是透明的）
-const BACKDROP: u32 = 0xfff2f2f7;
 
 struct Row {
     id: usize,
@@ -264,8 +256,9 @@ unsafe fn paint(menu: &Menu, backdrop: Option<u32>) -> (HBITMAP, i32, i32) {
             alpha << 24,
         );
     }
-    fill_rounded(g, x - 0.5, y - 0.5, cw + 1., ch + 1., 10.5, BORDER);
-    fill_rounded(g, x, y, cw, ch, 10., CARD);
+    let p = crate::view::palette();
+    fill_rounded(g, x - 0.5, y - 0.5, cw + 1., ch + 1., 10.5, p.hairline);
+    fill_rounded(g, x, y, cw, ch, 10., argb(p.card));
     // 字用像素坐标画（字体本身已经按 DPI 定好大小）
     let dc = CreateCompatibleDC(ptr::null_mut());
     let old = SelectObject(dc, menu.font);
@@ -288,22 +281,22 @@ unsafe fn paint(menu: &Menu, backdrop: Option<u32>) -> (HBITMAP, i32, i32) {
                 x + cw - 12.,
                 top + rh / 2.,
                 1.,
-                SEPARATOR,
+                argb(p.line),
             );
             top += rh;
             continue;
         }
         let hover = menu.hover == Some(i) && row.clickable();
         if hover {
-            fill_rounded(g, x + 5., top, cw - 10., rh, 6., HOVER);
+            fill_rounded(g, x + 5., top, cw - 10., rh, 6., argb(p.hover));
         }
-        let ink = if hover {
-            0xffffffff
+        let ink = argb(if hover {
+            p.on_hover
         } else if row.label {
-            MUTED
+            p.muted
         } else {
-            INK
-        };
+            p.ink
+        });
         if row.checked && !row.label {
             let m = top + rh / 2.;
             line(g, x + 12., m, x + 15.5, m + 3.5, 1.7, ink);
@@ -619,5 +612,6 @@ pub unsafe fn render(
 ) -> (HBITMAP, i32, i32) {
     let mut menu = Menu::new(choices, font, dpi);
     menu.hover = Some(hover).filter(|&i| menu.rows.get(i).is_some_and(Row::clickable));
-    paint(&menu, Some(BACKDROP))
+    // 离屏拍照时垫在下面的页面灰（真菜单是透明的）
+    paint(&menu, Some(argb(crate::view::palette().page)))
 }

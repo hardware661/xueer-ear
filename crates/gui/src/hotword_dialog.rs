@@ -1,11 +1,15 @@
 //! 「添加热词」小对话框：两格——正确的写法、常被听成什么（可不填）。
 //! 回车添加、Esc 取消；填得不对就在下面用红字说哪里不对，不关窗口。
 #![allow(unsafe_op_in_unsafe_fn)]
-use std::{mem, ptr};
+use crate::view::{colorref, dark, palette};
+use std::{
+    mem, ptr,
+    sync::atomic::{AtomicIsize, Ordering},
+};
 use windows_sys::Win32::{
     Foundation::{HWND, LPARAM, LRESULT, RECT, WPARAM},
     Graphics::Gdi::{
-        GetStockObject, HDC, HFONT, InvalidateRect, SetBkColor, SetTextColor, WHITE_BRUSH,
+        CreateSolidBrush, FillRect, HBRUSH, HDC, HFONT, InvalidateRect, SetBkColor, SetTextColor,
     },
     System::LibraryLoader::GetModuleHandleW,
     UI::{
@@ -36,6 +40,21 @@ struct State {
 
 fn wide(value: &str) -> Vec<u16> {
     value.encode_utf16().chain(Some(0)).collect()
+}
+
+/// 对话框底色和输入框底色的画刷：浅色、深色各建一次，进程退出时回收。
+/// 浅色是白底白框；深色是灰底，输入框再深一档
+unsafe fn brush(field: bool) -> HBRUSH {
+    static BRUSHES: [AtomicIsize; 4] = [const { AtomicIsize::new(0) }; 4];
+    let slot = &BRUSHES[usize::from(dark()) * 2 + usize::from(field)];
+    let mut brush = slot.load(Ordering::Relaxed);
+    if brush == 0 {
+        let p = palette();
+        let color = if field && dark() { p.page } else { p.card };
+        brush = CreateSolidBrush(colorref(color)) as isize;
+        slot.store(brush, Ordering::Relaxed);
+    }
+    brush as HBRUSH
 }
 
 fn scale(value: i32, dpi: u32) -> i32 {
@@ -90,12 +109,26 @@ unsafe extern "system" fn procedure(
             state.done = true;
             0
         }
+        WM_ERASEBKGND => {
+            let mut rect: RECT = mem::zeroed();
+            GetClientRect(hwnd, &mut rect);
+            FillRect(wparam as HDC, &rect, brush(false));
+            1
+        }
         WM_CTLCOLORSTATIC => {
             let dc = wparam as HDC;
-            SetBkColor(dc, 0x00ffffff);
+            let p = palette();
+            SetBkColor(dc, colorref(p.card));
             let hint = lparam as HWND == GetDlgItem(hwnd, HINT as i32);
-            SetTextColor(dc, if hint { 0x003f39bd } else { 0x00251e18 });
-            GetStockObject(WHITE_BRUSH) as isize
+            SetTextColor(dc, colorref(if hint { p.danger } else { p.ink }));
+            brush(false) as isize
+        }
+        WM_CTLCOLOREDIT => {
+            let dc = wparam as HDC;
+            let p = palette();
+            SetBkColor(dc, colorref(if dark() { p.page } else { p.card }));
+            SetTextColor(dc, colorref(p.ink));
+            brush(true) as isize
         }
         WM_NCDESTROY => {
             SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);
@@ -119,7 +152,6 @@ unsafe fn open(
         lpfnWndProc: Some(procedure),
         hInstance: module,
         hCursor: LoadCursorW(ptr::null_mut(), IDC_ARROW),
-        hbrBackground: GetStockObject(WHITE_BRUSH),
         lpszClassName: class_name.as_ptr(),
         ..mem::zeroed()
     };
@@ -164,6 +196,17 @@ unsafe fn open(
     );
     if dialog.is_null() {
         return dialog;
+    }
+    // 深色模式：标题栏变深
+    {
+        use windows_sys::Win32::Graphics::Dwm::*;
+        let on = u32::from(dark());
+        DwmSetWindowAttribute(
+            dialog,
+            DWMWA_USE_IMMERSIVE_DARK_MODE as u32,
+            (&on as *const u32).cast(),
+            4,
+        );
     }
     let tab = WS_CHILD | WS_VISIBLE | WS_TABSTOP;
     // （类名, 文字, 样式, 扩展样式, 控件号, x, y, 宽, 高）
@@ -252,6 +295,21 @@ unsafe fn open(
             ptr::null(),
         );
         SendMessageW(control, WM_SETFONT, font as usize, 0);
+        // 深色模式：按钮、输入框换成系统的深色样式（文件资源管理器、文件对话框用的那套）
+        if dark() {
+            let theme = match class {
+                "BUTTON" => Some("DarkMode_Explorer"),
+                "EDIT" => Some("DarkMode_CFD"),
+                _ => None,
+            };
+            if let Some(theme) = theme {
+                windows_sys::Win32::UI::Controls::SetWindowTheme(
+                    control,
+                    wide(theme).as_ptr(),
+                    ptr::null(),
+                );
+            }
+        }
     }
     for (id, cue) in [
         (WORD, "例如 Claude Code"),

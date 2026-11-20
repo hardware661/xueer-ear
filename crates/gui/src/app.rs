@@ -86,10 +86,18 @@ const VALUE_BUTTONS: [usize; 7] = [
 /// 热词表最大多少字节（和后台读它时的上限一致）
 const HOTWORDS_LIMIT: u64 = 256 * 1024;
 const HOTWORDS_HEADER: &str = "# 雪耳热词表：一行一个词，读音像的识别结果会改成这个词。\r\n# 固定的错法写成「错=对」，例如 Cloud Code=Claude Code。# 开头是注释。\r\n";
-// COLORREF 是 BGR；深灰，和 view 的主色一致
-const GREEN: u32 = 0x002e2c2c;
-const INK: u32 = 0x00251e18;
-const MUTED: u32 = 0x00938e8e;
+/// GDI 的字色（COLORREF），跟着深浅色走
+fn ink() -> u32 {
+    view::colorref(view::palette().ink)
+}
+fn muted() -> u32 {
+    view::colorref(view::palette().muted)
+}
+/// GitHub 图标：浅色界面用黑的（101），深色用浅的（102）
+unsafe fn github_icon() -> HICON {
+    let id = if view::dark() { 102_usize } else { 101 };
+    LoadIconW(GetModuleHandleW(ptr::null()), id as *const u16)
+}
 
 fn data_dir() -> Result<PathBuf, String> {
     std::env::var_os("LOCALAPPDATA")
@@ -485,10 +493,10 @@ impl App {
             font_family: "Microsoft YaHei UI",
             controls: Vec::new(),
             fonts: Vec::new(),
-            page: CreateSolidBrush(view::BACKGROUND),
-            card: CreateSolidBrush(view::CARD),
+            page: CreateSolidBrush(view::colorref(view::palette().page)),
+            card: CreateSolidBrush(view::colorref(view::palette().card)),
             icon,
-            github_icon: LoadIconW(module, 101_usize as *const u16),
+            github_icon: github_icon(),
             taskbar_created: RegisterWindowMessageW(wide("TaskbarCreated").as_ptr()),
             path: std::env::var_os("LOCALAPPDATA")
                 .map(|p| PathBuf::from(p).join("XueerEar/status.json")),
@@ -1168,6 +1176,23 @@ impl App {
         self.update_bubble_redraw();
     }
 
+    /// 系统切换深浅色以后：换画刷、边框颜色和 GitHub 图标，整窗连子控件一起重画
+    unsafe fn recolor(&mut self) {
+        let p = view::palette();
+        DeleteObject(self.page);
+        DeleteObject(self.card);
+        self.page = CreateSolidBrush(view::colorref(p.page));
+        self.card = CreateSolidBrush(view::colorref(p.card));
+        self.github_icon = github_icon();
+        frame_colors(self.hwnd);
+        RedrawWindow(
+            self.hwnd,
+            ptr::null(),
+            ptr::null_mut(),
+            RDW_INVALIDATE | RDW_ERASE | RDW_FRAME | RDW_ALLCHILDREN,
+        );
+    }
+
     unsafe fn update_bubble_redraw(&self) {
         let rect = RECT {
             left: scale(112, self.dpi),
@@ -1642,7 +1667,7 @@ impl App {
                 pressed,
             );
             SetBkMode(draw.hDC, TRANSPARENT as i32);
-            SetTextColor(draw.hDC, MUTED);
+            SetTextColor(draw.hDC, muted());
             SelectObject(draw.hDC, self.fonts[0]);
             let mut rect = draw.rcItem;
             rect.left += scale(8, self.dpi);
@@ -1660,13 +1685,13 @@ impl App {
         }
         if matches!(draw.CtlID as usize, MINIMIZE | CLOSE) {
             if pressed {
-                let b = CreateSolidBrush(0x00ebe5e5);
+                let b = CreateSolidBrush(view::colorref(view::palette().line));
                 FillRect(draw.hDC, &draw.rcItem, b);
                 DeleteObject(b);
             }
             let center_x = draw.rcItem.right / 2;
             let center_y = draw.rcItem.bottom / 2;
-            let pen = CreatePen(PS_SOLID, scale(1, self.dpi).max(1), INK);
+            let pen = CreatePen(PS_SOLID, scale(1, self.dpi).max(1), ink());
             let old = SelectObject(draw.hDC, pen);
             let radius = scale(5, self.dpi);
             MoveToEx(
@@ -1730,11 +1755,11 @@ impl App {
         SetTextColor(
             draw.hDC,
             if disabled {
-                MUTED
+                muted()
             } else if selected {
-                GREEN
+                view::colorref(view::palette().accent)
             } else {
-                INK
+                ink()
             },
         );
         SelectObject(draw.hDC, self.fonts[3]);
@@ -1905,20 +1930,32 @@ unsafe extern "system" fn procedure(
             }
             0
         }
+        // 系统切换了深浅色：换一套颜色重画
+        WM_SETTINGCHANGE if view::is_color_change(lparam) => {
+            if view::follow_system() {
+                app.recolor();
+            }
+            0
+        }
         WM_CTLCOLORSTATIC => {
             let dc = wparam as HDC;
             // 标题、分组小标题在灰底上，其余在白卡片上
             let title = [APP_TITLE, GROUP_DICTATION, GROUP_TEXT]
                 .iter()
                 .any(|&id| lparam as HWND == app.control(id));
-            SetBkColor(dc, if title { view::BACKGROUND } else { view::CARD });
+            let p = view::palette();
+            SetBkColor(dc, view::colorref(if title { p.page } else { p.card }));
             SetTextColor(
                 dc,
                 if lparam as HWND == app.control(LABEL_ERROR) {
                     // 出错是红字；「已复制」这类提示是灰字
                     let failed = !app.command_error.is_empty()
                         || app.status.as_ref().is_some_and(|s| s.phase == "error");
-                    if failed { 0x003f39bd } else { MUTED }
+                    if failed {
+                        view::colorref(p.danger)
+                    } else {
+                        muted()
+                    }
                 } else if [
                     APP_TITLE,
                     UPDATE_TITLE,
@@ -1934,9 +1971,9 @@ unsafe extern "system" fn procedure(
                 .iter()
                 .any(|&id| lparam as HWND == app.control(id))
                 {
-                    INK
+                    ink()
                 } else {
-                    MUTED
+                    muted()
                 },
             );
             if title {
@@ -2078,7 +2115,8 @@ unsafe fn open_window(app: &mut App, offscreen: bool) -> HWND {
         lpszClassName: class_name.as_ptr(),
         ..mem::zeroed()
     };
-    if RegisterClassW(&class) == 0 {
+    // 离屏拍照浅色、深色各开一次窗口，第二次类已经注册过
+    if RegisterClassW(&class) == 0 && GetLastError() != ERROR_CLASS_ALREADY_EXISTS {
         return ptr::null_mut();
     }
     let style = WS_POPUP | WS_SYSMENU | WS_MINIMIZEBOX | WS_CLIPCHILDREN;
@@ -2131,14 +2169,8 @@ unsafe fn open_window(app: &mut App, offscreen: bool) -> HWND {
         cyBottomHeight: 1,
     };
     DwmExtendFrameIntoClientArea(hwnd, &margins);
-    let caption = view::BACKGROUND;
+    frame_colors(hwnd);
     let rounded = 2_u32;
-    DwmSetWindowAttribute(
-        hwnd,
-        DWMWA_CAPTION_COLOR as u32,
-        (&caption as *const u32).cast(),
-        4,
-    );
     DwmSetWindowAttribute(
         hwnd,
         DWMWA_WINDOW_CORNER_PREFERENCE as u32,
@@ -2148,9 +2180,29 @@ unsafe fn open_window(app: &mut App, offscreen: bool) -> HWND {
     hwnd
 }
 
+/// 窗口边框和系统画的那一圈跟着深浅色走
+unsafe fn frame_colors(hwnd: HWND) {
+    use windows_sys::Win32::Graphics::Dwm::*;
+    let caption = view::colorref(view::palette().page);
+    let dark = u32::from(view::dark());
+    DwmSetWindowAttribute(
+        hwnd,
+        DWMWA_CAPTION_COLOR as u32,
+        (&caption as *const u32).cast(),
+        4,
+    );
+    DwmSetWindowAttribute(
+        hwnd,
+        DWMWA_USE_IMMERSIVE_DARK_MODE as u32,
+        (&dark as *const u32).cast(),
+        4,
+    );
+}
+
 pub fn run() {
     unsafe {
         SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
+        view::follow_system();
         let settings = xueer_ear_backend::settings::Settings::load_default().unwrap_or_default();
         // 「以管理员身份运行」开着、自己又不是：以管理员身份重开（会弹 UAC），这个进程退出；
         // 点了「否」就照常以普通身份运行。要在占住单实例之前做，新进程才能接着占
@@ -2267,9 +2319,18 @@ unsafe fn capture(window: HWND, path: &std::path::Path) -> Result<(), String> {
 
 /// 离屏把控制面板、「添加热词」对话框、托盘菜单和热词菜单各拍一张 PNG 到 `dir`（核对外观用）。
 /// 窗口建在屏幕外、不抢焦点、不建托盘图标，不会打扰正在用电脑的人。
+/// 离屏拍照：浅色一套放在目录里，深色一套放在 `dark` 子目录
 pub fn snapshot(dir: &std::path::Path) -> Result<(), String> {
+    snapshot_theme(dir, false)?;
+    let dark = dir.join("dark");
+    std::fs::create_dir_all(&dark).map_err(|e| format!("无法创建 {}：{e}", dark.display()))?;
+    snapshot_theme(&dark, true)
+}
+
+fn snapshot_theme(dir: &std::path::Path, dark: bool) -> Result<(), String> {
     unsafe {
         SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
+        view::set_dark(dark);
         let mut app = Box::new(App::new());
         app.snapshot = true;
         let hwnd = open_window(&mut app, true);

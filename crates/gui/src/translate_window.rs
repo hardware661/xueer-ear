@@ -5,6 +5,7 @@
 //! 右上小 ×，Esc 也能关；按住卡片空白处可以拖。停手约半秒自动翻译，Ctrl+Enter 立刻翻。
 //! 用 `xueer-ear.exe --translate` 打开；已经开着就切到前面。
 #![allow(unsafe_op_in_unsafe_fn)]
+use crate::view::{colorref, palette};
 use std::{mem, ptr, sync::mpsc, thread};
 use windows_sys::Win32::{
     Foundation::{GetLastError, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM},
@@ -159,7 +160,8 @@ impl Layout {
 struct State {
     dpi: u32,
     fonts: [HFONT; 3],
-    white: isize,
+    /// 底色画刷（输入框、三个小点那一条），跟着深浅色走
+    card: isize,
     asked: usize,
     in_flight: bool,
     queued: bool,
@@ -491,10 +493,21 @@ unsafe fn paint(window: HWND, state: &State) {
         Target::English => ("中文", "English"),
         Target::Chinese => ("English", "中文"),
     };
-    draw(from, state.fonts[1], 0x00938e8e, layout.captions()[0]);
-    draw(to, state.fonts[1], 0x00938e8e, layout.captions()[1]);
+    let p = palette();
+    draw(
+        from,
+        state.fonts[1],
+        colorref(p.muted),
+        layout.captions()[0],
+    );
+    draw(to, state.fonts[1], colorref(p.muted), layout.captions()[1]);
     if !state.note.is_empty() {
-        draw(&state.note, state.fonts[1], 0x003f39bd, layout.note());
+        draw(
+            &state.note,
+            state.fonts[1],
+            colorref(p.danger),
+            layout.note(),
+        );
     }
     // 分隔线中间：「中 ⇄ 英」，点了反转
     let (sx, sy, sw, sh) = layout.swap();
@@ -505,7 +518,7 @@ unsafe fn paint(window: HWND, state: &State) {
     };
     {
         let old = SelectObject(dc, state.fonts[1]);
-        SetTextColor(dc, 0x003c3a3a);
+        SetTextColor(dc, colorref(p.ink_soft));
         for (text, x) in [(left, sx + 8), (right, sx + sw - 8 - 32)] {
             let mut rect = RECT {
                 left: scale(x, d),
@@ -524,12 +537,12 @@ unsafe fn paint(window: HWND, state: &State) {
         }
         SelectObject(dc, old);
     }
-    // 上半右下角的「翻译」按钮：深灰胶囊、白字
+    // 上半右下角的「翻译」按钮：主色胶囊（浅色是深灰胶囊白字）
     let (gx, gy, gw, gh) = layout.go();
     crate::view::pill(dc, d, gx, gy, gw, gh);
     {
         let old = SelectObject(dc, state.fonts[1]);
-        SetTextColor(dc, 0x00ffffff);
+        SetTextColor(dc, colorref(p.on_accent));
         let mut rect = RECT {
             left: scale(gx, d),
             top: scale(gy, d),
@@ -580,7 +593,7 @@ unsafe fn paint_dots(window: HWND, state: &State) {
         right: pw,
         bottom: ph,
     };
-    windows_sys::Win32::Graphics::Gdi::FillRect(memory, &all, state.white as _);
+    windows_sys::Win32::Graphics::Gdi::FillRect(memory, &all, state.card as _);
     crate::view::busy_dots(memory, d, pw, ph, state.phase);
     BitBlt(screen, px, py, pw, ph, memory, 0, 0, SRCCOPY);
     SelectObject(memory, old);
@@ -890,12 +903,31 @@ unsafe extern "system" fn procedure(
         }
         WM_CTLCOLOREDIT | WM_CTLCOLORSTATIC => {
             let dc = wparam as HDC;
-            // 原文白底、译文浅灰底（和卡片两半同色）
+            // 原文、译文都和卡片同色
             let result = lparam as HWND == GetDlgItem(hwnd, RESULT as i32);
-            SetBkColor(dc, 0x00ffffff);
-            // 译文稍深，和原文区分
-            SetTextColor(dc, if result { 0x001e1c1c } else { 0x00403c3a });
-            state.white
+            let p = palette();
+            SetBkColor(dc, colorref(p.card));
+            // 译文稍深（深色模式下是稍亮），和原文区分
+            SetTextColor(dc, colorref(if result { p.ink } else { p.ink_soft }));
+            state.card
+        }
+        // 系统切换了深浅色：换底色画刷和边框，连输入框一起重画
+        WM_SETTINGCHANGE if crate::view::is_color_change(lparam) => {
+            if crate::view::follow_system() {
+                windows_sys::Win32::Graphics::Gdi::DeleteObject(state.card as _);
+                state.card = CreateSolidBrush(colorref(palette().card)) as isize;
+                dark_frame(hwnd);
+                windows_sys::Win32::Graphics::Gdi::RedrawWindow(
+                    hwnd,
+                    ptr::null(),
+                    ptr::null_mut(),
+                    windows_sys::Win32::Graphics::Gdi::RDW_INVALIDATE
+                        | windows_sys::Win32::Graphics::Gdi::RDW_ERASE
+                        | windows_sys::Win32::Graphics::Gdi::RDW_FRAME
+                        | windows_sys::Win32::Graphics::Gdi::RDW_ALLCHILDREN,
+                );
+            }
+            0
         }
         WM_CLOSE => {
             DestroyWindow(hwnd);
@@ -933,6 +965,18 @@ unsafe fn font(size: i32, weight: i32, dpi: u32, family: &str) -> HFONT {
     )
 }
 
+/// 系统画的那一圈边框跟着深浅色走
+unsafe fn dark_frame(window: HWND) {
+    use windows_sys::Win32::Graphics::Dwm::*;
+    let dark = u32::from(crate::view::dark());
+    DwmSetWindowAttribute(
+        window,
+        DWMWA_USE_IMMERSIVE_DARK_MODE as u32,
+        (&dark as *const u32).cast(),
+        4,
+    );
+}
+
 /// 建好窗口（还没显示）。`at` 给了就放在那个屏幕坐标（离屏拍照用），否则放在听写面板正下方。
 unsafe fn open(at: Option<(i32, i32)>) -> HWND {
     let module = GetModuleHandleW(ptr::null());
@@ -963,7 +1007,7 @@ unsafe fn open(at: Option<(i32, i32)>) -> HWND {
     let state = Box::into_raw(Box::new(State {
         dpi: 96,
         fonts: [ptr::null_mut(); 3],
-        white: CreateSolidBrush(0x00ffffff) as isize,
+        card: CreateSolidBrush(colorref(palette().card)) as isize,
         asked: 0,
         in_flight: false,
         queued: false,
@@ -1046,6 +1090,7 @@ unsafe fn open(at: Option<(i32, i32)>) -> HWND {
             4,
         );
     }
+    dark_frame(window);
     // 长文可以用滚轮看；右边的细滚动条是自己画的（参照 Husic，系统滚动条太粗，主人 2026-11-19）
     let edit = WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_MULTILINE | ES_AUTOVSCROLL;
     for (id, style) in [(SOURCE, edit | ES_WANTRETURN), (RESULT, edit | ES_READONLY)] {
@@ -1104,6 +1149,7 @@ pub fn run() -> Result<(), String> {
             return Ok(());
         }
         let _renderer = crate::view::Renderer::new()?;
+        crate::view::follow_system();
         let window = open(None);
         if window.is_null() {
             return Err("打不开翻译小窗".into());

@@ -52,23 +52,27 @@ fn main() {
     }
     if first.as_deref() == Some("--panel-render") {
         let dir = std::path::PathBuf::from(args.next().unwrap_or_else(|| ".".into()));
-        for (name, look, level) in [
-            ("listening", panel::Look::Listening, 0.),
-            ("speaking", panel::Look::Speaking, 0.7),
-            ("idle", panel::Look::Idle, 0.),
-            ("notice", panel::Look::Notice, 0.),
-        ] {
-            let text = recovery::message(recovery::Kind::Network);
-            if let Err(e) = panel::render_png(
-                look,
-                level,
-                3.,
-                text,
-                &dir.join(format!("panel-{name}.png")),
-                panel::EAR,
-            ) {
-                eprintln!("{e}");
-                std::process::exit(1);
+        // 浅色、深色各一套：panel-listening.png、panel-listening-dark.png
+        for (dark, suffix) in [(false, ""), (true, "-dark")] {
+            panel::set_dark(dark);
+            for (name, look, level) in [
+                ("listening", panel::Look::Listening, 0.),
+                ("speaking", panel::Look::Speaking, 0.7),
+                ("idle", panel::Look::Idle, 0.),
+                ("notice", panel::Look::Notice, 0.),
+            ] {
+                let text = recovery::message(recovery::Kind::Network);
+                if let Err(e) = panel::render_png(
+                    look,
+                    level,
+                    3.,
+                    text,
+                    &dir.join(format!("panel-{name}{suffix}.png")),
+                    panel::EAR,
+                ) {
+                    eprintln!("{e}");
+                    std::process::exit(1);
+                }
             }
         }
         return;

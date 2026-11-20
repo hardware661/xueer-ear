@@ -37,6 +37,7 @@ fn msvc_rc() -> PathBuf {
 fn main() {
     println!("cargo:rerun-if-changed=../../assets/app-icon.ico");
     println!("cargo:rerun-if-changed=../../assets/github-mark.ico");
+    println!("cargo:rerun-if-changed=../../assets/github-mark-light.ico");
     println!("cargo:rerun-if-env-changed=RC");
     let target = env::var("TARGET").unwrap_or_default();
     if !target.contains("windows") {
@@ -66,10 +67,15 @@ fn main() {
         PathBuf::from(env::var_os("CARGO_MANIFEST_DIR").unwrap())
             .join("../../assets/github-mark.ico"),
     );
+    // 102：深色模式用的浅色 GitHub 图标
+    let github_light = resource_path(
+        PathBuf::from(env::var_os("CARGO_MANIFEST_DIR").unwrap())
+            .join("../../assets/github-mark-light.ico"),
+    );
     let rc = out.join("gui.rc");
     fs::write(
         &rc,
-        format!("#pragma code_page(65001)\n100 ICON \"{icon}\"\n101 ICON \"{github}\"\n1 24 \"{manifest_path}\"\n"),
+        format!("#pragma code_page(65001)\n100 ICON \"{icon}\"\n101 ICON \"{github}\"\n102 ICON \"{github_light}\"\n1 24 \"{manifest_path}\"\n"),
     )
     .expect("write GUI resources");
     if target.ends_with("msvc") {

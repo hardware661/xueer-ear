@@ -308,7 +308,12 @@ pub fn translate_choices(
         (OPEN_TRANSLATOR, "打开翻译小窗".to_owned(), false),
         separator(),
         (NOTHING, status, false),
-        (NOTHING, "听写最后说「翻译」换成英文".to_owned(), false),
+        (NOTHING, "听写最后说「翻译成英文 / 中文」".to_owned(), false),
+        (
+            NOTHING,
+            "只说「翻译」：中文变英文，英文变中文".to_owned(),
+            false,
+        ),
         separator(),
         (OPEN_TRANSLATE_KEYS, "打开翻译设置".to_owned(), false),
     ]

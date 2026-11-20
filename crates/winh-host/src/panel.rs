@@ -8,7 +8,7 @@ use std::{
     mem, ptr,
     sync::{
         Arc, Mutex,
-        atomic::{AtomicU32, Ordering},
+        atomic::{AtomicBool, AtomicU32, Ordering},
         mpsc::Sender,
     },
     thread,
@@ -32,8 +32,8 @@ use windows_sys::Win32::{
             CreateWindowExW, DefWindowProcW, DispatchMessageW, GWLP_USERDATA, GetForegroundWindow,
             GetMessageW, GetWindowLongPtrW, IDC_ARROW, KillTimer, LoadCursorW, MSG, PostMessageW,
             RegisterClassW, SW_HIDE, SW_SHOWNOACTIVATE, SetTimer, SetWindowLongPtrW, ShowWindow,
-            ULW_ALPHA, UpdateLayeredWindow, WM_APP, WM_LBUTTONUP, WM_TIMER, WNDCLASSW,
-            WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
+            ULW_ALPHA, UpdateLayeredWindow, WM_APP, WM_LBUTTONUP, WM_SETTINGCHANGE, WM_TIMER,
+            WNDCLASSW, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP,
         },
     },
 };
@@ -167,6 +167,7 @@ unsafe fn run(shared: Arc<Shared>, slot: Arc<Mutex<usize>>) {
             ..mem::zeroed()
         };
         RegisterClassW(&class);
+        follow_system();
         let hwnd = CreateWindowExW(
             WS_EX_LAYERED | WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
             class_name.as_ptr(),
@@ -212,6 +213,13 @@ unsafe extern "system" fn procedure(hwnd: HWND, message: u32, wp: WPARAM, lp: LP
         match message {
             REFRESH => {
                 window.refresh();
+                0
+            }
+            // 系统切换了深浅色：换一套颜色重画（面板正显示着才看得到）
+            WM_SETTINGCHANGE if is_color_change(lp) => {
+                if follow_system() {
+                    window.draw();
+                }
                 0
             }
             WM_TIMER => {
@@ -377,18 +385,104 @@ impl Window {
     }
 }
 
-const PANEL_FILL: u32 = 0xffededf0;
-/// 两边小按钮的浅灰圆底
-const SIDE_FILL: u32 = 0xffe2e2e6;
-/// 两边图标
-const ICON: u32 = 0xff48484a;
-const INNER_EAR: u32 = 0xfff6e4e8;
-const MUTED: u32 = 0xff8e8e93;
-/// 在听和出字用同一种中灰圆底（主人：麦克风太淡、波浪太深，综合成一种）
-const ACCENT: u32 = 0xff8e8e93;
-const HALO: u32 = 0x268e8e93;
-const GREY_FILL: u32 = 0xffe5e5ea;
-const NOTICE_TEXT: u32 = 0xff3a3a3c;
+/// 面板的一套颜色（GDI+ 的 0xAARRGGBB）。浅色是原来的磨砂白；深色跟系统「应用模式」走
+struct Colors {
+    /// 卡片：上沿亮一点、下沿是 fill 的竖向渐变
+    fill_top: u32,
+    fill: u32,
+    /// 卡片下面那圈很淡的影子
+    shadow: u32,
+    /// 两边小按钮的圆底和上面的图标
+    side: u32,
+    icon: u32,
+    inner_ear: u32,
+    muted: u32,
+    /// 在听和出字用同一种中灰圆底（主人：麦克风太淡、波浪太深，综合成一种），上面的麦克风和波浪是白的
+    accent: u32,
+    on_accent: u32,
+    halo: u32,
+    /// 待机和出错时麦克风的灰圆底
+    grey: u32,
+    notice: u32,
+}
+
+const LIGHT: Colors = Colors {
+    fill_top: 0xfffcfcfd,
+    fill: 0xffededf0,
+    shadow: 0x1a000000,
+    side: 0xffe2e2e6,
+    icon: 0xff48484a,
+    inner_ear: 0xfff6e4e8,
+    muted: 0xff8e8e93,
+    accent: 0xff8e8e93,
+    on_accent: 0xffffffff,
+    halo: 0x268e8e93,
+    grey: 0xffe5e5ea,
+    notice: 0xff3a3a3c,
+};
+
+const DARK: Colors = Colors {
+    fill_top: 0xff3a3a3c,
+    fill: 0xff2c2c2e,
+    shadow: 0x59000000,
+    side: 0xff3a3a3c,
+    icon: 0xffd1d1d6,
+    inner_ear: 0xff5a454b,
+    muted: 0xff98989d,
+    accent: 0xff7c7c80,
+    on_accent: 0xffffffff,
+    halo: 0x338e8e93,
+    grey: 0xff3a3a3c,
+    notice: 0xffe5e5ea,
+};
+
+/// 深色模式：面板线程启动时和收到 WM_SETTINGCHANGE 时读系统设置
+static DARK_MODE: AtomicBool = AtomicBool::new(false);
+
+fn colors() -> &'static Colors {
+    if DARK_MODE.load(Ordering::Relaxed) {
+        &DARK
+    } else {
+        &LIGHT
+    }
+}
+
+/// 离屏画图时指定深浅
+pub fn set_dark(dark: bool) {
+    DARK_MODE.store(dark, Ordering::Relaxed);
+}
+
+/// 按系统「应用模式」定深浅（AppsUseLightTheme 为 0 是深色，读不到算浅色），返回变没变
+fn follow_system() -> bool {
+    use windows_sys::Win32::System::Registry::{HKEY_CURRENT_USER, RRF_RT_REG_DWORD, RegGetValueW};
+    let mut value = 1_u32;
+    let mut size = mem::size_of::<u32>() as u32;
+    let status = unsafe {
+        RegGetValueW(
+            HKEY_CURRENT_USER,
+            wide("Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize").as_ptr(),
+            wide("AppsUseLightTheme").as_ptr(),
+            RRF_RT_REG_DWORD,
+            ptr::null_mut(),
+            (&mut value as *mut u32).cast(),
+            &mut size,
+        )
+    };
+    let dark = status == 0 && value == 0;
+    DARK_MODE.swap(dark, Ordering::Relaxed) != dark
+}
+
+/// WM_SETTINGCHANGE 带的是不是「颜色设置变了」（lParam 指向 "ImmersiveColorSet"）
+unsafe fn is_color_change(lp: LPARAM) -> bool {
+    if lp == 0 {
+        return false;
+    }
+    let text = lp as *const u16;
+    wide("ImmersiveColorSet")
+        .iter()
+        .enumerate()
+        .all(|(i, &unit)| unsafe { *text.add(i) } == unit)
+}
 
 unsafe fn paint(
     dc: windows_sys::Win32::Graphics::Gdi::HDC,
@@ -435,9 +529,10 @@ unsafe fn paint_graphics(
         // 很淡的一圈影子托着卡片（往下错 1.5，不扩出去），让白卡片从任何背景上浮出来
         let e = ear_style;
         gp::GdipTranslateWorldTransform(g, 0., 1.5, gp::MatrixOrderPrepend);
-        cat_card(g, card_w, body_h, twitch, 0x1a000000, e);
+        let k = colors();
+        cat_card(g, card_w, body_h, twitch, k.shadow, e);
         gp::GdipTranslateWorldTransform(g, 0., -1.5, gp::MatrixOrderPrepend);
-        cat_card(g, card_w, body_h, twitch, PANEL_FILL, e);
+        cat_card(g, card_w, body_h, twitch, k.fill, e);
         if e.pink {
             // 内耳一抹淡粉：同形状缩小，贴着耳根
             let small = EarStyle {
@@ -454,7 +549,7 @@ unsafe fn paint_graphics(
                     small.width,
                     small.height,
                     lean,
-                    INNER_EAR,
+                    k.inner_ear,
                 );
             }
         }
@@ -463,44 +558,36 @@ unsafe fn paint_graphics(
         // 两边：左设置（齿轮）、右翻译（「译」字），出错提示时不画
         if look != Look::Notice {
             side_button(g, SETTINGS_X, cy);
-            gear(g, SETTINGS_X, cy, ICON);
+            gear(g, SETTINGS_X, cy, k.icon);
             side_button(g, TRANSLATE_X, cy);
-            glyph_sized(g, "译", TRANSLATE_X, cy + 0.5, 16., false, ICON);
+            glyph_sized(g, "译", TRANSLATE_X, cy + 0.5, 16., false, k.icon);
         }
         match look {
             // 出错提示：左边灰掉的麦克风，右边一句原因
             Look::Notice => {
-                ellipse(g, 18., cy - 22., 44., 44., GREY_FILL);
-                mic(g, 18. + 13., cy - 12., 18., MUTED);
-                label(
-                    g,
-                    text,
-                    74.,
-                    BODY_TOP,
-                    card_w - 74. - 16.,
-                    body_h,
-                    NOTICE_TEXT,
-                );
+                ellipse(g, 18., cy - 22., 44., 44., k.grey);
+                mic(g, 18. + 13., cy - 12., 18., k.muted);
+                label(g, text, 74., BODY_TOP, card_w - 74. - 16., body_h, k.notice);
             }
             Look::Speaking => {
                 let r = 24. + 6. * level;
-                ellipse(g, cx - r, cy - r, r * 2., r * 2., HALO);
-                ellipse(g, cx - 22., cy - 22., 44., 44., ACCENT);
+                ellipse(g, cx - r, cy - r, r * 2., r * 2., k.halo);
+                ellipse(g, cx - 22., cy - 22., 44., 44., k.accent);
                 wave(g, cx, cy, level, phase);
             }
             Look::Connecting => {
                 let r = 24. + 6. * (0.25 + 0.25 * phase.sin().abs());
-                ellipse(g, cx - r, cy - r, r * 2., r * 2., HALO);
-                ellipse(g, cx - 22., cy - 22., 44., 44., ACCENT);
-                mic(g, cx - 9., cy - 12., 18., 0xffffffff);
+                ellipse(g, cx - r, cy - r, r * 2., r * 2., k.halo);
+                ellipse(g, cx - 22., cy - 22., 44., 44., k.accent);
+                mic(g, cx - 9., cy - 12., 18., k.on_accent);
             }
             Look::Listening => {
-                ellipse(g, cx - 22., cy - 22., 44., 44., ACCENT);
-                mic(g, cx - 9., cy - 12., 18., 0xffffffff);
+                ellipse(g, cx - 22., cy - 22., 44., 44., k.accent);
+                mic(g, cx - 9., cy - 12., 18., k.on_accent);
             }
             _ => {
-                ellipse(g, cx - 22., cy - 22., 44., 44., GREY_FILL);
-                mic(g, cx - 9., cy - 12., 18., MUTED);
+                ellipse(g, cx - 22., cy - 22., 44., 44., k.grey);
+                mic(g, cx - 9., cy - 12., 18., k.muted);
             }
         }
     }
@@ -657,7 +744,7 @@ unsafe fn wave(g: *mut gp::GpGraphics, cx: f32, cy: f32, level: f32, phase: f32)
             let wobble = ((phase * 1.7 + i as f32 * 1.1).sin() * 0.5 + 0.5) * 0.6 + 0.4;
             let h = 5. + 20. * k * (0.25 + 0.75 * level) * wobble;
             let x = cx + (i as f32 - 2.) * 6.5;
-            line(g, x, cy - h / 2., x, cy + h / 2., 4.4, 0xffffffff);
+            line(g, x, cy - h / 2., x, cy + h / 2., 4.4, colors().on_accent);
         }
     }
 }
@@ -887,7 +974,11 @@ unsafe fn cat_card(
             gp::PointF { X: 0., Y: bottom },
         );
         let mut brush = ptr::null_mut();
-        let top_color = if fill >> 24 == 0xff { 0xfffcfcfd } else { fill };
+        let top_color = if fill >> 24 == 0xff {
+            colors().fill_top
+        } else {
+            fill
+        };
         if gp::GdipCreateLineBrush(
             &from,
             &to,
@@ -907,7 +998,7 @@ unsafe fn cat_card(
 /// 两边小按钮的底：一个浅灰圆
 unsafe fn side_button(g: *mut gp::GpGraphics, cx: f32, cy: f32) {
     unsafe {
-        ellipse(g, cx - 17., cy - 17., 34., 34., SIDE_FILL);
+        ellipse(g, cx - 17., cy - 17., 34., 34., colors().side);
     }
 }
 
@@ -1007,8 +1098,13 @@ pub fn render_png(
         } else {
             let mut g = ptr::null_mut();
             gp::GdipGetImageGraphicsContext(bitmap.cast(), &mut g);
-            // 白底方便看
-            gp::GdipGraphicsClear(g, 0xffffffff);
+            // 垫一层底方便看：浅色垫白，深色垫深灰
+            let backdrop = if DARK_MODE.load(Ordering::Relaxed) {
+                0xff1c1c1e
+            } else {
+                0xffffffff
+            };
+            gp::GdipGraphicsClear(g, backdrop);
             paint_graphics(g, scale, look, level, 0., text, ear);
             gp::GdipDeleteGraphics(g);
             let clsid = windows_sys::core::GUID::from_u128(0x557cf406_1a04_11d3_9a73_0000f81ef32e);

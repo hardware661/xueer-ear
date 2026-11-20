@@ -1,17 +1,191 @@
 //! Antialiased Fluent decoration; native child controls retain input and focus.
 #![allow(unsafe_op_in_unsafe_fn)]
-use std::{mem, ptr};
+use std::{
+    mem, ptr,
+    sync::atomic::{AtomicBool, Ordering},
+};
 use windows_sys::Win32::Graphics::{Gdi::HDC, GdiPlus as gp};
 
-/// 页面底色 #F2F2F7（COLORREF 是 BGR）
-pub const BACKGROUND: u32 = 0x00f7f2f2;
 pub const WIDTH: i32 = 400;
 pub const HEADER: i32 = 42;
 pub const HEIGHT: i32 = 544;
-// 主色：深灰（雪耳黑白灰，原来是绿色）
-const GREEN: u32 = 0xff2c2c2e;
-const LINE: u32 = 0xffe5eaf0;
-const MUTED: u32 = 0xff657388;
+
+/// 一套界面颜色（0xRRGGBB）。浅色是雪耳原来的黑白灰；深色参照 macOS 深色模式。
+/// GDI+ 画图用 `argb`，GDI 的字和画刷用 `colorref`
+pub struct Palette {
+    /// 页面底：标题栏、分组小标题所在的灰底
+    pub page: u32,
+    /// 卡片、更新气泡、菜单、翻译小窗、对话框的底
+    pub card: u32,
+    /// 卡片里的分隔线；标题栏按钮按下时的底；关着的麦克风圆底
+    pub line: u32,
+    /// 气泡、胶囊的细边，翻译小窗的分隔线，待机波形的点
+    pub edge: u32,
+    /// 正文
+    pub ink: u32,
+    /// 比正文浅一点：翻译小窗的原文、方向胶囊里的字和箭头
+    pub ink_soft: u32,
+    /// 次要文字、小图标
+    pub muted: u32,
+    /// 更淡的记号：值右边的 ›、滚动条
+    pub faint: u32,
+    /// 细线小图标：方向胶囊的箭头、更新气泡的 ×
+    pub glyph: u32,
+    /// 翻译中跳动的三个小点
+    pub dots: u32,
+    /// 主色：开着的麦克风和开关、「翻译」按钮、说话时的波形（浅色是深灰，深色是浅灰）
+    pub accent: u32,
+    /// 主色上面的图标和字
+    pub on_accent: u32,
+    /// 出错的红字
+    pub danger: u32,
+    /// 卡片上的东西按下时的底
+    pub pressed: u32,
+    /// 普通按钮：底、选中的底、按下的底、边、选中的边
+    pub button: u32,
+    pub button_selected: u32,
+    pub button_pressed: u32,
+    pub button_edge: u32,
+    pub button_edge_selected: u32,
+    /// 开关：关着的轨道、不能点的轨道、关着的圆钮
+    pub toggle_off: u32,
+    pub toggle_disabled: u32,
+    pub knob_off: u32,
+    /// 菜单里鼠标停住的那一行，和上面的字
+    pub hover: u32,
+    pub on_hover: u32,
+    /// 卡片下面的影子（0xAARRGGBB，带透明度）
+    pub shadow: u32,
+    /// 菜单外面一圈细边（0xAARRGGBB）：浅色是淡黑，深色是淡白
+    pub hairline: u32,
+}
+
+pub const LIGHT: Palette = Palette {
+    page: 0xf2f2f7,
+    card: 0xffffff,
+    line: 0xe5e5ea,
+    edge: 0xd1d1d6,
+    ink: 0x1d1d1f,
+    ink_soft: 0x3a3a3c,
+    muted: 0x8e8e93,
+    faint: 0xc7c7cc,
+    glyph: 0x636366,
+    dots: 0xaeaeb2,
+    accent: 0x2c2c2e,
+    on_accent: 0xffffff,
+    danger: 0xbd393f,
+    pressed: 0xf2f2f7,
+    button: 0xf0f3f7,
+    button_selected: 0xe8e8ed,
+    button_pressed: 0xdcdce1,
+    button_edge: 0xe5eaf0,
+    button_edge_selected: 0xaeaeb2,
+    toggle_off: 0xbbc5d2,
+    toggle_disabled: 0xd5dce5,
+    knob_off: 0xffffff,
+    hover: 0x3a3a3c,
+    on_hover: 0xffffff,
+    shadow: 0x1a000000,
+    hairline: 0x1a000000,
+};
+
+pub const DARK: Palette = Palette {
+    page: 0x1c1c1e,
+    card: 0x2c2c2e,
+    line: 0x3a3a3c,
+    edge: 0x48484a,
+    ink: 0xf2f2f7,
+    ink_soft: 0xd1d1d6,
+    muted: 0x98989d,
+    faint: 0x636366,
+    glyph: 0xaeaeb2,
+    dots: 0x8e8e93,
+    accent: 0xe5e5ea,
+    on_accent: 0x1c1c1e,
+    danger: 0xff6961,
+    pressed: 0x3a3a3c,
+    button: 0x3a3a3c,
+    button_selected: 0x48484a,
+    button_pressed: 0x545458,
+    button_edge: 0x48484a,
+    button_edge_selected: 0x8e8e93,
+    toggle_off: 0x48484a,
+    toggle_disabled: 0x3a3a3c,
+    knob_off: 0x98989d,
+    hover: 0x5a5a5e,
+    on_hover: 0xffffff,
+    shadow: 0x59000000,
+    hairline: 0x24ffffff,
+};
+
+/// 深色模式：跟随系统（设置 → 个性化 → 颜色 → 应用模式）。启动时和收到 WM_SETTINGCHANGE 时读一次
+static DARK_MODE: AtomicBool = AtomicBool::new(false);
+
+pub fn dark() -> bool {
+    DARK_MODE.load(Ordering::Relaxed)
+}
+
+/// 离屏拍照时指定深浅
+pub fn set_dark(dark: bool) {
+    DARK_MODE.store(dark, Ordering::Relaxed);
+}
+
+/// 按系统现在的设置定深浅，返回变没变
+pub fn follow_system() -> bool {
+    let dark = system_dark();
+    DARK_MODE.swap(dark, Ordering::Relaxed) != dark
+}
+
+/// 系统「应用模式」是不是深色：AppsUseLightTheme 为 0；读不到（老系统、被策略删掉）算浅色
+pub fn system_dark() -> bool {
+    use windows_sys::Win32::System::Registry::{HKEY_CURRENT_USER, RRF_RT_REG_DWORD, RegGetValueW};
+    let key: Vec<u16> = "Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize"
+        .encode_utf16()
+        .chain(Some(0))
+        .collect();
+    let name: Vec<u16> = "AppsUseLightTheme".encode_utf16().chain(Some(0)).collect();
+    let mut value = 1_u32;
+    let mut size = mem::size_of::<u32>() as u32;
+    let status = unsafe {
+        RegGetValueW(
+            HKEY_CURRENT_USER,
+            key.as_ptr(),
+            name.as_ptr(),
+            RRF_RT_REG_DWORD,
+            ptr::null_mut(),
+            (&mut value as *mut u32).cast(),
+            &mut size,
+        )
+    };
+    status == 0 && value == 0
+}
+
+/// WM_SETTINGCHANGE 带的是不是「颜色设置变了」（lParam 指向 "ImmersiveColorSet"）
+pub unsafe fn is_color_change(lparam: isize) -> bool {
+    if lparam == 0 {
+        return false;
+    }
+    let text = lparam as *const u16;
+    let expected: Vec<u16> = "ImmersiveColorSet".encode_utf16().chain(Some(0)).collect();
+    expected
+        .iter()
+        .enumerate()
+        .all(|(i, &unit)| *text.add(i) == unit)
+}
+
+pub fn palette() -> &'static Palette {
+    if dark() { &DARK } else { &LIGHT }
+}
+
+/// GDI+ 用的不透明颜色 0xAARRGGBB
+pub const fn argb(rgb: u32) -> u32 {
+    0xff00_0000 | rgb
+}
+
+/// GDI 用的 COLORREF（0x00BBGGRR）
+pub const fn colorref(rgb: u32) -> u32 {
+    ((rgb & 0xff) << 16) | (rgb & 0xff00) | ((rgb >> 16) & 0xff)
+}
 
 pub struct Renderer(usize);
 impl Renderer {
@@ -170,31 +344,30 @@ impl Drop for Canvas {
 pub const CARDS: [(f32, f32); 4] = [(52., 72.), (170., 132.), (336., 132.), (484., 44.)];
 /// 一行多高
 pub const ROW: f32 = 44.;
-/// 卡片白
-pub const CARD: u32 = 0x00ffffff;
-
-/// 系统设置式：浅灰底上几张白色圆角卡片；状态卡里是小麦克风、波形（文字和开关是子控件）
+/// 系统设置式：浅灰底上几张白色圆角卡片（深色是深灰底上的灰卡片）；
+/// 状态卡里是小麦克风、波形（文字和开关是子控件）
 pub unsafe fn background(dc: HDC, dpi: u32, enabled: bool, peak: u32, frame: u64) {
     let Some(c) = Canvas::new(dc, dpi) else {
         return;
     };
+    let p = palette();
     for (i, (y, h)) in CARDS.into_iter().enumerate() {
-        c.rounded(16., y, 368., h, 10., 0xffffffff, false);
+        c.rounded(16., y, 368., h, 10., argb(p.card), false);
         if i == 0 {
             continue;
         }
         // 卡片里的行之间一条细线，从字的左边开始（像 macOS 设置）
         let mut line = y + ROW;
         while line < y + h - 1. {
-            c.line(32., line, 384., line, 1., 0xffe5e5ea);
+            c.line(32., line, 384., line, 1., argb(p.line));
             line += ROW;
         }
     }
-    // 小麦克风：开着是深灰底白麦，关着是浅灰底灰麦
+    // 小麦克风：开着是主色底的麦（浅色深灰底白麦），关着是浅一档的底、灰麦
     let (fill, ink) = if enabled {
-        (GREEN, 0xffffffff)
+        (argb(p.accent), argb(p.on_accent))
     } else {
-        (0xffe5e5ea, 0xff8e8e93)
+        (argb(p.line), argb(p.muted))
     };
     c.ellipse(32., 66., 44., 44., fill);
     c.rounded(49., 76., 10., 17., 5., ink, false);
@@ -217,9 +390,9 @@ pub unsafe fn background(dc: HDC, dpi: u32, enabled: bool, peak: u32, frame: u64
             h,
             1.5,
             if peak > 0 && enabled {
-                GREEN
+                argb(p.accent)
             } else {
-                0xffd1d1d6
+                argb(p.edge)
             },
             false,
         );
@@ -233,30 +406,37 @@ pub unsafe fn value_button(dc: HDC, dpi: u32, width: i32, height: i32, pressed: 
     };
     let w = width as f32 * 96. / dpi as f32;
     let h = height as f32 * 96. / dpi as f32;
+    let p = palette();
     if pressed {
-        c.rounded(0., 2., w, h - 4., 6., 0xfff2f2f7, false);
+        c.rounded(0., 2., w, h - 4., 6., argb(p.pressed), false);
     }
-    c.line(w - 12., h / 2. - 4., w - 8., h / 2., 1.6, 0xffc7c7cc);
-    c.line(w - 8., h / 2., w - 12., h / 2. + 4., 1.6, 0xffc7c7cc);
+    c.line(w - 12., h / 2. - 4., w - 8., h / 2., 1.6, argb(p.faint));
+    c.line(w - 8., h / 2., w - 12., h / 2. + 4., 1.6, argb(p.faint));
 }
 
 pub unsafe fn update_bubble(dc: HDC, dpi: u32, available: bool) {
     let Some(c) = Canvas::new(dc, dpi) else {
         return;
     };
+    let p = palette();
     let h = if available { 126. } else { 78. };
-    c.rounded(122., 49., 264., h, 10., 0x180f172a, false);
-    c.rounded(120., 46., 264., h, 10., 0xffffffff, false);
-    c.rounded(120., 46., 264., h, 10., 0xffd1d1d6, true);
-    c.polygon(&[(278., 47.), (284., 40.), (290., 47.)], 0xffffffff, false);
+    c.rounded(122., 49., 264., h, 10., p.shadow, false);
+    c.rounded(120., 46., 264., h, 10., argb(p.card), false);
+    c.rounded(120., 46., 264., h, 10., argb(p.edge), true);
+    c.polygon(
+        &[(278., 47.), (284., 40.), (290., 47.)],
+        argb(p.card),
+        false,
+    );
 }
 
 pub unsafe fn update_badge(dc: HDC, dpi: u32) {
     let Some(c) = Canvas::new(dc, dpi) else {
         return;
     };
-    c.ellipse(23., 3., 8., 8., 0xfff2f7fc);
-    c.ellipse(24., 4., 6., 6., GREEN);
+    let p = palette();
+    c.ellipse(23., 3., 8., 8., argb(p.page));
+    c.ellipse(24., 4., 6., 6., argb(p.accent));
 }
 
 pub unsafe fn close_glyph(dc: HDC, dpi: u32, width: i32, height: i32) {
@@ -265,8 +445,9 @@ pub unsafe fn close_glyph(dc: HDC, dpi: u32, width: i32, height: i32) {
     };
     let x = width as f32 * 48. / dpi as f32;
     let y = height as f32 * 48. / dpi as f32;
-    c.line(x - 3., y - 3., x + 3., y + 3., 1.3, MUTED);
-    c.line(x - 3., y + 3., x + 3., y - 3., 1.3, MUTED);
+    let glyph = argb(palette().glyph);
+    c.line(x - 3., y - 3., x + 3., y + 3., 1.3, glyph);
+    c.line(x - 3., y + 3., x + 3., y - 3., 1.3, glyph);
 }
 
 pub unsafe fn button(
@@ -284,38 +465,43 @@ pub unsafe fn button(
     };
     let w = width as f32 * 96. / dpi as f32;
     let h = height as f32 * 96. / dpi as f32;
+    let p = palette();
     if toggle {
         let fill = if disabled {
-            0xffd5dce5
+            p.toggle_disabled
         } else if selected {
-            GREEN
+            p.accent
         } else {
-            0xffbbc5d2
+            p.toggle_off
         };
-        c.rounded(1., (h - 26.) / 2., w - 2., 26., 13., fill, false);
+        c.rounded(1., (h - 26.) / 2., w - 2., 26., 13., argb(fill), false);
         c.ellipse(
             if selected { w - 24. } else { 4. },
             (h - 20.) / 2.,
             20.,
             20.,
-            0xffffffff,
+            argb(if selected { p.on_accent } else { p.knob_off }),
         );
     } else {
         let fill = if pressed {
-            0xffdcdce1
+            p.button_pressed
         } else if selected {
-            0xffe8e8ed
+            p.button_selected
         } else {
-            0xfff0f3f7
+            p.button
         };
-        c.rounded(0.5, 0.5, w - 1., h - 1., 6., fill, false);
+        c.rounded(0.5, 0.5, w - 1., h - 1., 6., argb(fill), false);
         c.rounded(
             0.5,
             0.5,
             w - 1.,
             h - 1.,
             6.,
-            if selected { 0xffaeaeb2 } else { LINE },
+            argb(if selected {
+                p.button_edge_selected
+            } else {
+                p.button_edge
+            }),
             true,
         );
     }
@@ -338,35 +524,37 @@ pub unsafe fn translate_card(
     };
     let w = width as f32 * 96. / dpi as f32;
     let h = height as f32 * 96. / dpi as f32;
-    // 整张白底；分隔线（主人 2026-11-19：加回来）上下各留距离，中间空出放「中 ⇄ 英」的小胶囊。
+    let p = palette();
+    let (card, muted) = (argb(p.card), argb(p.muted));
+    // 整张白底（深色是灰底）；分隔线（主人 2026-11-19：加回来）上下各留距离，中间空出放「中 ⇄ 英」的小胶囊。
     // 译文那半不再整块铺灰，只靠线和留白分开，胶囊不会骑在两种底色的接缝上
-    c.rect(0., 0., w, h, 0xffffffff);
+    c.rect(0., 0., w, h, card);
     let gap = 60.;
-    c.line(18., split, w / 2. - gap, split, 1., 0xffd1d1d6);
-    c.line(w / 2. + gap, split, w - 18., split, 1., 0xffd1d1d6);
+    c.line(18., split, w / 2. - gap, split, 1., argb(p.edge));
+    c.line(w / 2. + gap, split, w - 18., split, 1., argb(p.edge));
     // 右上三个小按钮：最小化、最大化/还原、关闭（主人 2026-11-19：要有最小和全屏窗口化）
     let (x, y) = (w - 24., 22.);
-    c.line(x - 4.5, y - 4.5, x + 4.5, y + 4.5, 1.4, 0xff8e8e93);
-    c.line(x - 4.5, y + 4.5, x + 4.5, y - 4.5, 1.4, 0xff8e8e93);
+    c.line(x - 4.5, y - 4.5, x + 4.5, y + 4.5, 1.4, muted);
+    c.line(x - 4.5, y + 4.5, x + 4.5, y - 4.5, 1.4, muted);
     let x = w - 56.;
     if maximized {
-        c.rounded(x - 2.5, y - 4.5, 7.5, 7.5, 1.5, 0xff8e8e93, true);
-        c.rect(x - 4.5, y - 2.5, 7.5, 7.5, 0xffffffff);
-        c.rounded(x - 4.5, y - 2.5, 7.5, 7.5, 1.5, 0xff8e8e93, true);
+        c.rounded(x - 2.5, y - 4.5, 7.5, 7.5, 1.5, muted, true);
+        c.rect(x - 4.5, y - 2.5, 7.5, 7.5, card);
+        c.rounded(x - 4.5, y - 2.5, 7.5, 7.5, 1.5, muted, true);
     } else {
-        c.rounded(x - 4.5, y - 4.5, 9., 9., 2., 0xff8e8e93, true);
+        c.rounded(x - 4.5, y - 4.5, 9., 9., 2., muted, true);
     }
     let x = w - 88.;
-    c.line(x - 4.5, y, x + 4.5, y, 1.4, 0xff8e8e93);
+    c.line(x - 4.5, y, x + 4.5, y, 1.4, muted);
     // 右下复制图标：两张叠着的圆角纸；复制后变成对勾
     let (x, y) = (w - 34., h - 34.);
     if copied {
-        c.line(x + 3., y + 10., x + 8., y + 15., 1.8, 0xff2c2c2e);
-        c.line(x + 8., y + 15., x + 17., y + 4., 1.8, 0xff2c2c2e);
+        c.line(x + 3., y + 10., x + 8., y + 15., 1.8, argb(p.ink));
+        c.line(x + 8., y + 15., x + 17., y + 4., 1.8, argb(p.ink));
     } else {
-        c.rounded(x + 6., y + 1., 12., 14., 3., 0xff8e8e93, true);
-        c.rounded(x + 2., y + 5., 12., 14., 3., 0xffffffff, false);
-        c.rounded(x + 2., y + 5., 12., 14., 3., 0xff8e8e93, true);
+        c.rounded(x + 6., y + 1., 12., 14., 3., muted, true);
+        c.rounded(x + 2., y + 5., 12., 14., 3., card, false);
+        c.rounded(x + 2., y + 5., 12., 14., 3., muted, true);
     }
     let _ = busy_phase;
 }
@@ -382,7 +570,7 @@ pub unsafe fn pill(dc: HDC, dpi: u32, x: i32, y: i32, w: i32, h: i32) {
         w as f32,
         h as f32,
         h as f32 / 2.,
-        GREEN,
+        argb(palette().accent),
         false,
     );
 }
@@ -393,10 +581,11 @@ pub unsafe fn swap_pill(dc: HDC, dpi: u32, x: f32, y: f32, w: f32, h: f32) {
     let Some(c) = Canvas::new(dc, dpi) else {
         return;
     };
-    c.rounded(x, y, w, h, h / 2., 0xffffffff, false);
-    c.rounded(x, y, w, h, h / 2., 0xffd1d1d6, true);
+    let p = palette();
+    c.rounded(x, y, w, h, h / 2., argb(p.card), false);
+    c.rounded(x, y, w, h, h / 2., argb(p.edge), true);
     let (cx, cy) = (x + w / 2., y + h / 2.);
-    let color = 0xff636366;
+    let color = argb(p.glyph);
     // 上面一支朝右、下面一支朝左
     c.line(cx - 6., cy - 3., cx + 6., cy - 3., 1.4, color);
     c.line(cx + 6., cy - 3., cx + 3., cy - 6., 1.4, color);
@@ -409,7 +598,7 @@ pub unsafe fn thumb(dc: HDC, dpi: u32, x: f32, y: f32, w: f32, h: f32) {
     let Some(c) = Canvas::new(dc, dpi) else {
         return;
     };
-    c.rounded(x, y, w, h, w / 2., 0xffc7c7cc, false);
+    c.rounded(x, y, w, h, w / 2., argb(palette().faint), false);
 }
 
 /// 翻译中三个跳动的小点，画在 (0,0) 起的一小条里（浅灰底）
@@ -431,9 +620,44 @@ pub unsafe fn busy_dots_at(dc: HDC, dpi: u32, x: i32, y: i32, width: i32, height
     );
     let w = width as f32 / ratio;
     let h = height as f32 / ratio;
-    c.rect(0., 0., w, h, 0xffffffff);
+    let p = palette();
+    c.rect(0., 0., w, h, argb(p.card));
     for i in 0..3 {
         let lift = ((phase - i as f32 * 0.6).sin().max(0.)) * 3.;
-        c.ellipse(4. + i as f32 * 11., h / 2. - 1. - lift, 6., 6., 0xffaeaeb2);
+        c.ellipse(
+            4. + i as f32 * 11.,
+            h / 2. - 1. - lift,
+            6.,
+            6.,
+            argb(p.dots),
+        );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_the_color_setting_counts_as_a_theme_change() {
+        let wide = |s: &str| s.encode_utf16().chain(Some(0)).collect::<Vec<u16>>();
+        unsafe {
+            assert!(is_color_change(wide("ImmersiveColorSet").as_ptr() as isize));
+            assert!(!is_color_change(wide("Policy").as_ptr() as isize));
+            assert!(!is_color_change(wide("Immersive").as_ptr() as isize));
+            assert!(!is_color_change(
+                wide("ImmersiveColorSetX").as_ptr() as isize
+            ));
+            assert!(!is_color_change(0));
+        }
+    }
+
+    #[test]
+    fn gdi_colors_swap_red_and_blue() {
+        assert_eq!(colorref(0x112233), 0x00332211);
+        assert_eq!(argb(0x112233), 0xff112233);
+        // 浅色的页面灰、卡片白和原来写死的一样
+        assert_eq!(colorref(LIGHT.page), 0x00f7f2f2);
+        assert_eq!(colorref(LIGHT.card), 0x00ffffff);
     }
 }
