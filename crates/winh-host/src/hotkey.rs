@@ -579,7 +579,8 @@ impl VoiceTranslation {
         let (sender, result) = mpsc::channel();
         thread::Builder::new()
             .spawn(move || {
-                let _ = sender.send(xueer_ear_backend::translate::translate(&text));
+                use xueer_ear_backend::translate::{Target, translate_into};
+                let _ = sender.send(translate_into(&text, Target::English));
             })
             .map_err(|error| error.to_string())?;
         Ok(Self {

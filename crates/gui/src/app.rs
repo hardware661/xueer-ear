@@ -101,9 +101,8 @@ unsafe fn open_data_file(name: &str) -> Result<(), String> {
     if !path.exists() {
         let header = match name {
             "hotwords.txt" => HOTWORDS_HEADER,
-            // 翻译 Key：哪个没有就留空，按 微软 → 谷歌 → 智谱 的顺序用
             "translate.json" => {
-                "{\r\n  \"azure_key\": \"\",\r\n  \"azure_region\": \"eastasia\",\r\n  \"google_key\": \"\",\r\n  \"zhipu_key\": \"\"\r\n}\r\n"
+                "{\r\n  \"wetype_enabled\": true,\r\n  \"azure_key\": \"\",\r\n  \"azure_region\": \"eastasia\",\r\n  \"google_key\": \"\",\r\n  \"zhipu_key\": \"\"\r\n}\r\n"
             }
             _ => return Err("还没有历史记录".to_owned()),
         };
@@ -793,7 +792,7 @@ impl App {
             LABEL_HISTORY_VALUE,
             &crate::prefs::history_summary(&self.settings),
         );
-        let keys = xueer_ear_backend::translate::local_keys().unwrap_or_default();
+        let keys = xueer_ear_backend::translate::local_keys();
         self.set_text(
             LABEL_TRANSLATE_VALUE,
             &crate::prefs::translate_summary(&keys),
@@ -1323,9 +1322,9 @@ impl App {
         }
     }
 
-    /// 翻译：打开翻译小窗（另起一个 `xueer-ear.exe --translate`），或者用记事本打开 Key 文件
+    /// 翻译：打开翻译小窗，或者用记事本打开翻译设置。
     unsafe fn translate_menu(&mut self) {
-        let keys = xueer_ear_backend::translate::local_keys().unwrap_or_default();
+        let keys = xueer_ear_backend::translate::local_keys();
         let result = match self.popup_under(
             LABEL_TRANSLATE_VALUE,
             &crate::prefs::translate_choices(&keys),
@@ -2093,7 +2092,7 @@ pub fn snapshot(dir: &std::path::Path) -> Result<(), String> {
             result
         };
         let translate_menu = {
-            let keys = xueer_ear_backend::translate::local_keys().unwrap_or_default();
+            let keys = xueer_ear_backend::translate::local_keys();
             let choices = crate::prefs::translate_choices(&keys);
             let (bitmap, _, _) = crate::menu::render(&choices, app.fonts[3], app.dpi, 0);
             let result = save_bitmap(bitmap, &dir.join("translate-menu.png"));

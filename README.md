@@ -51,13 +51,15 @@ Windows 11 的语音输入。屏幕顶上一个小猫面板，边说边出字，
 
 翻译小窗：上面输入或粘贴，下面出译文；中间「中 ⇄ 英」点一下反转方向。边打字边自动翻（间隔 1 秒起，翻得越多间隔越长：2、4、8 秒），点「翻译」或按回车立刻翻（Shift+回车换行）。「复制」放进剪贴板，Ctrl+A 全选；窗口可拖边改大小、最大化，Esc 关闭。
 
-翻译服务按 微软翻译（每月 200 万字免费）→ 谷歌 Gemini → 智谱 的顺序用，一家限流或出错会尝试下一家；已配置的服务都限流时，会先等待再重试。Key 填在 `%LOCALAPPDATA%\XueerEar\translate.json`，只在你自己电脑上：
+默认先用微信输入法的云端翻译，不需要 Key，方向由服务自动判断。微信翻译失败，或自动方向不符合你在小窗选的方向时，雪耳会依次尝试已配置的微软翻译、谷歌 Gemini 和智谱。只有这些备用服务都限流时，才会等待再试。语音翻译失败会保留原文。
+
+在控制面板点「翻译 → 打开翻译设置」，会打开本机的 `%LOCALAPPDATA%\XueerEar\translate.json`。把 `wetype_enabled` 改成 `false` 可关闭微信翻译，不影响听写。没有 Key 的服务留空即可：
 
 ```json
-{"azure_key": "微软翻译的密钥", "azure_region": "eastasia", "google_key": "Google AI Studio 的 Key", "zhipu_key": "智谱的 Key"}
+{"wetype_enabled": true, "azure_key": "", "azure_region": "eastasia", "google_key": "", "zhipu_key": ""}
 ```
 
-哪个没填就跳过哪个。控制面板「翻译 → 打开翻译 Key 设置」会用记事本打开这个文件。命令行 `xueer-ear-cli translate 今天吃什么` 可以试一下通不通。
+翻译时，原文会发给所用的服务。开发时也可以用 `xueer-ear-cli translate "今天吃什么"` 测试同一套翻译逻辑。
 
 ### 文字整理（每句说定时）
 

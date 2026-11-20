@@ -144,7 +144,7 @@ fn run() -> Result<(), Box<dyn Error + Send + Sync>> {
             println!("共 {} 句会被改动", changes.len());
             Ok(())
         }
-        // 试一次翻译（读本机 translate.json 里的 Key，微软 → 谷歌）
+        // 和翻译小窗一样自动判断方向，使用本机的翻译设置和回退顺序。
         #[cfg(windows)]
         (Some(command), Some(text), None) if command == "translate" => {
             println!("{}", xueer_ear_backend::translate::translate(&text.to_string_lossy())?);

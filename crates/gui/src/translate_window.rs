@@ -10,10 +10,11 @@ use windows_sys::Win32::{
     Foundation::{GetLastError, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM},
     Graphics::Gdi::{
         BeginPaint, CLEARTYPE_QUALITY, CLIP_DEFAULT_PRECIS, CreateFontW, CreateSolidBrush,
-        DEFAULT_CHARSET, DEFAULT_PITCH, DT_CENTER, DT_SINGLELINE, DT_VCENTER, DrawTextW, EndPaint,
-        GetDC, GetTextMetricsW, HDC, HFONT, InvalidateRect, OUT_DEFAULT_PRECIS, PAINTSTRUCT,
-        RDW_ALLCHILDREN, RDW_INVALIDATE, RDW_UPDATENOW, RedrawWindow, ReleaseDC, ScreenToClient,
-        SelectObject, SetBkColor, SetBkMode, SetTextColor, TEXTMETRICW, TRANSPARENT,
+        DEFAULT_CHARSET, DEFAULT_PITCH, DT_CENTER, DT_END_ELLIPSIS, DT_NOPREFIX, DT_SINGLELINE,
+        DT_VCENTER, DrawTextW, EndPaint, GetDC, GetTextMetricsW, HDC, HFONT, InvalidateRect,
+        OUT_DEFAULT_PRECIS, PAINTSTRUCT, RDW_ALLCHILDREN, RDW_INVALIDATE, RDW_UPDATENOW,
+        RedrawWindow, ReleaseDC, ScreenToClient, SelectObject, SetBkColor, SetBkMode, SetTextColor,
+        TEXTMETRICW, TRANSPARENT,
     },
     System::{LibraryLoader::GetModuleHandleW, Threading::CreateMutexW},
     UI::{
@@ -121,7 +122,7 @@ impl Layout {
         (self.w / 2 - 52, self.divider - 13, 104, 26)
     }
     fn note(&self) -> (i32, i32, i32, i32) {
-        (PAD, self.h - 38, 300, 26)
+        (PAD, self.h - 38, self.copy().0 - PAD - 8, 26)
     }
     /// 原文框、译文框（右边留出细滚动条的位置）
     fn source(&self) -> (i32, i32, i32, i32) {
@@ -468,7 +469,7 @@ unsafe fn paint(window: HWND, state: &State) {
             units.as_ptr(),
             units.len() as i32,
             &mut rect,
-            DT_SINGLELINE | DT_VCENTER,
+            DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS | DT_NOPREFIX,
         );
         SelectObject(dc, old);
     };
@@ -773,7 +774,10 @@ unsafe extern "system" fn procedure(
                 ShowWindow(GetDlgItem(hwnd, RESULT as i32), SW_SHOWNOACTIVATE);
                 match result {
                     Ok(text) => set_text(hwnd, RESULT, &text),
-                    Err(reason) => state.note = format!("翻译失败：{reason}"),
+                    Err(reason) => {
+                        state.note = format!("翻译失败：{reason}");
+                        note_close(&state.note);
+                    }
                 }
             }
             if std::mem::take(&mut state.queued) {

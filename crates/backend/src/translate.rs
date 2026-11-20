@@ -1,18 +1,29 @@
-//! 翻译（主人 2026-11-19）：微软翻译做主力，谷歌 Gemini 免费 Key 做备用。
-//! Key 只在本机 `%LOCALAPPDATA%\XueerEar\translate.json`，不进仓库：
-//! `{"azure_key": "…", "azure_region": "eastasia", "google_key": "…"}`，哪个没填就跳过哪个。
-//! 中文翻成英文；原文基本是英文时翻成中文（翻译小窗用）。
+//! 雪耳翻译：微信输入法自动翻译，失败时用本机配置的服务。
+//! 配置在 `%LOCALAPPDATA%\XueerEar\translate.json`。
 use serde::Deserialize;
 use std::path::Path;
 
-#[derive(Debug, Clone, Default, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 #[serde(default)]
 pub struct Keys {
+    pub wetype_enabled: bool,
     pub azure_key: String,
     pub azure_region: String,
     pub google_key: String,
     /// 智谱免费模型（和工具站同一把），谷歌限流时的第三备用
     pub zhipu_key: String,
+}
+
+impl Default for Keys {
+    fn default() -> Self {
+        Self {
+            wetype_enabled: true,
+            azure_key: String::new(),
+            azure_region: String::new(),
+            google_key: String::new(),
+            zhipu_key: String::new(),
+        }
+    }
 }
 
 impl Keys {
@@ -113,7 +124,8 @@ pub fn parse_azure(body: &[u8]) -> Result<String, String> {
         serde_json::from_slice(body).map_err(|_| "微软翻译返回的内容看不懂".to_string())?;
     value[0]["translations"][0]["text"]
         .as_str()
-        .map(str::to_string)
+        .and_then(usable_text)
+        .map(str::to_owned)
         .ok_or_else(|| "微软翻译没给结果".to_string())
 }
 
@@ -173,9 +185,14 @@ pub fn parse_google(body: &[u8]) -> Result<String, String> {
         serde_json::from_slice(body).map_err(|_| "谷歌翻译返回的内容看不懂".to_string())?;
     value["choices"][0]["message"]["content"]
         .as_str()
-        .map(|t| t.trim().to_string())
-        .filter(|t| !t.is_empty())
+        .and_then(usable_text)
+        .map(str::to_owned)
         .ok_or_else(|| "谷歌翻译没给结果".to_string())
+}
+
+fn usable_text(text: &str) -> Option<&str> {
+    let text = text.trim();
+    (!text.is_empty() && !text.contains('\0')).then_some(text)
 }
 
 /// 限流后等几秒再试（测试里不真等）
@@ -195,7 +212,7 @@ pub fn status_reason(service: &str, status: u32) -> String {
     }
 }
 
-/// 按顺序试：微软 → 谷歌。`send` 负责真正发请求，返回（状态码, 响应体）。
+/// 按顺序试：微软 → 谷歌 → 智谱。`send` 负责真正发请求，返回（状态码, 响应体）。
 /// 都没配 Key、文字太长或都失败时返回原因（最后一个失败的原因）。
 pub fn translate_with(
     keys: &Keys,
@@ -212,6 +229,16 @@ pub fn translate_to(
     target: Target,
     mut send: impl FnMut(&Request) -> Result<(u32, Vec<u8>), String>,
 ) -> Result<String, String> {
+    let text = validated_text(text)?;
+    if keys.is_empty() {
+        return Err("还没配翻译 Key".into());
+    }
+    translate_batches(text, target, |piece| {
+        translate_piece(keys, piece, target, &mut send)
+    })
+}
+
+fn validated_text(text: &str) -> Result<&str, String> {
     let text = text.trim();
     if text.is_empty() {
         return Err("没有要翻译的字".into());
@@ -219,16 +246,27 @@ pub fn translate_to(
     if text.chars().count() > MAX_CHARS {
         return Err(format!("一次最多翻译 {MAX_CHARS} 字"));
     }
-    if keys.is_empty() {
-        return Err("还没配翻译 Key".into());
-    }
-    // 长文按段切开逐段翻（2026-10 工具站长文翻译失败的教训：一次送太长会被截断或超时）
+    Ok(text)
+}
+
+fn translate_batches(
+    text: &str,
+    target: Target,
+    mut translate: impl FnMut(&str) -> Result<String, String>,
+) -> Result<String, String> {
     let mut out = String::new();
     for (piece, separator) in merge(text, chunks(text, CHUNK_CHARS), CHUNK_CHARS) {
-        let translated = translate_piece(keys, piece, target, &mut send)?;
-        // 译成英文时，两段在同一行接上要隔一个空格（「code.The」）
+        let body = piece.trim_start_matches(['\n', '\r']);
+        out.push_str(&piece[..piece.len() - body.len()]);
+        let translated = if body.trim().is_empty() {
+            body.to_owned()
+        } else {
+            translate(body)?
+        };
+        // 同一行切开的英文译文之间要留空格（「code.The」）。
         if target == Target::English
             && !out.is_empty()
+            && !translated.is_empty()
             && !out.ends_with(char::is_whitespace)
             && !translated.starts_with(char::is_whitespace)
         {
@@ -332,9 +370,6 @@ fn translate_piece(
     target: Target,
     send: &mut impl FnMut(&Request) -> Result<(u32, Vec<u8>), String>,
 ) -> Result<String, String> {
-    if text.trim().is_empty() {
-        return Ok(text.to_string());
-    }
     let attempts: [(&str, Option<Request>, fn(&[u8]) -> Result<String, String>); 3] = [
         ("微软翻译", azure_request(keys, text, target), parse_azure),
         ("谷歌", google_request(keys, text, target), parse_google),
@@ -347,24 +382,22 @@ fn translate_piece(
         if wait > 0 {
             pause(wait);
         }
-        let mut limited = false;
+        let mut all_limited = true;
         for (service, request, parse) in &attempts {
             let Some(request) = request else { continue };
-            match send(request) {
+            let reply = send(request);
+            all_limited &= matches!(&reply, Ok((429, _)));
+            reason = match reply {
                 Ok((200, body)) => match parse(&body) {
                     Ok(text) => return Ok(text),
-                    Err(error) => reason = error,
+                    Err(error) => error,
                 },
-                Ok((429, _)) => {
-                    reason = status_reason(service, 429);
-                    limited = true;
-                }
-                Ok((status, _)) => reason = status_reason(service, status),
-                Err(error) => reason = format!("{service} 连不上（{error}）"),
-            }
+                Ok((status, _)) => status_reason(service, status),
+                Err(error) => format!("{service} 连不上（{error}）"),
+            };
         }
         // 不是限流（Key 不对、连不上）的错，等也没用
-        if !limited {
+        if !all_limited {
             break;
         }
     }
@@ -380,8 +413,141 @@ mod tests {
             azure_key: "a".into(),
             azure_region: "eastasia".into(),
             google_key: "g".into(),
-            zhipu_key: String::new(),
+            ..Keys::default()
         }
+    }
+
+    #[test]
+    fn invalid_input_never_reaches_a_service_or_settings() {
+        for source in ["  ".to_owned(), "中".repeat(MAX_CHARS + 1)] {
+            assert!(
+                translate_routed(
+                    &source,
+                    Target::English,
+                    || panic!("invalid input should not load settings"),
+                    |_| panic!("invalid input should not reach a keyed provider"),
+                    |_| panic!("invalid input should not reach WeType"),
+                )
+                .is_err()
+            );
+        }
+    }
+
+    #[test]
+    fn long_text_uses_bounded_requests_and_can_fall_back_between_batches() {
+        let source = format!("{}。\n第二段。", "中".repeat(CHUNK_CHARS - 1));
+        let mut attempts = Vec::new();
+        let out = translate_routed(
+            &source,
+            Target::English,
+            || Ok(both()),
+            |request| {
+                let body: serde_json::Value = serde_json::from_str(&request.body).unwrap();
+                assert_eq!(body[0]["Text"], "第二段。");
+                Ok((
+                    200,
+                    br#"[{"translations":[{"text":"Second paragraph."}]}]"#.to_vec(),
+                ))
+            },
+            |piece| {
+                assert!(
+                    piece.chars().count() <= CHUNK_CHARS,
+                    "oversized WeType request"
+                );
+                attempts.push(piece.to_owned());
+                if piece == "第二段。" {
+                    Err("微信输入法翻译超时".into())
+                } else {
+                    Ok("First paragraph.".into())
+                }
+            },
+        );
+        assert_eq!(attempts.len(), 2);
+        assert_eq!(out.as_deref(), Ok("First paragraph.\nSecond paragraph."));
+    }
+
+    #[test]
+    fn an_empty_wrong_direction_or_flattened_reply_falls_back() {
+        for unusable in ["  ", "你好，世界。", "Hello, world.", "Hello\0\nworld."] {
+            let out = translate_routed(
+                "你好。\n世界。",
+                Target::English,
+                || Ok(both()),
+                |_| {
+                    Ok((
+                        200,
+                        br#"[{"translations":[{"text":"Hello.\nWorld."}]}]"#.to_vec(),
+                    ))
+                },
+                |_| Ok(unusable.into()),
+            );
+            assert_eq!(out.as_deref(), Ok("Hello.\nWorld."), "{unusable:?}");
+        }
+    }
+
+    #[test]
+    fn an_unsupported_direction_does_not_invoke_wetype() {
+        let out = translate_routed(
+            "你好",
+            Target::Chinese,
+            || Ok(both()),
+            |request| {
+                assert!(request.path.ends_with("to=zh-Hans"));
+                Ok((
+                    200,
+                    r#"[{"translations":[{"text":"你好"}]}]"#.as_bytes().to_vec(),
+                ))
+            },
+            |_| panic!("WeType cannot force the requested direction"),
+        );
+        assert_eq!(out.as_deref(), Ok("你好"));
+    }
+
+    #[test]
+    fn a_wetype_failure_without_keys_reports_the_actual_failure() {
+        let err = translate_routed(
+            "你好",
+            Target::English,
+            || Ok(Keys::default()),
+            |_| panic!("no keyed providers are configured"),
+            |_| Err("微信输入法翻译超时".into()),
+        )
+        .unwrap_err();
+        assert!(err.contains("微信输入法翻译超时"), "{err}");
+    }
+
+    #[test]
+    fn empty_config_supports_both_automatic_directions_without_keys() {
+        for (source, expected) in [("你好", "Hello"), ("Hello", "你好")] {
+            let out = translate_routed(
+                source,
+                Target::for_text(source),
+                || Ok(Keys::default()),
+                |_| panic!("no keyed providers are configured"),
+                |piece| {
+                    assert_eq!(piece, source);
+                    Ok(expected.into())
+                },
+            );
+            assert_eq!(out.as_deref(), Ok(expected));
+        }
+    }
+
+    #[test]
+    fn explicit_disable_keeps_the_existing_keyed_flow() {
+        let keys: Keys =
+            serde_json::from_str(r#"{"wetype_enabled":false,"azure_key":"a"}"#).unwrap();
+        let out = translate_routed(
+            "你好",
+            Target::English,
+            || Ok(keys),
+            |request| {
+                assert!(request.path.ends_with("to=en"));
+                Ok((200, br#"[{"translations":[{"text":"Hello"}]}]"#.to_vec()))
+            },
+            |_| panic!("WeType is disabled"),
+        );
+        assert_eq!(out.as_deref(), Ok("Hello"));
     }
 
     #[test]
@@ -537,6 +703,22 @@ mod tests {
     }
 
     #[test]
+    fn a_rate_limit_and_an_invalid_key_do_not_retry() {
+        let mut calls = 0;
+        let err = translate_with(&both(), "你好", |request| {
+            calls += 1;
+            let status = if request.host == "api.cognitive.microsofttranslator.com" {
+                429
+            } else {
+                401
+            };
+            Ok((status, Vec::new()))
+        });
+        assert_eq!(calls, 2);
+        assert_eq!(err.unwrap_err(), "谷歌 的 Key 不对或没开通");
+    }
+
+    #[test]
     fn bad_key_reason_is_plain() {
         let keys = Keys {
             azure_key: "a".into(),
@@ -621,10 +803,9 @@ mod tests {
             Ok(Keys::default())
         );
         std::fs::write(dir.path().join("t.json"), "{\"google_key\":\"g\"}").unwrap();
-        assert_eq!(
-            Keys::load(&dir.path().join("t.json")).unwrap().google_key,
-            "g"
-        );
+        let legacy_keys = Keys::load(&dir.path().join("t.json")).unwrap();
+        assert_eq!(legacy_keys.google_key, "g");
+        assert!(legacy_keys.wetype_enabled);
         std::fs::write(dir.path().join("bad.json"), "{").unwrap();
         assert!(Keys::load(&dir.path().join("bad.json")).is_err());
     }
@@ -636,16 +817,98 @@ pub fn send(request: &Request) -> Result<(u32, Vec<u8>), String> {
     native::post(request)
 }
 
-/// 读本机翻译 Key，按微软 → 谷歌翻译
+/// 翻译：微信输入法云端主力（免 Key），失败落到有 Key 的微软 → 谷歌 → 智谱
 #[cfg(windows)]
 pub fn translate(text: &str) -> Result<String, String> {
-    translate_with(&local_keys()?, text, send)
+    translate_entry(text, Target::for_text(text.trim()))
 }
 
-/// 译成指定语言
+/// 译成指定语言（翻译小窗手动选了方向时用）
 #[cfg(windows)]
 pub fn translate_into(text: &str, target: Target) -> Result<String, String> {
-    translate_to(&local_keys()?, text, target, send)
+    translate_entry(text, target)
+}
+
+#[cfg(windows)]
+fn translate_entry(text: &str, target: Target) -> Result<String, String> {
+    use std::time::{Duration, Instant};
+
+    let mut client = None;
+    translate_routed(text, target, local_keys, send, |piece| {
+        // 首批的连接、认证和响应共用一个时间窗口。
+        let deadline = Instant::now() + Duration::from_secs(8);
+        let session = match &mut client {
+            Some(session) => session,
+            None => client.insert(
+                crate::wetype::Client::from_default_device_cancellable(&|| {
+                    Instant::now() >= deadline
+                })
+                .map_err(|_| "连不上微信输入法翻译".to_owned())?,
+            ),
+        };
+        session
+            .translate_before(piece, deadline)
+            .map_err(|err| err.to_string())
+    })
+}
+
+#[cfg(any(windows, test))]
+fn translate_routed(
+    text: &str,
+    target: Target,
+    load_keys: impl FnOnce() -> Result<Keys, String>,
+    mut send: impl FnMut(&Request) -> Result<(u32, Vec<u8>), String>,
+    mut wetype: impl FnMut(&str) -> Result<String, String>,
+) -> Result<String, String> {
+    let text = validated_text(text)?;
+    let keys = load_keys()?;
+    let use_wetype = keys.wetype_enabled && Target::for_text(text) == target;
+    let mut wetype_failure = None;
+    translate_batches(text, target, |piece| {
+        let reason = if !keys.wetype_enabled {
+            None
+        } else if !use_wetype || Target::for_text(piece) != target {
+            Some("微信输入法不能强制指定翻译方向")
+        } else {
+            if wetype_failure.is_none() {
+                match wetype(piece).and_then(|reply| usable_wetype_reply(piece, target, reply)) {
+                    Ok(reply) => return Ok(reply),
+                    Err(err) => wetype_failure = Some(err),
+                }
+            }
+            wetype_failure.as_deref()
+        };
+        if keys.is_empty() {
+            return Err(match reason {
+                Some(reason) => format!("{reason}；可在翻译设置里配置备用服务"),
+                None => "还没配翻译 Key".into(),
+            });
+        }
+        translate_piece(&keys, piece, target, &mut send).map_err(|err| match reason {
+            Some(reason) => format!("{reason}；备用服务：{err}"),
+            None => err,
+        })
+    })
+}
+
+#[cfg(any(windows, test))]
+fn usable_wetype_reply(source: &str, target: Target, reply: String) -> Result<String, String> {
+    let reply = usable_text(&reply).ok_or("微信输入法没返回有效译文")?;
+    // 自动检测由服务端完成；明显答错方向时不能覆盖原文。
+    let has_language = source.chars().any(|c| is_cjk(c) || c.is_ascii_alphabetic());
+    let has_target = reply.chars().any(|c| match target {
+        Target::Chinese => is_cjk(c),
+        Target::English => c.is_ascii_alphabetic(),
+    });
+    if has_language && !has_target {
+        return Err("微信输入法返回的译文方向不对".into());
+    }
+    if source.bytes().filter(|&c| c == b'\n').count()
+        != reply.bytes().filter(|&c| c == b'\n').count()
+    {
+        return Err("微信输入法未保留原文换行".into());
+    }
+    Ok(reply.to_owned())
 }
 
 /// 本机 %LOCALAPPDATA%\XueerEar\translate.json 里的 Key

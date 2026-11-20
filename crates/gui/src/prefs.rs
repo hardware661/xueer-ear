@@ -223,35 +223,48 @@ pub fn history_pick(texts: &[String], id: usize) -> Option<&str> {
     texts.get(id.checked_sub(HISTORY_BASE)?).map(String::as_str)
 }
 
-/// 翻译服务配了哪几家（「翻译」一行和菜单里显示）
-pub fn translate_services(keys: &xueer_ear_backend::translate::Keys) -> Vec<&'static str> {
-    [
-        ("微软", &keys.azure_key),
-        ("谷歌", &keys.google_key),
-        ("智谱", &keys.zhipu_key),
-    ]
-    .into_iter()
-    .filter(|(_, key)| !key.trim().is_empty())
-    .map(|(name, _)| name)
-    .collect()
+/// 按实际尝试顺序列出已启用的服务。
+fn translate_services(keys: &xueer_ear_backend::translate::Keys) -> Vec<&'static str> {
+    keys.wetype_enabled
+        .then_some("微信输入法")
+        .into_iter()
+        .chain(
+            [
+                ("微软", &keys.azure_key),
+                ("谷歌", &keys.google_key),
+                ("智谱", &keys.zhipu_key),
+            ]
+            .into_iter()
+            .filter(|(_, key)| !key.trim().is_empty())
+            .map(|(name, _)| name),
+        )
+        .collect()
 }
 
 /// 「翻译」一行按钮上的字
-pub fn translate_summary(keys: &xueer_ear_backend::translate::Keys) -> String {
-    if translate_services(keys).is_empty() {
-        "未配置".to_owned()
-    } else {
-        "打开".to_owned()
+pub fn translate_summary(config: &Result<xueer_ear_backend::translate::Keys, String>) -> String {
+    match config {
+        Err(_) => "设置出错",
+        Ok(keys) if !keys.wetype_enabled && keys.is_empty() => "未配置",
+        Ok(_) => "打开",
     }
+    .to_owned()
 }
 
-/// 「翻译」菜单：打开翻译小窗；灰字说用的是哪几家、怎么用；最后是打开 Key 文件
-pub fn translate_choices(keys: &xueer_ear_backend::translate::Keys) -> Vec<Choice> {
-    let services = translate_services(keys);
-    let status = if services.is_empty() {
-        "还没配翻译服务".to_owned()
-    } else {
-        format!("服务：{}", services.join(" → "))
+/// 「翻译」菜单：打开翻译小窗、查看服务、修改本机翻译设置。
+pub fn translate_choices(
+    config: &Result<xueer_ear_backend::translate::Keys, String>,
+) -> Vec<Choice> {
+    let status = match config {
+        Err(reason) => reason.clone(),
+        Ok(keys) => {
+            let services = translate_services(keys);
+            if services.is_empty() {
+                "还没配翻译服务".to_owned()
+            } else {
+                format!("服务：{}", services.join(" → "))
+            }
+        }
     };
     vec![
         (OPEN_TRANSLATOR, "打开翻译小窗".to_owned(), false),
@@ -259,7 +272,7 @@ pub fn translate_choices(keys: &xueer_ear_backend::translate::Keys) -> Vec<Choic
         (NOTHING, status, false),
         (NOTHING, "听写最后说「翻译」换成英文".to_owned(), false),
         separator(),
-        (OPEN_TRANSLATE_KEYS, "打开翻译 Key 设置".to_owned(), false),
+        (OPEN_TRANSLATE_KEYS, "打开翻译设置".to_owned(), false),
     ]
 }
 
@@ -305,20 +318,35 @@ mod translate_menu_tests {
 
     #[test]
     fn translate_menu_lists_configured_services_in_order() {
-        let keys = Keys {
+        let configured = Ok(Keys {
             google_key: "g".into(),
             zhipu_key: "z".into(),
             ..Keys::default()
-        };
-        assert_eq!(translate_summary(&keys), "打开");
-        let menu = translate_choices(&keys);
+        });
+        assert_eq!(translate_summary(&configured), "打开");
+        let menu = translate_choices(&configured);
         assert_eq!(menu[0].0, OPEN_TRANSLATOR);
-        assert!(menu.iter().any(|(_, t, _)| t.contains("谷歌 → 智谱")));
-        assert_eq!(translate_summary(&Keys::default()), "未配置");
         assert!(
-            translate_choices(&Keys::default())
+            menu.iter()
+                .any(|(_, t, _)| t == "服务：微信输入法 → 谷歌 → 智谱")
+        );
+        assert_eq!(translate_summary(&Ok(Keys::default())), "打开");
+        let disabled = Ok(Keys {
+            wetype_enabled: false,
+            ..Keys::default()
+        });
+        assert_eq!(translate_summary(&disabled), "未配置");
+        assert!(
+            translate_choices(&disabled)
                 .iter()
                 .any(|(_, t, _)| t == "还没配翻译服务")
+        );
+        let invalid = Err("翻译设置文件坏了".to_owned());
+        assert_eq!(translate_summary(&invalid), "设置出错");
+        assert!(
+            translate_choices(&invalid)
+                .iter()
+                .any(|(_, t, _)| t == "翻译设置文件坏了")
         );
     }
 }

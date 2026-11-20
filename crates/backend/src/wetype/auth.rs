@@ -399,6 +399,10 @@ impl Client {
     }
 
     pub fn send_voice(&mut self, body: &[u8]) -> Result<u32> {
+        self.send_business(4548, 0, body)
+    }
+
+    fn send_business(&mut self, cmd: u32, sub: u32, body: &[u8]) -> Result<u32> {
         if !self.has_identity() {
             return Err("anonymous WeType identity has not been initialized".into());
         }
@@ -409,7 +413,7 @@ impl Client {
             .ok_or("WeType request count exceeded")?;
         let body = crypto::encrypt(&self.key, body);
         let mut headers = headers(
-            Kind::Business(4548, 0),
+            Kind::Business(cmd, sub),
             &self.device,
             id,
             self.clock.now(),
@@ -422,6 +426,61 @@ impl Client {
         self.transport
             .send(request(id, "/api_v2", &headers, &body)?)?;
         Ok(id)
+    }
+
+    /// Translate `text` on the cloud engine. The direction is chosen by the
+    /// service from the text itself (Chinese to English and vice versa).
+    #[cfg(windows)]
+    pub(crate) fn translate_before(&mut self, text: &str, deadline: Instant) -> Result<String> {
+        if Instant::now() >= deadline {
+            return Err("微信输入法翻译超时".into());
+        }
+        let mut ver = Vec::new();
+        wire::put_integer(&mut ver, 5, 6);
+        wire::put_bytes(&mut ver, 10, VERSION.as_bytes());
+        wire::put_integer(&mut ver, 13, 0);
+        let mut txt = Vec::new();
+        wire::put_integer(&mut txt, 1, 0);
+        wire::put_integer(&mut txt, 2, 0);
+        wire::put_bytes(&mut txt, 3, text.as_bytes());
+        let mut body4 = Vec::new();
+        wire::put_bytes(&mut body4, 1, &ver);
+        wire::put_integer(&mut body4, 8, 4);
+        wire::put_bytes(&mut body4, 9, &txt);
+        let mut body = Vec::new();
+        wire::put_integer(&mut body, 1, 4);
+        wire::put_bytes(&mut body, 4, &body4);
+        wire::put_integer(&mut body, 5, 11520);
+
+        let id = self
+            .send_business(4329, 4, &body)
+            .map_err(|_| "微信输入法翻译请求没发出去")?;
+        while Instant::now() < deadline {
+            let response = self
+                .transport
+                .poll()
+                .map_err(|_| "微信输入法翻译连接中断")?;
+            let Some(response) = response else {
+                continue;
+            };
+            if response.id != u64::from(id) {
+                continue;
+            }
+            if response.status != 200 {
+                return Err(match response.status {
+                    429 => "微信输入法翻译限流".into(),
+                    status => format!("微信输入法翻译出错（HTTP {status}）").into(),
+                });
+            }
+            let plain = crypto::decrypt(&self.key, &response.body)
+                .map_err(|_| "读不懂微信输入法翻译的返回内容")?;
+            if let Some(translation) =
+                translation_of(&plain).map_err(|_| "读不懂微信输入法翻译的返回内容")?
+            {
+                return Ok(translation);
+            }
+        }
+        Err("微信输入法翻译超时".into())
     }
 
     pub fn poll(&mut self) -> Result<Option<Response>> {
@@ -440,6 +499,21 @@ impl Client {
     pub fn close(&mut self) {
         self.transport.close();
     }
+}
+
+/// Pull the translated text out of a translate response: outer f5 → f2 → f4 → f2.
+#[cfg(windows)]
+fn translation_of(plain: &[u8]) -> Result<Option<String>> {
+    let Some(inner) = wire::bytes(plain, 5)? else {
+        return Ok(None);
+    };
+    let Some(inner) = wire::bytes(inner, 2)? else {
+        return Ok(None);
+    };
+    let Some(inner) = wire::bytes(inner, 4)? else {
+        return Ok(None);
+    };
+    Ok(wire::text(inner, 2)?.map(str::to_owned))
 }
 
 impl Drop for Client {
