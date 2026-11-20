@@ -18,6 +18,12 @@ struct Snapshot {
     last_error: String,
     pid: u32,
     updated_ms: u64,
+    /// 正在一轮听写里（对外约定：雪儿 speaker 看到它就先不出声，这轮结束再念）。
+    /// 后台活着时至少每 5 秒重写一次本文件，读的一方应把 15 秒没更新的当成没在听写
+    dictating: bool,
+    /// 进行中的轮数（新一轮可能在上一轮收尾时就开始）
+    #[serde(skip)]
+    rounds: u32,
 }
 struct Store {
     path: PathBuf,
@@ -25,13 +31,29 @@ struct Store {
 }
 #[derive(Clone)]
 pub struct Status(Arc<Mutex<Store>>);
+/// 一轮听写的凭据：拿着时 `dictating` 为真，丢掉（正常结束、出错、panic）就算这一轮结束
+pub struct Round(Status);
+
+impl Drop for Round {
+    fn drop(&mut self) {
+        self.0.change(|s| {
+            s.rounds = s.rounds.saturating_sub(1);
+            s.dictating = s.rounds > 0;
+        });
+    }
+}
+
 impl Status {
     pub fn new(backend: &'static str) -> Result<Self> {
         let folder = PathBuf::from(std::env::var_os("LOCALAPPDATA").ok_or("LOCALAPPDATA不可用")?)
             .join("XueerEar");
         std::fs::create_dir_all(&folder)?;
+        Ok(Self::at(folder.join("status.json"), backend))
+    }
+
+    fn at(path: PathBuf, backend: &'static str) -> Self {
         let status = Self(Arc::new(Mutex::new(Store {
-            path: folder.join("status.json"),
+            path,
             snapshot: Snapshot {
                 backend,
                 phase: "connecting",
@@ -42,10 +64,21 @@ impl Status {
                 last_error: String::new(),
                 pid: std::process::id(),
                 updated_ms: 0,
+                dictating: false,
+                rounds: 0,
             },
         })));
         status.touch();
-        Ok(status)
+        status
+    }
+
+    /// 开始一轮听写；返回的凭据丢掉时这一轮结束
+    pub fn round(&self) -> Round {
+        self.change(|s| {
+            s.rounds += 1;
+            s.dictating = true;
+        });
+        Round(self.clone())
     }
     fn change(&self, change: impl FnOnce(&mut Snapshot)) {
         let Ok(mut store) = self.0.lock() else {
@@ -159,5 +192,46 @@ pub fn startup_error(message: &str) {
         .into();
     if let Ok(bytes) = serde_json::to_vec(&value) {
         let _ = std::fs::write(path, bytes);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn dictating(path: &std::path::Path) -> bool {
+        let value: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+        value["dictating"].as_bool().unwrap()
+    }
+
+    #[test]
+    fn a_round_is_dictating_until_it_ends_even_when_rounds_overlap() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("status.json");
+        let status = Status::at(path.clone(), "wetype");
+        assert!(!dictating(&path));
+        let first = status.round();
+        assert!(dictating(&path));
+        // 新一轮在上一轮收尾时就开始了：上一轮结束不能把它清掉
+        let second = status.round();
+        drop(first);
+        assert!(dictating(&path));
+        drop(second);
+        assert!(!dictating(&path));
+    }
+
+    #[test]
+    fn a_round_that_panics_still_ends() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("status.json");
+        let status = Status::at(path.clone(), "wetype");
+        let worker = status.clone();
+        let _ = std::thread::spawn(move || {
+            let _round = worker.round();
+            panic!("听写线程出错");
+        })
+        .join();
+        assert!(!dictating(&path));
     }
 }

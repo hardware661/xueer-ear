@@ -241,6 +241,8 @@ fn begin(panel: PanelHandle, status: Status, previous: Option<Session>) -> Sessi
             old.cancel.store(true, Ordering::Release);
             let _ = old.worker.join();
         }
+        // 这一轮开始：雪儿 speaker 先不出声，这轮结束（收起、出错、被新一轮接替）再念
+        let _round = status.round();
         let cancelled = worker_cancel.clone();
         let result = record(
             worker_release,

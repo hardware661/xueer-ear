@@ -162,6 +162,7 @@ fn start(
     let completed = Arc::new(AtomicBool::new(false));
     let worker_completed = completed.clone();
     let worker = thread::spawn(move || {
+        let _round = status.round();
         let verification = file.is_some();
         let source = file.map_or_else(
             || Source::Microphone((!device.is_empty()).then_some(device)),
