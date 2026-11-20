@@ -3,6 +3,17 @@
 > 任何 AI 接手先读这里；每次会话收尾在最上面追加一节（最新在上），写清做了什么、验证了什么、还差什么。
 > 计划原文：主人桌面 `雪耳xueer-ear计划-v1.md`（v1.1）。
 
+## 2026-11-20 14:20 · 翻译小窗修复已装机
+
+- 真窗验收：用 `D:\projects\_build\xueer-ear-black-window.FJeCTL\verify-window.ps1` 运行 `--translate`。候选版连续三次、替换后的安装版一次，标题区均为 `RGB(255,255,255)`。WSL 会话的 `WSL_INTEROP` 指向已不存在的套接字；仅对验收命令去掉该变量后恢复。
+- 本机只替换安装目录的 `xueer-ear.exe`。控制面板和听写进程均未退出，直接重开翻译小窗即可。版本号仍为 1.1.17，未推送、打标签或发布。本轮验收只覆盖开窗绘制，不调用在线翻译。
+- 回滚：把 `~/tools/ai/codex/scratch/backups/20261120-1420-xueer-ear.exe` 恢复为安装目录的 `xueer-ear.exe`。可复用 `~/tools/ai/codex/scratch/tmp/xueer-ear-install-black-window.ps1`：传入备份的 Windows 路径和当前安装文件的 SHA256，无需停止听写进程。
+
+## 2026-11-20 · 翻译小窗黑屏排查（装机前）
+
+- 接手 Claude 会话。已安装版直接用 `xueer-ear.exe --translate` 启动后，真实窗口标题区采样为 `RGB(0,0,0)`（回归脚本退出 1）。独立进程没有初始化 GDI+，内存画布没有画上白底就贴到了窗口；控制面板内的离屏截图已有初始化，不能用来证明独立入口正常。Windows 探针中，初始化前创建画布返回 18，初始化后返回 0。
+- 独立入口现在在创建窗口前初始化绘图，并让绘图对象活到消息循环结束。只改翻译窗口入口，没有混入在做的后端改动。隔离构建 Windows release 成功，GUI 测试 23 个通过。
+- 待验收：在 Windows 跑 `D:\projects\_build\xueer-ear-black-window.FJeCTL\verify-window.ps1`，传入同目录 `target\release\xueer-ear.exe`，应打开真实小窗并测到白底。WSL 调 Windows 两次报 `UtilAcceptVsock:281: accept4 failed 110`（退出 1）；新版真窗未过验，未覆盖本机安装版，未提交、推送或发布。
 
 
 

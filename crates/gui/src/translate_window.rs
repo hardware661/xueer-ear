@@ -1046,6 +1046,7 @@ pub fn run() -> Result<(), String> {
             }
             return Ok(());
         }
+        let _renderer = crate::view::Renderer::new()?;
         let window = open(None);
         if window.is_null() {
             return Err("打不开翻译小窗".into());
