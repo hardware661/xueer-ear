@@ -50,8 +50,11 @@ class PackagingTests(unittest.TestCase):
                 return subprocess.CompletedProcess(args, 0, "", "")
 
             with patch.object(publish_release, "gh", fake_gh):
-                publish_release.publish(directory, "1.2.3", "v1.2.3", "owner/repo")
+                publish_release.publish(directory, "1.2.3", "v1.2.3", "owner/repo", "说明")
             self.assertIn("--draft", calls[1])
+            # 发布说明取自 CHANGELOG.md，不用 GitHub 自动生成的一行对比链接
+            self.assertEqual(calls[1][calls[1].index("--notes") + 1], "说明")
+            self.assertNotIn("--generate-notes", calls[1])
             self.assertEqual(calls[2][:2], ("release", "upload"))
             self.assertEqual(calls[-1][:2], ("release", "edit"))
             self.assertIn("--draft=false", calls[-1])
@@ -64,8 +67,24 @@ class PackagingTests(unittest.TestCase):
             (directory / "SHA256SUMS.txt").write_text("0" * 64 + "  xueer-ear-1.2.3-windows-x64-portable.zip\n")
             with patch.object(publish_release, "gh") as command:
                 with self.assertRaises(ValueError):
-                    publish_release.publish(directory, "1.2.3", "v1.2.3", "owner/repo")
+                    publish_release.publish(directory, "1.2.3", "v1.2.3", "owner/repo", "说明")
                 command.assert_not_called()
+
+    def test_release_notes_come_from_the_changelog_section(self):
+        changelog = "# 更新记录\n\n## v1.2.3\n\n### 新功能\n\n- 甲\n\n## v1.2.2\n\n- 乙\n"
+        self.assertEqual(publish_release.release_notes(changelog, "v1.2.3"), "### 新功能\n\n- 甲")
+        self.assertEqual(publish_release.release_notes(changelog, "v1.2.2"), "- 乙")
+        with self.assertRaises(ValueError):
+            publish_release.release_notes(changelog, "v1.2.4")
+        with self.assertRaises(ValueError):
+            publish_release.release_notes("## v1.2.3\n\n## v1.2.2\n- 乙\n", "v1.2.3")
+
+    def test_changelog_covers_the_current_version(self):
+        # 打标签发版时 publish_release 从这里取说明，缺了这一节发布会失败
+        cargo = (ROOT / "Cargo.toml").read_text(encoding="utf-8")
+        version = next(line.split('"')[1] for line in cargo.splitlines() if line.startswith("version"))
+        changelog = (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
+        self.assertTrue(publish_release.release_notes(changelog, "v" + version))
 
     def test_installer_cleans_up_bridges_from_older_versions(self):
         # 审查 R13：桥接 DLL 文件名带版本号，升级后旧版本的一直留在安装目录，卸载也删不掉
@@ -122,7 +141,7 @@ class PackagingTests(unittest.TestCase):
 
             with patch.object(publish_release, "gh", incomplete):
                 with self.assertRaises(ValueError):
-                    publish_release.publish(directory, "1.2.3", "v1.2.3", "owner/repo")
+                    publish_release.publish(directory, "1.2.3", "v1.2.3", "owner/repo", "说明")
             self.assertFalse(any(args[:2] == ("release", "edit") for args in calls))
 
 

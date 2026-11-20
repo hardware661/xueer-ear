@@ -1,0 +1,44 @@
+name: 问题反馈 / Bug report
+description: 雪耳出错了、不工作，或者结果不对
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        谢谢反馈。先在 issues 里搜一下有没有人提过。
+        不要贴设备身份文件（wetype-device.json）、翻译服务的 Key 和录音。
+  - type: input
+    id: version
+    attributes:
+      label: 雪耳版本 / Version
+      description: 控制面板「更多设置 → 复制诊断信息」的第一行，或者发布页的版本号
+      placeholder: "1.2.0"
+    validations:
+      required: true
+  - type: input
+    id: app
+    attributes:
+      label: 在哪个程序里 / Where
+      description: 你往哪个程序里说话？终端的话写上终端和里面跑的程序
+      placeholder: "Windows Terminal 里的 Claude Code"
+    validations:
+      required: true
+  - type: textarea
+    id: what
+    attributes:
+      label: 发生了什么 / What happened
+      description: 怎么操作的，看到了什么，你希望是什么样
+      placeholder: |
+        1. 点一下右 Alt
+        2. 说「……」
+        3. 看到……，希望是……
+    validations:
+      required: true
+  - type: textarea
+    id: diagnostics
+    attributes:
+      label: 诊断信息 / Diagnostics
+      description: 控制面板「更多设置 → 复制诊断信息」，直接粘贴。日志只记字数和错误原因，不记你说过的话
+      render: text
+    validations:
+      required: true

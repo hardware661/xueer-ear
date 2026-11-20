@@ -1067,7 +1067,7 @@ unsafe fn soft_ear(
     }
 }
 
-/// 离屏把面板画成 PNG（核对外观用，不在屏幕上弹窗）
+/// 离屏把面板画成 PNG（核对外观用，不在屏幕上弹窗）。`clear` 时底是透明的（README 配图用）
 pub fn render_png(
     look: Look,
     level: f32,
@@ -1075,6 +1075,7 @@ pub fn render_png(
     text: &str,
     out: &std::path::Path,
     ear: EarStyle,
+    clear: bool,
 ) -> Result<(), String> {
     unsafe {
         let mut input: gp::GdiplusStartupInput = mem::zeroed();
@@ -1099,7 +1100,9 @@ pub fn render_png(
             let mut g = ptr::null_mut();
             gp::GdipGetImageGraphicsContext(bitmap.cast(), &mut g);
             // 垫一层底方便看：浅色垫白，深色垫深灰
-            let backdrop = if DARK_MODE.load(Ordering::Relaxed) {
+            let backdrop = if clear {
+                0
+            } else if DARK_MODE.load(Ordering::Relaxed) {
                 0xff1c1c1e
             } else {
                 0xffffffff

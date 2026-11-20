@@ -33,7 +33,7 @@ mod typing;
 
 #[cfg(windows)]
 fn main() {
-    // 离屏把面板画成 PNG 核对外观（不在屏幕上弹窗）：`--panel-render 目录`
+    // 离屏把面板画成 PNG 核对外观（不在屏幕上弹窗）：`--panel-render 目录 [clear]`，clear 是透明底
     let mut args = std::env::args().skip(1);
     let first = args.next();
     // 排查漏字：`--type-probe 文字 [分几次] [等几毫秒]`，把文字按听写的方式打进前台窗口
@@ -52,6 +52,7 @@ fn main() {
     }
     if first.as_deref() == Some("--panel-render") {
         let dir = std::path::PathBuf::from(args.next().unwrap_or_else(|| ".".into()));
+        let clear = args.next().as_deref() == Some("clear");
         // 浅色、深色各一套：panel-listening.png、panel-listening-dark.png
         for (dark, suffix) in [(false, ""), (true, "-dark")] {
             panel::set_dark(dark);
@@ -69,6 +70,7 @@ fn main() {
                     text,
                     &dir.join(format!("panel-{name}{suffix}.png")),
                     panel::EAR,
+                    clear,
                 ) {
                     eprintln!("{e}");
                     std::process::exit(1);

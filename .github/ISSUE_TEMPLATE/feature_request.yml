@@ -1,0 +1,16 @@
+name: 功能建议 / Feature request
+description: 想让雪耳多做一件事，或者换一种做法
+labels: [enhancement]
+body:
+  - type: textarea
+    id: scene
+    attributes:
+      label: 什么场景下需要 / Use case
+      description: 你在做什么的时候想要这个功能？现在是怎么凑合的？
+    validations:
+      required: true
+  - type: textarea
+    id: idea
+    attributes:
+      label: 希望怎么做 / Proposal
+      description: 你希望它怎么工作。有参考的软件也可以写上

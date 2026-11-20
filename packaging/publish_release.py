@@ -8,13 +8,32 @@ import re
 import subprocess
 
 
+ROOT = Path(__file__).resolve().parent.parent
+
+
 def gh(*args, check=True):
     return subprocess.run(["gh", *args], text=True, capture_output=True, check=check)
 
 
-def publish(directory, version, tag, repository):
+def release_notes(changelog, tag):
+    """The `## v1.2.3` section of CHANGELOG.md, up to the next `## ` heading."""
+    lines = changelog.splitlines()
+    try:
+        start = lines.index("## " + tag) + 1
+    except ValueError:
+        raise ValueError(f"CHANGELOG.md has no section for {tag}") from None
+    end = next((i for i in range(start, len(lines)) if lines[i].startswith("## ")), len(lines))
+    notes = "\n".join(lines[start:end]).strip()
+    if not notes:
+        raise ValueError(f"CHANGELOG.md section for {tag} is empty")
+    return notes
+
+
+def publish(directory, version, tag, repository, notes):
     if not re.fullmatch(r"\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?", version) or tag != "v" + version:
         raise ValueError("tag and Cargo version differ")
+    if not notes.strip():
+        raise ValueError("release notes are empty")
     names = {f"xueer-ear-{version}-windows-x64-portable.zip",
              f"xueer-ear-{version}-windows-x64-setup.exe", "SHA256SUMS.txt"}
     actual = {path.name for path in directory.iterdir()}
@@ -53,7 +72,7 @@ def publish(directory, version, tag, repository):
         return
     if release is None:
         arguments = ["release", "create", tag, "--repo", repository, "--verify-tag", "--draft",
-                     "--title", f"雪耳 {version}", "--generate-notes"]
+                     "--title", f"雪耳 {version}", "--notes", notes]
         if "-" in version:
             arguments.append("--prerelease")
         gh(*arguments)
@@ -75,7 +94,8 @@ def main():
     parser.add_argument("--tag", required=True)
     parser.add_argument("--repository", required=True)
     args = parser.parse_args()
-    publish(args.directory, args.version, args.tag, args.repository)
+    notes = release_notes((ROOT / "CHANGELOG.md").read_text(encoding="utf-8"), args.tag)
+    publish(args.directory, args.version, args.tag, args.repository, notes)
 
 
 if __name__ == "__main__":

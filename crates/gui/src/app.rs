@@ -2303,6 +2303,13 @@ unsafe fn capture(window: HWND, path: &std::path::Path) -> Result<(), String> {
     let dc = CreateCompatibleDC(screen);
     let bitmap = CreateCompatibleBitmap(screen, width, height);
     let old = SelectObject(dc, bitmap);
+    // 先把还没画的子控件当场画完（不然刚改过字的值按钮会是黑块）
+    RedrawWindow(
+        window,
+        ptr::null(),
+        ptr::null_mut(),
+        RDW_INVALIDATE | RDW_UPDATENOW | RDW_ALLCHILDREN,
+    );
     // 2 = PW_RENDERFULLCONTENT：连同圆角和子控件一起画
     let printed = PrintWindow(window, dc, 2) != 0;
     SelectObject(dc, old);
@@ -2317,9 +2324,9 @@ unsafe fn capture(window: HWND, path: &std::path::Path) -> Result<(), String> {
     result
 }
 
-/// 离屏把控制面板、「添加热词」对话框、托盘菜单和热词菜单各拍一张 PNG 到 `dir`（核对外观用）。
+/// 离屏把控制面板、更新气泡、「添加热词」对话框、菜单和翻译小窗各拍一张 PNG（核对外观、README 配图用）：
+/// 浅色一套放在 `dir`，深色一套放在 `dir/dark`。
 /// 窗口建在屏幕外、不抢焦点、不建托盘图标，不会打扰正在用电脑的人。
-/// 离屏拍照：浅色一套放在目录里，深色一套放在 `dark` 子目录
 pub fn snapshot(dir: &std::path::Path) -> Result<(), String> {
     snapshot_theme(dir, false)?;
     let dark = dir.join("dark");
