@@ -92,6 +92,15 @@ class PackagingTests(unittest.TestCase):
         self.assertRegex(script, r'\[InstallDelete\]\s*Type: files; Name: "\{userstartup\}\\雪耳\.lnk"')
         self.assertRegex(script, r"not WizardIsTaskSelected\('autostart'\)[\s\S]*RegDeleteValue\(HKCU, RunKey, 'XueerEar'\)")
 
+    def test_self_update_relaunches_only_when_the_app_asked(self):
+        # 控制面板「下载更新」带 /SELFUPDATE=1 静默安装，装完用 --updated 重新打开；
+        # 别人自己用 /SILENT 部署时不该突然弹出窗口
+        script = (ROOT / "packaging" / "xueer-ear.iss").read_text(encoding="utf-8")
+        self.assertIn('Parameters: "--updated"; Flags: nowait runasoriginaluser; Check: IsSelfUpdate', script)
+        self.assertRegex(script, r"function IsSelfUpdate[\s\S]*WizardSilent and \(ExpandConstant\('\{param:SELFUPDATE\|0\}'\) = '1'\)")
+        app = (ROOT / "crates" / "gui" / "src" / "app.rs").read_text(encoding="utf-8")
+        self.assertIn("/SILENT /SUPPRESSMSGBOXES /NORESTART /SELFUPDATE=1", app)
+
     def test_missing_remote_installer_never_publishes_draft(self):
         with tempfile.TemporaryDirectory() as root:
             directory = Path(root)

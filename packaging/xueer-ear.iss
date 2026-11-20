@@ -70,10 +70,18 @@ Type: files; Name: "{userstartup}\雪耳.lnk"
 
 [Run]
 Filename: "{app}\xueer-ear.exe"; Description: "打开雪耳"; Flags: nowait postinstall skipifsilent shellexec runasoriginaluser
+; 控制面板「下载更新」带 /SELFUPDATE=1 静默安装：装完自己重新打开，开好后台服务并说一声已更新。
+; 别人自己用 /SILENT 部署时不带这个参数，不会突然弹出窗口
+Filename: "{app}\xueer-ear.exe"; Parameters: "--updated"; Flags: nowait runasoriginaluser; Check: IsSelfUpdate
 
 [Code]
 var
   ShutdownComplete: Boolean;
+
+function IsSelfUpdate: Boolean;
+begin
+  Result := WizardSilent and (ExpandConstant('{param:SELFUPDATE|0}') = '1');
+end;
 
 function CooperativeShutdown(const Application: String; const WorkingDirectory: String): Boolean;
 var

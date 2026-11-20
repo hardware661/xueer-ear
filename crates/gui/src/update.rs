@@ -16,6 +16,8 @@ static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 #[derive(Clone, Debug)]
 pub struct Release {
     pub version: String,
+    /// 发布时用的标签原文（带不带 v 都有过），下载地址里要用它
+    pub tag: String,
     pub url: String,
 }
 
@@ -176,7 +178,57 @@ pub fn parse(body: &[u8], current: &str) -> Result<Option<Release>, String> {
     Ok(Some(Release {
         version: text,
         url: format!("{REPOSITORY_URL}/releases/tag/{}", release.tag_name),
+        tag: release.tag_name,
     }))
+}
+
+/// 安装版（同目录有卸载程序）才能一键更新；便携版只打开发布页
+pub fn installed() -> bool {
+    std::env::current_exe()
+        .ok()
+        .and_then(|exe| exe.parent().map(|dir| dir.join("unins000.exe").is_file()))
+        .unwrap_or(false)
+}
+
+/// SHA256SUMS.txt 里某个文件的校验值（小写十六进制）
+pub fn expected_sha256(sums: &str, name: &str) -> Option<String> {
+    sums.lines().find_map(|line| {
+        let (hash, file) = line.trim().split_once(char::is_whitespace)?;
+        let file = file.trim().trim_start_matches('*');
+        (file == name && hash.len() == 64 && hash.chars().all(|c| c.is_ascii_hexdigit()))
+            .then(|| hash.to_ascii_lowercase())
+    })
+}
+
+fn sha256_hex(data: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+    Sha256::digest(data)
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect()
+}
+
+/// 下载的安装包最大多少（现在约 4 MB）
+const MAX_INSTALLER: usize = 64 * 1024 * 1024;
+
+/// 一键更新：从这一版的发布页下载安装包和校验文件，核对 SHA-256 后存进临时目录，返回安装包路径
+#[cfg(windows)]
+pub fn download_installer(release: &Release) -> Result<PathBuf, String> {
+    let name = format!("xueer-ear-{}-windows-x64-setup.exe", release.version);
+    // 标签在 parse 里已经核对过只是版本号，可以直接放进路径
+    let base = format!("/hardware661/xueer-ear/releases/download/{}/", release.tag);
+    let sums = native::download(&format!("{base}SHA256SUMS.txt"), 16 * 1024)?;
+    let expected = expected_sha256(&String::from_utf8_lossy(&sums), &name)
+        .ok_or("校验文件里没有这个安装包")?;
+    let setup = native::download(&format!("{base}{name}"), MAX_INSTALLER)?;
+    if sha256_hex(&setup) != expected {
+        return Err("下载的安装包校验不对".into());
+    }
+    let dir = std::env::temp_dir().join(format!("xueer-ear-update-{}", release.version));
+    fs::create_dir_all(&dir).map_err(|e| format!("存不了安装包：{e}"))?;
+    let path = dir.join(&name);
+    fs::write(&path, &setup).map_err(|e| format!("存不了安装包：{e}"))?;
+    Ok(path)
 }
 
 #[cfg(not(windows))]
@@ -224,9 +276,7 @@ mod native {
         value.encode_utf16().chain(Some(0)).collect()
     }
     fn error() -> String {
-        format!("检查更新失败（系统错误 {}）", unsafe {
-            GetLastError()
-        })
+        format!("连不上 GitHub（错误 {}）", unsafe { GetLastError() })
     }
     fn check(value: i32) -> Result<(), String> {
         if value == 0 { Err(error()) } else { Ok(()) }
@@ -241,6 +291,136 @@ mod native {
                 mem::size_of::<u32>() as u32,
             )
         })
+    }
+
+    /// GitHub 发布页的下载地址会跳到 *.githubusercontent.com：手动跟最多 4 次，
+    /// 只认 https 的 github.com 和 *.githubusercontent.com，别的地址一律不去
+    pub(super) fn download(path: &str, limit: usize) -> Result<Vec<u8>, String> {
+        let deadline = Instant::now() + Duration::from_secs(180);
+        let (mut host, mut path) = ("github.com".to_owned(), path.to_owned());
+        for _ in 0..5 {
+            match get(&host, &path, limit, deadline)? {
+                Got::Body(body) => return Ok(body),
+                Got::Moved(location) => {
+                    let rest = location
+                        .strip_prefix("https://")
+                        .ok_or("下载地址跳到了不认识的地方")?;
+                    let (next_host, next_path) = rest
+                        .split_once('/')
+                        .map_or((rest, "/".to_owned()), |(h, p)| (h, format!("/{p}")));
+                    if next_host != "github.com" && !next_host.ends_with(".githubusercontent.com") {
+                        return Err("下载地址跳到了不认识的地方".into());
+                    }
+                    (host, path) = (next_host.to_owned(), next_path);
+                }
+            }
+        }
+        Err("下载地址跳转太多".into())
+    }
+
+    enum Got {
+        Body(Vec<u8>),
+        Moved(String),
+    }
+
+    fn get(host: &str, path: &str, limit: usize, deadline: Instant) -> Result<Got, String> {
+        unsafe {
+            let session = Handle::checked(WinHttpOpen(
+                wide(&format!("xueer-ear/{}", env!("CARGO_PKG_VERSION"))).as_ptr(),
+                WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY,
+                ptr::null(),
+                ptr::null(),
+                0,
+            ))?;
+            check(WinHttpSetTimeouts(
+                session.0, 10_000, 10_000, 30_000, 30_000,
+            ))?;
+            let connection = Handle::checked(WinHttpConnect(
+                session.0,
+                wide(host).as_ptr(),
+                INTERNET_DEFAULT_HTTPS_PORT,
+                0,
+            ))?;
+            let request = Handle::checked(WinHttpOpenRequest(
+                connection.0,
+                wide("GET").as_ptr(),
+                wide(path).as_ptr(),
+                ptr::null(),
+                ptr::null(),
+                ptr::null(),
+                WINHTTP_FLAG_SECURE,
+            ))?;
+            option(
+                &request,
+                WINHTTP_OPTION_DISABLE_FEATURE,
+                WINHTTP_DISABLE_REDIRECTS | WINHTTP_DISABLE_COOKIES,
+            )?;
+            option(
+                &request,
+                WINHTTP_OPTION_AUTOLOGON_POLICY,
+                WINHTTP_AUTOLOGON_SECURITY_LEVEL_HIGH,
+            )?;
+            check(WinHttpSendRequest(
+                request.0,
+                ptr::null(),
+                0,
+                ptr::null(),
+                0,
+                0,
+                0,
+            ))?;
+            check(WinHttpReceiveResponse(request.0, ptr::null_mut()))?;
+            let mut status = 0_u32;
+            let mut length = mem::size_of::<u32>() as u32;
+            check(WinHttpQueryHeaders(
+                request.0,
+                WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER,
+                ptr::null(),
+                (&mut status as *mut u32).cast(),
+                &mut length,
+                ptr::null_mut(),
+            ))?;
+            if matches!(status, 301 | 302 | 303 | 307 | 308) {
+                let mut location = vec![0_u16; 4096];
+                let mut size = (location.len() * 2) as u32;
+                check(WinHttpQueryHeaders(
+                    request.0,
+                    WINHTTP_QUERY_LOCATION,
+                    ptr::null(),
+                    location.as_mut_ptr().cast(),
+                    &mut size,
+                    ptr::null_mut(),
+                ))?;
+                return Ok(Got::Moved(String::from_utf16_lossy(
+                    &location[..size as usize / 2],
+                )));
+            }
+            if status != 200 {
+                return Err(format!("下载更新失败（HTTP {status}）"));
+            }
+            let mut body = Vec::with_capacity(64 * 1024);
+            let mut buffer = vec![0_u8; 64 * 1024];
+            loop {
+                if Instant::now() >= deadline {
+                    return Err("下载更新超时".into());
+                }
+                let mut received = 0_u32;
+                check(WinHttpReadData(
+                    request.0,
+                    buffer.as_mut_ptr().cast(),
+                    buffer.len() as u32,
+                    &mut received,
+                ))?;
+                if received == 0 {
+                    return Ok(Got::Body(body));
+                }
+                let received = received as usize;
+                if received > buffer.len() || body.len() + received > limit {
+                    return Err("下载的文件太大".into());
+                }
+                body.extend_from_slice(&buffer[..received]);
+            }
+        }
     }
 
     pub(super) fn fetch(version: &str) -> Result<Option<Vec<u8>>, String> {
@@ -355,6 +535,47 @@ mod tests {
     }
     fn encoded(value: &serde_json::Value) -> Vec<u8> {
         serde_json::to_vec(value).unwrap()
+    }
+
+    /// 联网核对：真从 GitHub 下 1.1.18 的安装包、核对校验值（`cargo test -- --ignored`）
+    #[cfg(windows)]
+    #[test]
+    #[ignore]
+    fn downloads_and_verifies_a_published_installer() {
+        let release = Release {
+            version: "1.1.18".into(),
+            tag: "v1.1.18".into(),
+            url: String::new(),
+        };
+        let path = download_installer(&release).unwrap();
+        assert!(fs::metadata(&path).unwrap().len() > 1_000_000);
+        fs::remove_dir_all(path.parent().unwrap()).unwrap();
+    }
+
+    #[test]
+    fn the_installer_checksum_is_read_from_sha256sums() {
+        let sums = "AB12cd34ab12cd34ab12cd34ab12cd34ab12cd34ab12cd34ab12cd34ab12cd34  xueer-ear-1.2.0-windows-x64-portable.zip\n\
+                    0000000000000000000000000000000000000000000000000000000000000001 *xueer-ear-1.2.0-windows-x64-setup.exe\n";
+        assert_eq!(
+            expected_sha256(sums, "xueer-ear-1.2.0-windows-x64-setup.exe").as_deref(),
+            Some("0000000000000000000000000000000000000000000000000000000000000001")
+        );
+        assert_eq!(
+            expected_sha256(sums, "xueer-ear-1.2.0-windows-x64-portable.zip").as_deref(),
+            Some("ab12cd34ab12cd34ab12cd34ab12cd34ab12cd34ab12cd34ab12cd34ab12cd34")
+        );
+        assert!(expected_sha256(sums, "xueer-ear-1.2.1-windows-x64-setup.exe").is_none());
+        assert!(
+            expected_sha256(
+                "deadbeef  xueer-ear-1.2.0-windows-x64-setup.exe",
+                "xueer-ear-1.2.0-windows-x64-setup.exe"
+            )
+            .is_none()
+        );
+        assert_eq!(
+            sha256_hex(b"abc"),
+            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+        );
     }
 
     #[test]

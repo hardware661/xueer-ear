@@ -37,6 +37,7 @@ const APP_NAME: &str = "雪耳";
 const TRAY: u32 = WM_APP + 1;
 const DONE: u32 = WM_APP + 2;
 const UPDATE_READY: u32 = WM_APP + 3;
+const UPDATE_DOWNLOADED: u32 = WM_APP + 4;
 const OPEN: usize = 101;
 const START: usize = 102;
 const STOP: usize = 103;
@@ -48,6 +49,8 @@ const GITHUB: usize = 108;
 const UPDATE_DOWNLOAD: usize = 109;
 const UPDATE_SKIP: usize = 110;
 const UPDATE_CLOSE: usize = 111;
+/// 一键更新装好后，安装包用 `--updated` 重新打开雪耳
+const UPDATED: usize = 112;
 const UPDATE_TITLE: usize = 222;
 const UPDATE_BODY: usize = 223;
 const APP_TITLE: usize = 221;
@@ -238,6 +241,10 @@ pub(crate) unsafe fn copy_text(owner: HWND, text: &str) -> Result<(), String> {
 
 fn wide(value: &str) -> Vec<u16> {
     value.encode_utf16().chain(Some(0)).collect()
+}
+fn wide_os(value: &std::ffi::OsStr) -> Vec<u16> {
+    use std::os::windows::ffi::OsStrExt;
+    value.encode_wide().chain(Some(0)).collect()
 }
 fn scale(value: i32, dpi: u32) -> i32 {
     (value * dpi as i32 + 48) / 96
@@ -446,6 +453,9 @@ struct App {
     update_visible: bool,
     update_dismissed: Option<String>,
     update_error: String,
+    download_sender: mpsc::Sender<Result<PathBuf, String>>,
+    download_receiver: mpsc::Receiver<Result<PathBuf, String>>,
+    update_downloading: bool,
     /// 第一次打开：后台服务自动开好，状态那里写「点一下右 Alt 说话试试」，说过一次话就不再写
     first_run: bool,
 }
@@ -454,6 +464,7 @@ impl App {
     unsafe fn new() -> Self {
         let (sender, receiver) = mpsc::channel();
         let (update_sender, update_receiver) = mpsc::channel();
+        let (download_sender, download_receiver) = mpsc::channel();
         let (update_preferences, update_error) = match crate::update::Preferences::load() {
             Ok(value) => (value, String::new()),
             Err(error) => (Default::default(), error),
@@ -508,6 +519,9 @@ impl App {
             update_visible: false,
             update_dismissed: None,
             update_error,
+            download_sender,
+            download_receiver,
+            update_downloading: false,
             first_run: false,
         }
     }
@@ -1028,6 +1042,108 @@ impl App {
         }
     }
 
+    unsafe fn open_release_page(&self, release: &crate::update::Release) {
+        ShellExecuteW(
+            self.hwnd,
+            wide("open").as_ptr(),
+            wide(&release.url).as_ptr(),
+            ptr::null(),
+            ptr::null(),
+            SW_SHOWNORMAL,
+        );
+    }
+
+    /// 「下载更新」：安装版在后台下载安装包、核对校验值，下好就静默安装（安装包会让这个雪耳退出，
+    /// 装完用 `--updated` 重新打开）；便携版没有安装目录可换，照旧打开发布页
+    unsafe fn download_update(&mut self) {
+        let Some(release) = self.update_release.clone() else {
+            return;
+        };
+        if !crate::update::installed() {
+            self.open_release_page(&release);
+            return;
+        }
+        if self.update_downloading {
+            return;
+        }
+        self.update_downloading = true;
+        self.set_text(UPDATE_TITLE, &format!("正在下载 v{}…", release.version));
+        self.set_text(UPDATE_BODY, "下好后自动安装，装完雪耳会自己重开");
+        for id in [UPDATE_DOWNLOAD, UPDATE_SKIP] {
+            ShowWindow(self.control(id), SW_HIDE);
+        }
+        self.update_bubble_redraw();
+        let sender = self.download_sender.clone();
+        let hwnd = self.hwnd as usize;
+        thread::spawn(move || {
+            let result = crate::update::download_installer(&release);
+            if sender.send(result).is_ok() {
+                PostMessageW(hwnd as HWND, UPDATE_DOWNLOADED, 0, 0);
+            }
+        });
+    }
+
+    unsafe fn update_downloaded(&mut self) {
+        while let Ok(result) = self.download_receiver.try_recv() {
+            self.update_downloading = false;
+            let launched = result.and_then(|setup| {
+                let folder = setup
+                    .parent()
+                    .map(std::path::Path::as_os_str)
+                    .unwrap_or_default();
+                let code = ShellExecuteW(
+                    self.hwnd,
+                    wide("open").as_ptr(),
+                    wide_os(setup.as_os_str()).as_ptr(),
+                    wide("/SILENT /SUPPRESSMSGBOXES /NORESTART /SELFUPDATE=1").as_ptr(),
+                    wide_os(folder).as_ptr(),
+                    SW_SHOWNORMAL,
+                );
+                if code as isize > 32 {
+                    Ok(())
+                } else {
+                    Err(format!("打不开安装包（错误 {}）", code as isize))
+                }
+            });
+            match launched {
+                Ok(()) => {
+                    let version = self.update_release.as_ref().map(|r| r.version.clone());
+                    self.set_text(
+                        UPDATE_TITLE,
+                        &format!("正在安装 v{}", version.unwrap_or_default()),
+                    );
+                    self.set_text(UPDATE_BODY, "装好后雪耳会自己重新打开");
+                }
+                Err(error) => {
+                    self.set_text(UPDATE_TITLE, "没能自动更新，已打开发布页");
+                    self.set_text(UPDATE_BODY, &error);
+                    self.update_error = error;
+                    if let Some(release) = self.update_release.clone() {
+                        self.open_release_page(&release);
+                    }
+                }
+            }
+            if !self.update_visible {
+                self.update_bubble(true);
+                for id in [UPDATE_DOWNLOAD, UPDATE_SKIP] {
+                    ShowWindow(self.control(id), SW_HIDE);
+                }
+            }
+            self.update_bubble_redraw();
+        }
+    }
+
+    /// 一键更新装好后重新打开：告诉主人已经是新版本了
+    unsafe fn show_updated(&mut self) {
+        self.update_release = None;
+        self.set_text(
+            UPDATE_TITLE,
+            &format!("已更新到 v{}", env!("CARGO_PKG_VERSION")),
+        );
+        self.set_text(UPDATE_BODY, "后台服务已经开好，可以接着说话");
+        self.update_bubble(true);
+    }
+
     unsafe fn update_bubble(&mut self, show: bool) {
         self.update_visible = show;
         // Native STATIC children paint above the parent's buffered canvas.
@@ -1049,6 +1165,10 @@ impl App {
                 },
             );
         }
+        self.update_bubble_redraw();
+    }
+
+    unsafe fn update_bubble_redraw(&self) {
         let rect = RECT {
             left: scale(112, self.dpi),
             top: scale(38, self.dpi),
@@ -1170,18 +1290,8 @@ impl App {
                     self.refresh();
                 }
             }
-            UPDATE_DOWNLOAD => {
-                if let Some(release) = self.update_release.as_ref() {
-                    ShellExecuteW(
-                        self.hwnd,
-                        wide("open").as_ptr(),
-                        wide(&release.url).as_ptr(),
-                        ptr::null(),
-                        ptr::null(),
-                        SW_SHOWNORMAL,
-                    );
-                }
-            }
+            UPDATE_DOWNLOAD => self.download_update(),
+            UPDATED => self.show_updated(),
             UPDATE_SKIP => self.dismiss_update(true),
             UPDATE_CLOSE => self.dismiss_update(false),
             2 if self.update_visible => self.dismiss_update(false),
@@ -1685,6 +1795,10 @@ unsafe extern "system" fn procedure(
             app.updates_ready();
             0
         }
+        UPDATE_DOWNLOADED => {
+            app.update_downloaded();
+            0
+        }
         WM_CONTEXTMENU if wparam as HWND == app.control(GITHUB) => {
             app.github_menu();
             0
@@ -2070,10 +2184,14 @@ pub fn run() {
         if hwnd.is_null() {
             return;
         }
-        // 开机自启：不弹窗，只在托盘，并自动开启后台服务。第一次打开也直接开好后台服务
+        // 开机自启：不弹窗，只在托盘，并自动开启后台服务。第一次打开、一键更新装完重开也直接开好后台服务
         let autostart = std::env::args_os().any(|arg| arg == "--autostart");
-        if autostart || first_run {
+        let updated = std::env::args_os().any(|arg| arg == "--updated");
+        if autostart || updated || first_run {
             PostMessageW(hwnd, WM_COMMAND, START, 0);
+        }
+        if updated {
+            PostMessageW(hwnd, WM_COMMAND, UPDATED, 0);
         }
         if !autostart {
             ShowWindow(hwnd, SW_SHOW);
@@ -2216,6 +2334,21 @@ pub fn snapshot(dir: &std::path::Path) -> Result<(), String> {
                 result
             });
         }
+        // 更新气泡：发现新版本；一键更新装好、重新打开以后
+        let offer = {
+            let release = crate::update::Release {
+                version: "9.9.9".into(),
+                tag: "v9.9.9".into(),
+                url: String::new(),
+            };
+            let _ = app.update_sender.send((true, Ok(Some(release))));
+            SendMessageW(hwnd, UPDATE_READY, 0, 0);
+            settle(300);
+            capture(hwnd, &dir.join("update-offer.png"))
+        };
+        SendMessageW(hwnd, WM_COMMAND, UPDATED, 0);
+        settle(300);
+        let updated = capture(hwnd, &dir.join("update-installed.png"));
         DestroyWindow(hwnd);
         panel
             .and(asked)
@@ -2223,5 +2356,7 @@ pub fn snapshot(dir: &std::path::Path) -> Result<(), String> {
             .and(hotwords)
             .and(translated)
             .and(translate_menu)
+            .and(offer)
+            .and(updated)
     }
 }
