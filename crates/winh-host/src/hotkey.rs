@@ -389,14 +389,15 @@ fn record(
                     if since.elapsed() >= COMMAND_SETTLE {
                         let keys = match post.command_only(text) {
                             Some(command) => {
-                                request_translation =
-                                    (command == VoiceCommand::Translate).then_some(true);
+                                if command.is_translate() {
+                                    request_translation = Some((command, true));
+                                }
                                 live.early_command(command)
                             }
                             // 句尾指令：前面的话先定稿上屏（会记进历史），再按指令
                             None => {
                                 let output = post.finalize(text, crate::broker::now_ms());
-                                request_translation = wants_translation(&output).then_some(true);
+                                request_translation = translation_of(&output).map(|c| (c, true));
                                 live.early_finish(output, text)
                             }
                         };
@@ -458,7 +459,7 @@ fn record(
                     pending_command = None;
                     sentence_finished = true;
                     let output = post.finalize(&text, crate::broker::now_ms());
-                    request_translation = wants_translation(&output).then_some(false);
+                    request_translation = translation_of(&output).map(|c| (c, false));
                     live.finalize_from(&text, output)
                 } else {
                     // 整句只有指令词，或者句尾单独一小句是指令（「今天吃什么，发送」）：
@@ -479,7 +480,15 @@ fn record(
         }
         translated_requested |= request_translation.is_some();
         if release.load(Ordering::Acquire) && !wave_probe {
-            translation = None;
+            // 这轮结束了译文还没回来：不再往屏幕上补字，但要说一声，别让主人干等（2026-11-21 主人：说了两次翻译完全没反应）
+            if let Some(job) = translation.take() {
+                println!(
+                    "翻译没赶上：{} 字，等了 {} ms",
+                    job.source.chars().count(),
+                    job.started.elapsed().as_millis()
+                );
+                panel.notice("翻译还没回来，这轮已结束，没替换");
+            }
             return Ok(());
         }
         if translation
@@ -488,11 +497,11 @@ fn record(
         {
             translation = None;
         }
-        if let Some(in_command_sentence) = request_translation {
+        if let Some((command, in_command_sentence)) = request_translation {
             let input = (seen_sent, seen_touched);
             // 和「发送」一样，指令确认时正文已上屏。不必等听写连接收完才发翻译请求。
             if still_current(input) {
-                translation = start_translation(&live, panel, input, in_command_sentence);
+                translation = start_translation(&live, panel, input, command, in_command_sentence);
             }
         } else if sentence_finished
             && let Some(job) = translation.as_mut()
@@ -501,14 +510,27 @@ fn record(
             job.in_command_sentence = false;
             // 指令那句定稿时若真的又补了正文，只翻最终稿。
             if !job.matches(&live) {
-                translation = start_translation(&live, panel, job.input, false);
+                let (input, command) = (job.input, job.command);
+                translation = start_translation(&live, panel, input, command, false);
             }
         }
         if let Some(job) = translation.as_ref()
             && live.leftover().is_empty()
             && let Some(result) = job.try_result()
         {
-            if still_current(job.input) && job.matches(&live) && !release.load(Ordering::Acquire) {
+            let current =
+                still_current(job.input) && job.matches(&live) && !release.load(Ordering::Acquire);
+            println!(
+                "翻译回来：{} 字，{} ms，{}",
+                job.source.chars().count(),
+                job.started.elapsed().as_millis(),
+                match (&result, current) {
+                    (Err(_), _) => "失败",
+                    (Ok(_), true) => "已替换",
+                    (Ok(_), false) => "这轮已经变了，没替换",
+                }
+            );
+            if current {
                 apply_translation(result, &mut live, panel);
             }
             translation = None;
@@ -559,35 +581,58 @@ fn open_control_panel(args: &[&str]) {
     }
 }
 
-fn wants_translation(output: &Output) -> bool {
-    matches!(
-        output,
-        Output::Command(VoiceCommand::Translate) | Output::TextThen(_, VoiceCommand::Translate)
-    )
+/// 这句是不是翻译指令，是哪一种
+fn translation_of(output: &Output) -> Option<VoiceCommand> {
+    match output {
+        Output::Command(command) | Output::TextThen(_, command) if command.is_translate() => {
+            Some(*command)
+        }
+        _ => None,
+    }
+}
+
+/// 译成哪种语言（主人 2026-11-21）：「翻译成英文 / 中文」照说的来；单说「翻译」按内容定，
+/// 有中文就翻成英文，全是英文才翻成中文
+fn translation_target(command: VoiceCommand, text: &str) -> xueer_ear_backend::translate::Target {
+    use xueer_ear_backend::translate::Target;
+    match command {
+        VoiceCommand::TranslateToEnglish => Target::English,
+        VoiceCommand::TranslateToChinese => Target::Chinese,
+        _ => Target::for_text(text),
+    }
 }
 
 struct VoiceTranslation {
     source: String,
     result: mpsc::Receiver<Result<String, String>>,
     input: (u32, u32),
+    command: VoiceCommand,
     in_command_sentence: bool,
+    started: Instant,
 }
 
 impl VoiceTranslation {
-    fn start(source: String, input: (u32, u32), in_command_sentence: bool) -> Result<Self, String> {
+    fn start(
+        source: String,
+        input: (u32, u32),
+        command: VoiceCommand,
+        in_command_sentence: bool,
+    ) -> Result<Self, String> {
         let text = source.clone();
+        let target = translation_target(command, &source);
         let (sender, result) = mpsc::channel();
         thread::Builder::new()
             .spawn(move || {
-                use xueer_ear_backend::translate::{Target, translate_into};
-                let _ = sender.send(translate_into(&text, Target::English));
+                let _ = sender.send(xueer_ear_backend::translate::translate_into(&text, target));
             })
             .map_err(|error| error.to_string())?;
         Ok(Self {
             source,
             result,
             input,
+            command,
             in_command_sentence,
+            started: Instant::now(),
         })
     }
 
@@ -622,6 +667,7 @@ fn start_translation(
     live: &Live,
     panel: &PanelHandle,
     input: (u32, u32),
+    command: VoiceCommand,
     in_command_sentence: bool,
 ) -> Option<VoiceTranslation> {
     let Some(text) = live.round_text() else {
@@ -632,7 +678,7 @@ fn start_translation(
         panel.listening_notice("这一轮还没说要翻译的话");
         return None;
     }
-    match VoiceTranslation::start(text, input, in_command_sentence) {
+    match VoiceTranslation::start(text, input, command, in_command_sentence) {
         Ok(job) => {
             panel.set(Look::Connecting);
             Some(job)
@@ -646,8 +692,8 @@ fn start_translation(
 
 fn apply_translation(result: Result<String, String>, live: &mut Live, panel: &PanelHandle) {
     match result {
-        Ok(english) => {
-            send_keys(&live.replace_round(&english));
+        Ok(translated) => {
+            send_keys(&live.replace_round(&translated));
             panel.set(Look::Listening);
         }
         Err(reason) => {

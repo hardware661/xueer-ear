@@ -1,4 +1,4 @@
-use xueer_ear_textflow::{CommandOptions, VoiceCommand, parse_command};
+use xueer_ear_textflow::{CommandOptions, VoiceCommand, parse_command, parse_trailing_command};
 
 #[test]
 fn whole_utterance_commands() {
@@ -82,7 +82,25 @@ fn translate_said_on_its_own() {
     let o = CommandOptions::default();
     assert_eq!(parse_command("翻译", &o), Some(VoiceCommand::Translate));
     assert_eq!(parse_command("翻译。", &o), Some(VoiceCommand::Translate));
-    // 指令只认「翻译」这一个词（主人 2026-11-19）
-    assert_eq!(parse_command("翻译成英文", &o), None);
     assert_eq!(parse_command("翻译一下这段代码", &o), None);
+}
+
+#[test]
+fn translate_into_english_or_chinese_names_the_direction() {
+    // 主人 2026-11-21：中英混着时单说「翻译」有歧义，就说「翻译成英文 / 中文」；不做别的同义说法
+    let o = CommandOptions::default();
+    assert_eq!(
+        parse_command("翻译成英文。", &o),
+        Some(VoiceCommand::TranslateToEnglish)
+    );
+    assert_eq!(
+        parse_command("翻译成中文", &o),
+        Some(VoiceCommand::TranslateToChinese)
+    );
+    assert_eq!(parse_command("翻成英文", &o), None);
+    assert_eq!(parse_command("翻译成英文的时候要注意", &o), None);
+    assert_eq!(
+        parse_trailing_command("翻译成中文", &o),
+        Some(VoiceCommand::TranslateToChinese)
+    );
 }

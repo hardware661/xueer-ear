@@ -150,6 +150,32 @@ fn run() -> Result<(), Box<dyn Error + Send + Sync>> {
             println!("{}", xueer_ear_backend::translate::translate(&text.to_string_lossy())?);
             Ok(())
         }
+        // 和翻译小窗、语音「翻译成英文 / 中文」同一条路：原文从文件读，译成 en / zh，打印用时、进度和译文
+        #[cfg(windows)]
+        (Some(command), Some(path), Some(target)) if command == "translate-file" => {
+            use xueer_ear_backend::translate::{Target, translate_into_with_progress};
+            let target = match target.to_string_lossy().as_ref() {
+                "en" => Target::English,
+                "zh" => Target::Chinese,
+                _ => return Err("target must be en or zh".into()),
+            };
+            let text = fs::read_to_string(path)?;
+            let started = std::time::Instant::now();
+            let progress = |done: usize, total: usize| eprintln!("{done}/{total} at {} ms", started.elapsed().as_millis());
+            let out = translate_into_with_progress(&text, target, &progress)?;
+            eprintln!("done in {} ms, {} chars -> {} chars", started.elapsed().as_millis(), text.chars().count(), out.chars().count());
+            println!("{out}");
+            Ok(())
+        }
+        // 排查长文翻译：只走微信输入法，原文从文件读（UTF-8），每次请求一段，打印每段的字数、换行数、用时和结果
+        #[cfg(windows)]
+        (Some(command), Some(path), size) if command == "wetype-translate-probe" => {
+            let text = fs::read_to_string(path)?;
+            let size: usize = size.map_or(Ok(xueer_ear_backend::translate::CHUNK_CHARS), |s| s.to_string_lossy().parse())?;
+            let parallel: usize = std::env::var("XUEER_EAR_PROBE_PARALLEL").map_or(Ok(1), |s| s.parse())?;
+            xueer_ear_backend::translate::probe_wetype(&text, size, parallel)?;
+            Ok(())
+        }
         #[cfg(windows)]
         (Some(command), None, None) if command == "microphone-info" => {
             for (role, device) in xueer_ear_audio::microphone::devices()? {
@@ -287,7 +313,7 @@ fn run() -> Result<(), Box<dyn Error + Send + Sync>> {
             }
             Ok(())
         }
-        _ => Err("usage: xueer-ear-cli hotword-check | translate TEXT | recognize-wave-wetype FILE.wav | <inspect-capture|replay-capture|connect-check> DIRECTORY | account-status [FILE]".into()),
+        _ => Err("usage: xueer-ear-cli hotword-check | translate TEXT | translate-file FILE en|zh | wetype-translate-probe FILE [CHARS] | recognize-wave-wetype FILE.wav | <inspect-capture|replay-capture|connect-check> DIRECTORY | account-status [FILE]".into()),
     }
 }
 

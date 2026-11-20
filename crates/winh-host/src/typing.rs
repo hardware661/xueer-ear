@@ -103,7 +103,9 @@ impl Typist {
                 vec![Key::Enter]
             }
             // 翻译要联网，按键在译文回来后由 `replace_all` 给出；这里什么都不按
-            VoiceCommand::Translate => vec![],
+            VoiceCommand::Translate
+            | VoiceCommand::TranslateToEnglish
+            | VoiceCommand::TranslateToChinese => vec![],
         }
     }
 

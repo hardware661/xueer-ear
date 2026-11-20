@@ -53,6 +53,7 @@ pub enum Target {
 }
 
 impl Target {
+    /// 自动方向：有中文字就翻成英文，一个中文字都没有、有英文字母才翻成中文
     pub fn for_text(text: &str) -> Self {
         let cjk = text.chars().filter(|c| is_cjk(*c)).count();
         let latin = text.chars().filter(|c| c.is_ascii_alphabetic()).count();
@@ -249,20 +250,21 @@ fn validated_text(text: &str) -> Result<&str, String> {
     Ok(text)
 }
 
-fn translate_batches(
-    text: &str,
-    target: Target,
-    mut translate: impl FnMut(&str) -> Result<String, String>,
-) -> Result<String, String> {
-    let mut out = String::new();
-    for (piece, separator) in merge(text, chunks(text, CHUNK_CHARS), CHUNK_CHARS) {
-        let body = piece.trim_start_matches(['\n', '\r']);
-        out.push_str(&piece[..piece.len() - body.len()]);
-        let translated = if body.trim().is_empty() {
-            body.to_owned()
-        } else {
-            translate(body)?
-        };
+/// 一批要翻的原文：前面原样保留的换行、正文、后面的分隔符
+struct Batch<'a> {
+    lead: &'a str,
+    body: &'a str,
+    separator: &'a str,
+}
+
+impl Batch<'_> {
+    fn needs_translation(&self) -> bool {
+        !self.body.trim().is_empty()
+    }
+
+    /// 把这批的译文接到 `out` 后面：原样补回前面的换行和后面的分隔符
+    fn join_into(&self, out: &mut String, translated: &str, target: Target) {
+        out.push_str(self.lead);
         // 同一行切开的英文译文之间要留空格（「code.The」）。
         if target == Target::English
             && !out.is_empty()
@@ -272,8 +274,38 @@ fn translate_batches(
         {
             out.push(' ');
         }
-        out.push_str(&translated);
-        out.push_str(separator);
+        out.push_str(translated);
+        out.push_str(self.separator);
+    }
+}
+
+fn batches(text: &str) -> Vec<Batch<'_>> {
+    merge(text, chunks(text, CHUNK_CHARS), CHUNK_CHARS)
+        .into_iter()
+        .map(|(piece, separator)| {
+            let body = piece.trim_start_matches(['\n', '\r']);
+            Batch {
+                lead: &piece[..piece.len() - body.len()],
+                body,
+                separator,
+            }
+        })
+        .collect()
+}
+
+fn translate_batches(
+    text: &str,
+    target: Target,
+    mut translate: impl FnMut(&str) -> Result<String, String>,
+) -> Result<String, String> {
+    let mut out = String::new();
+    for batch in batches(text) {
+        let translated = if batch.needs_translation() {
+            translate(batch.body)?
+        } else {
+            batch.body.to_owned()
+        };
+        batch.join_into(&mut out, &translated, target);
     }
     Ok(out)
 }
@@ -417,6 +449,21 @@ mod tests {
         }
     }
 
+    /// 假的微信输入法：每批按 `answer` 回答，记下收到了哪几批
+    fn fake_wetype<'a>(
+        asked: &'a std::cell::RefCell<Vec<String>>,
+        answer: impl Fn(&str) -> Result<String, String> + 'a,
+    ) -> impl FnOnce(&[&str], &mut dyn FnMut(usize, Result<String, String>)) + 'a {
+        move |pieces, done| {
+            for (i, piece) in pieces.iter().enumerate() {
+                asked.borrow_mut().push(piece.to_string());
+                done(i, answer(piece));
+            }
+        }
+    }
+
+    fn no_progress(_: usize, _: usize) {}
+
     #[test]
     fn invalid_input_never_reaches_a_service_or_settings() {
         for source in ["  ".to_owned(), "中".repeat(MAX_CHARS + 1)] {
@@ -426,7 +473,8 @@ mod tests {
                     Target::English,
                     || panic!("invalid input should not load settings"),
                     |_| panic!("invalid input should not reach a keyed provider"),
-                    |_| panic!("invalid input should not reach WeType"),
+                    |_, _| panic!("invalid input should not reach WeType"),
+                    &no_progress,
                 )
                 .is_err()
             );
@@ -436,7 +484,7 @@ mod tests {
     #[test]
     fn long_text_uses_bounded_requests_and_can_fall_back_between_batches() {
         let source = format!("{}。\n第二段。", "中".repeat(CHUNK_CHARS - 1));
-        let mut attempts = Vec::new();
+        let asked = std::cell::RefCell::new(Vec::new());
         let out = translate_routed(
             &source,
             Target::English,
@@ -449,85 +497,269 @@ mod tests {
                     br#"[{"translations":[{"text":"Second paragraph."}]}]"#.to_vec(),
                 ))
             },
-            |piece| {
+            fake_wetype(&asked, |piece| {
                 assert!(
                     piece.chars().count() <= CHUNK_CHARS,
                     "oversized WeType request"
                 );
-                attempts.push(piece.to_owned());
                 if piece == "第二段。" {
                     Err("微信输入法翻译超时".into())
                 } else {
-                    Ok("First paragraph.".into())
+                    Ok(
+                        "First paragraph is long and goes on for quite a while in English. "
+                            .repeat(60),
+                    )
                 }
-            },
+            }),
+            &no_progress,
+        )
+        .unwrap();
+        assert_eq!(asked.borrow().len(), 2);
+        assert!(out.ends_with(".\nSecond paragraph."), "{out}");
+    }
+
+    // 2026-11-20 主人粘了约 3000 词英文：微信把硬换行并回段落，换行数对不上，
+    // 每批都被丢给智谱、撞上限流等了一分多钟，最后什么都没出。换行变少是正常的
+    #[test]
+    fn wetype_may_join_hard_wrapped_lines() {
+        let source = "This is a line that was\r\nwrapped by hand in the\r\nmiddle of a sentence.";
+        let asked = std::cell::RefCell::new(Vec::new());
+        let out = translate_routed(
+            source,
+            Target::Chinese,
+            || Ok(both()),
+            |_| panic!("WeType answered; keyed providers must not be used"),
+            fake_wetype(&asked, |_| Ok("这是一句在句子中间被手动换行的话。".into())),
+            &no_progress,
         );
-        assert_eq!(attempts.len(), 2);
-        assert_eq!(out.as_deref(), Ok("First paragraph.\nSecond paragraph."));
+        assert_eq!(out.as_deref(), Ok("这是一句在句子中间被手动换行的话。"));
     }
 
     #[test]
-    fn an_empty_wrong_direction_or_flattened_reply_falls_back() {
-        for unusable in ["  ", "你好，世界。", "Hello, world.", "Hello\0\nworld."] {
+    fn an_empty_wrong_direction_extra_line_or_cut_short_reply_falls_back() {
+        let source = "你好，今天的测试全部通过了，可以发布新版本。\n明天再看一下安装包有没有被杀毒软件误报。";
+        for unusable in [
+            "  ",
+            "你好，世界。",
+            "Hello\0\nworld.",
+            "Hello,\nall tests\npassed.\nTomorrow",
+            "Hello.",
+        ] {
+            let asked = std::cell::RefCell::new(Vec::new());
             let out = translate_routed(
-                "你好。\n世界。",
+                source,
                 Target::English,
                 || Ok(both()),
                 |_| {
                     Ok((
                         200,
-                        br#"[{"translations":[{"text":"Hello.\nWorld."}]}]"#.to_vec(),
+                        br#"[{"translations":[{"text":"Hello, all tests passed today.\nTomorrow check the installer."}]}]"#.to_vec(),
                     ))
                 },
-                |_| Ok(unusable.into()),
+                fake_wetype(&asked, |_| Ok(unusable.into())),
+                &no_progress,
             );
-            assert_eq!(out.as_deref(), Ok("Hello.\nWorld."), "{unusable:?}");
+            assert_eq!(
+                out.as_deref(),
+                Ok("Hello, all tests passed today.\nTomorrow check the installer."),
+                "{unusable:?}"
+            );
         }
     }
 
     #[test]
-    fn an_unsupported_direction_does_not_invoke_wetype() {
+    fn every_batch_goes_to_wetype_at_once_and_progress_is_reported() {
+        let source = "第一段很长。".repeat(400) + "\n" + &"第二段也很长。".repeat(300);
+        let asked = std::cell::RefCell::new(Vec::new());
+        let seen = std::cell::RefCell::new(Vec::new());
         let out = translate_routed(
-            "你好",
-            Target::Chinese,
-            || Ok(both()),
-            |request| {
-                assert!(request.path.ends_with("to=zh-Hans"));
-                Ok((
-                    200,
-                    r#"[{"translations":[{"text":"你好"}]}]"#.as_bytes().to_vec(),
-                ))
+            &source,
+            Target::English,
+            || Ok(Keys::default()),
+            |_| panic!("no keyed providers are configured"),
+            move |pieces: &[&str], done: &mut dyn FnMut(usize, Result<String, String>)| {
+                asked
+                    .borrow_mut()
+                    .extend(pieces.iter().map(|p| p.to_string()));
+                // 谁先回来先记谁：倒着回
+                for i in (0..pieces.len()).rev() {
+                    done(
+                        i,
+                        Ok(format!(
+                            "Part {i} {}",
+                            "word ".repeat(pieces[i].chars().count() / 2)
+                        )),
+                    );
+                }
+                assert!(pieces.len() >= 3, "{}", pieces.len());
             },
-            |_| panic!("WeType cannot force the requested direction"),
+            &|done, total| seen.borrow_mut().push((done, total)),
+        )
+        .unwrap();
+        let seen = seen.into_inner();
+        assert_eq!(seen.last().map(|p| p.0), seen.last().map(|p| p.1));
+        assert!(seen.windows(2).all(|w| w[0].0 < w[1].0));
+        // 译文按原文的顺序拼回去
+        assert!(out.starts_with("Part 0 "), "{}", &out[..40]);
+        assert!(out.find("Part 1 ").unwrap() < out.find("Part 2 ").unwrap());
+    }
+
+    // 主人 2026-11-21：翻译成英文就全部变成英文，已经是英文的部分不动；翻译成中文同理
+    #[test]
+    fn only_the_other_language_is_sent_and_the_rest_stays() {
+        let asked = std::cell::RefCell::new(Vec::new());
+        let out = translate_routed(
+            "The tests all pass.\n今天先这样，明天再发布。",
+            Target::English,
+            || Ok(Keys::default()),
+            |_| panic!("no keyed providers are configured"),
+            fake_wetype(&asked, |piece| {
+                assert_eq!(piece, "今天先这样，明天再发布。");
+                Ok("That's it for today; release tomorrow.".into())
+            }),
+            &no_progress,
         );
-        assert_eq!(out.as_deref(), Ok("你好"));
+        assert_eq!(
+            out.as_deref(),
+            Ok("The tests all pass.\nThat's it for today; release tomorrow.")
+        );
+        let asked = std::cell::RefCell::new(Vec::new());
+        let out = translate_routed(
+            "The tests all pass.\n今天先这样，明天再发布。",
+            Target::Chinese,
+            || Ok(Keys::default()),
+            |_| panic!("no keyed providers are configured"),
+            fake_wetype(&asked, |piece| {
+                assert_eq!(piece, "The tests all pass.");
+                Ok("测试全部通过了。".into())
+            }),
+            &no_progress,
+        );
+        assert_eq!(
+            out.as_deref(),
+            Ok("测试全部通过了。\n今天先这样，明天再发布。")
+        );
+    }
+
+    #[test]
+    fn chinese_and_english_in_one_line_are_split_by_sentence() {
+        let parts = |text: &'static str, target| -> Vec<(&'static str, bool)> {
+            plan(text, target)
+                .into_iter()
+                .map(|p| (&text[p.range], p.translate))
+                .collect()
+        };
+        assert_eq!(
+            parts(
+                "We shipped it. 然后我们再测一遍，没问题就发。",
+                Target::English
+            ),
+            [
+                ("We shipped it. ", false),
+                ("然后我们再测一遍，没问题就发。", true)
+            ]
+        );
+        // 中文句子里夹着的英文词跟着整句一起翻，不单独留下
+        assert_eq!(
+            parts("用 Claude Code 跑一下测试。", Target::English),
+            [("用 Claude Code 跑一下测试。", true)]
+        );
+        // 英文句子里的数字、标点不会把句子切开
+        assert_eq!(
+            parts("Version 3.5, released on 1,000 machines.", Target::Chinese),
+            [("Version 3.5, released on 1,000 machines.", true)]
+        );
+        // 两种语言一句一句交替时，各翻各的，留下的原样
+        assert_eq!(
+            parts("好的。Sounds good. 那就这样。", Target::Chinese),
+            [
+                ("好的。", false),
+                ("Sounds good.", true),
+                (" 那就这样。", false)
+            ]
+        );
+        let asked = std::cell::RefCell::new(Vec::new());
+        let out = translate_routed(
+            "We shipped it. 然后我们再测一遍，没问题就发。",
+            Target::English,
+            || Ok(Keys::default()),
+            |_| panic!("no keyed providers are configured"),
+            fake_wetype(&asked, |_| {
+                Ok("Then we test it again and ship if it's fine.".into())
+            }),
+            &no_progress,
+        );
+        assert_eq!(
+            out.as_deref(),
+            Ok("We shipped it. Then we test it again and ship if it's fine.")
+        );
+    }
+
+    #[test]
+    fn hard_wrapped_english_is_joined_back_into_paragraphs() {
+        assert_eq!(
+            unwrap_english(
+                "This license was wrapped by hand in the middle,\r\nof a sentence that goes on for a while and\r\nends here.\r\n\r\nNext paragraph."
+            ),
+            "This license was wrapped by hand in the middle, of a sentence that goes on for a while and ends here.\r\n\r\nNext paragraph."
+        );
+        // 短行的清单、列表、标题、句末换行、中文都不并
+        for kept in [
+            "apples\nbananas\noranges",
+            "Steps:\n- run the tests\n- ship it",
+            "The release notes are ready and the tests pass.\nanother sentence starts here",
+            "TERMS AND CONDITIONS\n\n0. Definitions.",
+            "第一行\n第二行",
+        ] {
+            assert_eq!(unwrap_english(kept), kept);
+        }
+    }
+
+    #[test]
+    fn nothing_to_translate_returns_the_text_unchanged() {
+        let out = translate_routed(
+            "Already English.",
+            Target::English,
+            || Ok(Keys::default()),
+            |_| panic!("nothing to translate"),
+            |_, _| panic!("nothing to translate"),
+            &no_progress,
+        );
+        assert_eq!(out.as_deref(), Ok("Already English."));
     }
 
     #[test]
     fn a_wetype_failure_without_keys_reports_the_actual_failure() {
+        let asked = std::cell::RefCell::new(Vec::new());
         let err = translate_routed(
             "你好",
             Target::English,
             || Ok(Keys::default()),
             |_| panic!("no keyed providers are configured"),
-            |_| Err("微信输入法翻译超时".into()),
+            fake_wetype(&asked, |_| Err("微信输入法翻译超时".into())),
+            &no_progress,
         )
         .unwrap_err();
         assert!(err.contains("微信输入法翻译超时"), "{err}");
     }
 
     #[test]
-    fn empty_config_supports_both_automatic_directions_without_keys() {
-        for (source, expected) in [("你好", "Hello"), ("Hello", "你好")] {
+    fn empty_config_supports_both_directions_without_keys() {
+        for (source, target, expected) in [
+            ("你好", Target::English, "Hello"),
+            ("Hello", Target::Chinese, "你好"),
+        ] {
+            let asked = std::cell::RefCell::new(Vec::new());
             let out = translate_routed(
                 source,
-                Target::for_text(source),
+                target,
                 || Ok(Keys::default()),
                 |_| panic!("no keyed providers are configured"),
-                |piece| {
+                fake_wetype(&asked, |piece| {
                     assert_eq!(piece, source);
                     Ok(expected.into())
-                },
+                }),
+                &no_progress,
             );
             assert_eq!(out.as_deref(), Ok(expected));
         }
@@ -545,7 +777,8 @@ mod tests {
                 assert!(request.path.ends_with("to=en"));
                 Ok((200, br#"[{"translations":[{"text":"Hello"}]}]"#.to_vec()))
             },
-            |_| panic!("WeType is disabled"),
+            |_, _| panic!("WeType is disabled"),
+            &no_progress,
         );
         assert_eq!(out.as_deref(), Ok("Hello"));
     }
@@ -829,54 +1062,336 @@ pub fn translate_into(text: &str, target: Target) -> Result<String, String> {
     translate_entry(text, target)
 }
 
+/// 同一条连接上最多同时在途几批（实测 3000 词 15 批：一批一批等要 27 秒，16 批同时发 3 秒）
+pub const PARALLEL_BATCHES: usize = 16;
+
+/// 翻译进度：已经翻好几批、一共几批（翻译小窗显示「已翻 3/15 段」）
+pub type Progress<'a> = &'a dyn Fn(usize, usize);
+
 #[cfg(windows)]
 fn translate_entry(text: &str, target: Target) -> Result<String, String> {
-    use std::time::{Duration, Instant};
-
-    let mut client = None;
-    translate_routed(text, target, local_keys, send, |piece| {
-        // 首批的连接、认证和响应共用一个时间窗口。
-        let deadline = Instant::now() + Duration::from_secs(8);
-        let session = match &mut client {
-            Some(session) => session,
-            None => client.insert(
-                crate::wetype::Client::from_default_device_cancellable(&|| {
-                    Instant::now() >= deadline
-                })
-                .map_err(|_| "连不上微信输入法翻译".to_owned())?,
-            ),
-        };
-        session
-            .translate_before(piece, deadline)
-            .map_err(|err| err.to_string())
-    })
+    translate_entry_with_progress(text, target, &|_, _| {})
 }
 
+/// 译成指定语言，边翻边报进度（翻译小窗用）。从网页、PDF 复制来的英文常在句子中间硬换行，
+/// 一行一行翻出来的中文一截一截的，先并回段落；语音翻译不走这里（那里的换行是主人特意说的）
+#[cfg(windows)]
+pub fn translate_into_with_progress(
+    text: &str,
+    target: Target,
+    progress: Progress,
+) -> Result<String, String> {
+    translate_entry_with_progress(&unwrap_english(text), target, progress)
+}
+
+#[cfg(windows)]
+fn translate_entry_with_progress(
+    text: &str,
+    target: Target,
+    progress: Progress,
+) -> Result<String, String> {
+    translate_routed(
+        text,
+        target,
+        local_keys,
+        send,
+        |pieces, done| wetype_batches(pieces, done),
+        progress,
+    )
+}
+
+/// 微信输入法：所有批同时排队发（最多 `PARALLEL_BATCHES` 批在途），谁先回来先记谁。
+/// `done(i, 结果)` 每批回来调一次；连不上、整体超时时没回来的批记失败。
+#[cfg(windows)]
+fn wetype_batches(pieces: &[&str], done: &mut dyn FnMut(usize, Result<String, String>)) {
+    use std::time::{Duration, Instant};
+    // 连接和认证 8 秒；每批从发出起 20 秒没回就算超时（实测单批 1～2.5 秒）
+    let connect_by = Instant::now() + Duration::from_secs(8);
+    let mut client = match crate::wetype::Client::from_default_device_cancellable(&|| {
+        Instant::now() >= connect_by
+    }) {
+        Ok(client) => client,
+        Err(_) => {
+            for i in 0..pieces.len() {
+                done(i, Err("连不上微信输入法翻译".into()));
+            }
+            return;
+        }
+    };
+    let mut next = 0;
+    let mut flying: Vec<(u32, usize, Instant)> = Vec::new();
+    while next < pieces.len() || !flying.is_empty() {
+        while next < pieces.len() && flying.len() < PARALLEL_BATCHES {
+            match client.send_translation(pieces[next]) {
+                Ok(id) => flying.push((id, next, Instant::now())),
+                Err(err) => done(next, Err(err.to_string())),
+            }
+            next += 1;
+        }
+        flying.retain(|&(_, i, sent)| {
+            let late = sent.elapsed() >= Duration::from_secs(20);
+            if late {
+                done(i, Err("微信输入法翻译超时".into()));
+            }
+            !late
+        });
+        match client.poll_translation() {
+            Ok(Some((id, result))) => {
+                if let Some(at) = flying.iter().position(|f| f.0 == id) {
+                    let (_, i, _) = flying.remove(at);
+                    done(i, result.map_err(|err| err.to_string()));
+                }
+            }
+            Ok(None) => {}
+            Err(_) => {
+                for (_, i, _) in flying.drain(..) {
+                    done(i, Err("微信输入法翻译连接中断".into()));
+                }
+                for i in next..pieces.len() {
+                    done(i, Err("微信输入法翻译连接中断".into()));
+                }
+                return;
+            }
+        }
+    }
+    client.close();
+}
+
+/// 原文里的一段：原样留着，还是要翻
+#[cfg(any(windows, test))]
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Part {
+    range: std::ops::Range<usize>,
+    translate: bool,
+}
+
+#[cfg(any(windows, test))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Lang {
+    Chinese,
+    English,
+    /// 没有文字：标点、数字、空白、换行
+    Neutral,
+}
+
+#[cfg(any(windows, test))]
+fn lang_of(piece: &str) -> Lang {
+    if piece.chars().any(is_cjk) {
+        Lang::Chinese
+    } else if piece.chars().any(|c| c.is_ascii_alphabetic()) {
+        Lang::English
+    } else {
+        Lang::Neutral
+    }
+}
+
+#[cfg(any(windows, test))]
+/// 切成可以单独判断语言的小块：中文的句号、问号、分号、逗号、冒号后面断开；
+/// 英文的标点后面跟着空白或中文时断开（「3.5」「1,000」不断）；换行单独成一块
+fn pieces(text: &str) -> Vec<std::ops::Range<usize>> {
+    let mut out = Vec::new();
+    let mut start = 0;
+    let mut chars = text.char_indices().peekable();
+    while let Some((i, c)) = chars.next() {
+        let end = i + c.len_utf8();
+        let next = chars.peek().map(|&(_, n)| n);
+        if c == '\n' {
+            if start < i {
+                out.push(start..i);
+            }
+            out.push(i..end);
+            start = end;
+            continue;
+        }
+        let cut = match c {
+            '。' | '！' | '？' | '；' | '，' | '：' => true,
+            '.' | '!' | '?' | ';' | ',' | ':' => {
+                next.is_none_or(|n| n.is_whitespace() || is_cjk(n))
+            }
+            _ => false,
+        };
+        if cut {
+            out.push(start..end);
+            start = end;
+        }
+    }
+    if start < text.len() {
+        out.push(start..text.len());
+    }
+    out
+}
+
+#[cfg(any(windows, test))]
+/// 译成 `target` 时哪几段要翻（主人 2026-11-21：翻译成英文就全部变成英文，已经是英文的部分不动；
+/// 翻译成中文同理）。另一种语言的小块连成一段整段去翻，这样微信输入法自动判断的方向一定对；
+/// 没有文字的小块跟着前一段走；要翻的段首尾的空白和换行留在外面原样保留
+fn plan(text: &str, target: Target) -> Vec<Part> {
+    let mut parts: Vec<Part> = Vec::new();
+    for range in pieces(text) {
+        let translate = match lang_of(&text[range.clone()]) {
+            Lang::Chinese => target == Target::English,
+            Lang::English => target == Target::Chinese,
+            Lang::Neutral => parts.last().is_some_and(|last| last.translate),
+        };
+        match parts.last_mut() {
+            Some(last) if last.translate == translate => last.range.end = range.end,
+            _ => parts.push(Part { range, translate }),
+        }
+    }
+    let mut out: Vec<Part> = Vec::new();
+    let keep = |range: std::ops::Range<usize>, out: &mut Vec<Part>| {
+        if range.is_empty() {
+            return;
+        }
+        match out.last_mut() {
+            Some(last) if !last.translate => last.range.end = range.end,
+            _ => out.push(Part {
+                range,
+                translate: false,
+            }),
+        }
+    };
+    for part in parts {
+        if !part.translate {
+            keep(part.range, &mut out);
+            continue;
+        }
+        let piece = &text[part.range.clone()];
+        let body = piece.trim();
+        if body.is_empty() {
+            keep(part.range, &mut out);
+            continue;
+        }
+        let lead = piece.len() - piece.trim_start().len();
+        let start = part.range.start + lead;
+        let end = start + body.len();
+        keep(part.range.start..start, &mut out);
+        out.push(Part {
+            range: start..end,
+            translate: true,
+        });
+        keep(end..part.range.end, &mut out);
+    }
+    out
+}
+
+#[cfg(any(windows, test))]
+/// 把一段（原文或译文）接到 `out` 后面。译成英文时，英文和英文之间补一个空格，
+/// 接在英文后面的中文逗号、冒号、句号换成英文的
+fn push_part(out: &mut String, part: &str, target: Target) {
+    if target == Target::English
+        && part.chars().next().is_some_and(|c| c.is_alphanumeric())
+        && let Some(last) = out.chars().last()
+    {
+        let ascii = |c: char| match c {
+            '，' => Some(','),
+            '：' => Some(':'),
+            '。' => Some('.'),
+            '；' => Some(';'),
+            _ => None,
+        };
+        if let Some(swap) = ascii(last) {
+            out.pop();
+            out.push(swap);
+            out.push(' ');
+        } else if !last.is_whitespace() && last.is_ascii() && !"([{\"'".contains(last) {
+            out.push(' ');
+        }
+    }
+    out.push_str(part);
+}
+
+#[cfg(any(windows, test))]
+/// 把英文段落里的硬换行并回空格：一行够长（40 字以上，硬换行一般在 70～80 列）、以字母、数字或逗号结尾，
+/// 下一行以小写字母开头，说明这句话被拦腰折断了。空行（分段）、短行的清单、标题、句末换行都原样保留；
+/// `\r\n` 当一个换行
+fn unwrap_english(text: &str) -> String {
+    let lines: Vec<&str> = text.split('\n').collect();
+    let mut out = String::with_capacity(text.len());
+    for (i, line) in lines.iter().enumerate() {
+        let body = line.strip_suffix('\r').unwrap_or(line);
+        out.push_str(body);
+        let Some(next) = lines.get(i + 1) else {
+            if body.len() != line.len() {
+                out.push('\r');
+            }
+            continue;
+        };
+        let ends_mid_sentence = body.trim().chars().count() >= 40
+            && body
+                .trim_end()
+                .chars()
+                .last()
+                .is_some_and(|c| c.is_ascii_alphanumeric() || c == ',' || c == ';' || c == '-');
+        let next_continues = next
+            .trim_start()
+            .chars()
+            .next()
+            .is_some_and(|c| c.is_ascii_lowercase());
+        let english = !body.chars().any(is_cjk) && !next.chars().any(is_cjk);
+        if english && ends_mid_sentence && next_continues {
+            if !body.ends_with(' ') {
+                out.push(' ');
+            }
+        } else {
+            out.push_str(&line[body.len()..]);
+            out.push('\n');
+        }
+    }
+    out
+}
+
+/// 先把所有要翻的批交给微信输入法（同时发），没翻成的批再一批一批交给有 Key 的服务。
+/// `wetype(批, 回调)`：每批回来调一次回调（测试里换成假的）。
 #[cfg(any(windows, test))]
 fn translate_routed(
     text: &str,
     target: Target,
     load_keys: impl FnOnce() -> Result<Keys, String>,
     mut send: impl FnMut(&Request) -> Result<(u32, Vec<u8>), String>,
-    mut wetype: impl FnMut(&str) -> Result<String, String>,
+    wetype: impl FnOnce(&[&str], &mut dyn FnMut(usize, Result<String, String>)),
+    progress: Progress,
 ) -> Result<String, String> {
     let text = validated_text(text)?;
     let keys = load_keys()?;
-    let use_wetype = keys.wetype_enabled && Target::for_text(text) == target;
-    let mut wetype_failure = None;
-    translate_batches(text, target, |piece| {
-        let reason = if !keys.wetype_enabled {
-            None
-        } else if !use_wetype || Target::for_text(piece) != target {
-            Some("微信输入法不能强制指定翻译方向")
-        } else {
-            if wetype_failure.is_none() {
-                match wetype(piece).and_then(|reply| usable_wetype_reply(piece, target, reply)) {
-                    Ok(reply) => return Ok(reply),
-                    Err(err) => wetype_failure = Some(err),
-                }
+    let parts = plan(text, target);
+    // 每个要翻的段再按长度切批：（第几段, 这一批）
+    let jobs: Vec<(usize, Batch)> = parts
+        .iter()
+        .enumerate()
+        .filter(|(_, part)| part.translate)
+        .flat_map(|(n, part)| {
+            batches(&text[part.range.clone()])
+                .into_iter()
+                .map(move |batch| (n, batch))
+        })
+        .collect();
+    let wanted: Vec<usize> = (0..jobs.len())
+        .filter(|&j| jobs[j].1.needs_translation())
+        .collect();
+    let total = wanted.len();
+    let mut results: Vec<Option<Result<String, String>>> = vec![None; jobs.len()];
+    let mut finished = 0;
+    if keys.wetype_enabled && !wanted.is_empty() {
+        let bodies: Vec<&str> = wanted.iter().map(|&j| jobs[j].1.body).collect();
+        wetype(&bodies, &mut |n, reply| {
+            let j = wanted[n];
+            let reply = reply.and_then(|reply| usable_wetype_reply(jobs[j].1.body, target, reply));
+            if reply.is_ok() {
+                finished += 1;
+                progress(finished, total);
             }
-            wetype_failure.as_deref()
+            results[j] = Some(reply);
+        });
+    }
+    for &j in &wanted {
+        if matches!(results[j], Some(Ok(_))) {
+            continue;
+        }
+        let reason = match results[j].take() {
+            Some(Err(reason)) => Some(reason),
+            _ if keys.wetype_enabled => Some("微信输入法翻译没有回应".to_owned()),
+            _ => None,
         };
         if keys.is_empty() {
             return Err(match reason {
@@ -884,11 +1399,94 @@ fn translate_routed(
                 None => "还没配翻译 Key".into(),
             });
         }
-        translate_piece(&keys, piece, target, &mut send).map_err(|err| match reason {
-            Some(reason) => format!("{reason}；备用服务：{err}"),
-            None => err,
-        })
-    })
+        let reply =
+            translate_piece(&keys, jobs[j].1.body, target, &mut send).map_err(
+                |err| match reason {
+                    Some(reason) => format!("{reason}；备用服务：{err}"),
+                    None => err,
+                },
+            )?;
+        finished += 1;
+        progress(finished, total);
+        results[j] = Some(Ok(reply));
+    }
+    let mut out = String::new();
+    let mut next_job = 0;
+    for (n, part) in parts.iter().enumerate() {
+        let original = &text[part.range.clone()];
+        if !part.translate {
+            push_part(&mut out, original, target);
+            continue;
+        }
+        let mut translated = String::new();
+        while next_job < jobs.len() && jobs[next_job].0 == n {
+            let batch = &jobs[next_job].1;
+            let reply = match results[next_job].take() {
+                Some(Ok(reply)) => reply,
+                _ => batch.body.to_owned(),
+            };
+            batch.join_into(&mut translated, &reply, target);
+            next_job += 1;
+        }
+        push_part(&mut out, &translated, target);
+    }
+    Ok(out)
+}
+
+/// 开发排查：把原文按 `size` 字切批，只问微信输入法，打印每批的字数、换行数、用时、结果。
+/// `parallel` 是同时在途的请求数（同一条连接）
+#[cfg(windows)]
+pub fn probe_wetype(text: &str, size: usize, parallel: usize) -> Result<(), String> {
+    use std::time::{Duration, Instant};
+    let text = validated_text(text)?;
+    let started = Instant::now();
+    let mut client = crate::wetype::Client::from_default_device()
+        .map_err(|_| "连不上微信输入法翻译".to_owned())?;
+    println!("connected {} ms", started.elapsed().as_millis());
+    let pieces: Vec<&str> = merge(text, chunks(text, size), size)
+        .into_iter()
+        .map(|(piece, _)| piece)
+        .collect();
+    let lines = |t: &str| t.bytes().filter(|&c| c == b'\n').count();
+    let mut next = 0;
+    let mut flying: Vec<(u32, usize, Instant)> = Vec::new();
+    let deadline = Instant::now() + Duration::from_secs(120);
+    while (next < pieces.len() || !flying.is_empty()) && Instant::now() < deadline {
+        while next < pieces.len() && flying.len() < parallel.max(1) {
+            let id = client
+                .send_translation(pieces[next])
+                .map_err(|e| e.to_string())?;
+            flying.push((id, next, Instant::now()));
+            next += 1;
+        }
+        let Some((id, reply)) = client.poll_translation().map_err(|e| e.to_string())? else {
+            continue;
+        };
+        let Some(at) = flying.iter().position(|f| f.0 == id) else {
+            continue;
+        };
+        let (_, n, sent) = flying.remove(at);
+        let piece = pieces[n];
+        match reply {
+            Ok(reply) => println!(
+                "batch {n}: chars={} lines={} -> chars={} lines={} {} ms (at {} ms) | {:?}",
+                piece.chars().count(),
+                lines(piece),
+                reply.chars().count(),
+                lines(&reply),
+                sent.elapsed().as_millis(),
+                started.elapsed().as_millis(),
+                reply.chars().take(60).collect::<String>()
+            ),
+            Err(error) => println!("batch {n}: error {error} {} ms", sent.elapsed().as_millis()),
+        }
+    }
+    println!(
+        "total {} ms, unanswered {}",
+        started.elapsed().as_millis(),
+        flying.len()
+    );
+    Ok(())
 }
 
 #[cfg(any(windows, test))]
@@ -903,12 +1501,30 @@ fn usable_wetype_reply(source: &str, target: Target, reply: String) -> Result<St
     if has_language && !has_target {
         return Err("微信输入法返回的译文方向不对".into());
     }
-    if source.bytes().filter(|&c| c == b'\n').count()
-        != reply.bytes().filter(|&c| c == b'\n').count()
-    {
-        return Err("微信输入法未保留原文换行".into());
+    // 硬换行的长文（从网页、PDF 复制的）微信会把断开的行并回段落，译文换行变少是正常的；
+    // 变多不行：听写时多出来的换行在聊天框里会变成回车，把半截话发出去
+    let lines = |t: &str| t.bytes().filter(|&c| c == b'\n').count();
+    if lines(reply) > lines(source) {
+        return Err("微信输入法的译文多出了换行".into());
+    }
+    if weight(source) >= 60 && weight(reply) * 5 < weight(source) * 2 {
+        return Err("微信输入法的译文像是少了一截".into());
     }
     Ok(reply.to_owned())
+}
+
+#[cfg(any(windows, test))]
+/// 文字量：一个汉字约等于三个英文字母（实测中英互译时这个量大致不变），用来发现译文少了一截
+fn weight(text: &str) -> usize {
+    text.chars()
+        .map(|c| {
+            if is_cjk(c) {
+                3
+            } else {
+                usize::from(c.is_ascii_alphanumeric())
+            }
+        })
+        .sum()
 }
 
 /// 本机 %LOCALAPPDATA%\XueerEar\translate.json 里的 Key

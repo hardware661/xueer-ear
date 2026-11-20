@@ -146,6 +146,10 @@ fn translate_at_the_end_of_a_sentence() {
         process("今天吃什么，翻译。", &o),
         Output::TextThen("今天吃什么，".into(), VoiceCommand::Translate)
     );
+    assert_eq!(
+        process("The tests pass，翻译成中文。", &o),
+        Output::TextThen("The tests pass，".into(), VoiceCommand::TranslateToChinese)
+    );
 }
 
 #[test]

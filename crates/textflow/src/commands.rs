@@ -10,8 +10,23 @@ pub enum VoiceCommand {
     DeleteAll,
     /// 按回车。默认关闭，免得在终端里把半截话发给 AI。
     Send,
-    /// 把这一轮听写打出来的字整段翻译（主人 2026-11-19：只在最后单独说，和「发送」一样）
+    /// 把这一轮听写打出来的字整段翻译（主人 2026-11-19：只在最后单独说，和「发送」一样）。
+    /// 按内容定方向：有中文就翻成英文，全是英文就翻成中文
     Translate,
+    /// 「翻译成英文」：整段变成英文，已经是英文的部分不动（主人 2026-11-21）
+    TranslateToEnglish,
+    /// 「翻译成中文」：整段变成中文，已经是中文的部分不动
+    TranslateToChinese,
+}
+
+impl VoiceCommand {
+    /// 是不是三种翻译指令之一
+    pub fn is_translate(self) -> bool {
+        matches!(
+            self,
+            Self::Translate | Self::TranslateToEnglish | Self::TranslateToChinese
+        )
+    }
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -42,6 +57,8 @@ const WORDS: &[(&str, VoiceCommand)] = &[
     ("清空", VoiceCommand::DeleteAll),
     ("发送", VoiceCommand::Send),
     ("翻译", VoiceCommand::Translate),
+    ("翻译成英文", VoiceCommand::TranslateToEnglish),
+    ("翻译成中文", VoiceCommand::TranslateToChinese),
 ];
 
 /// 能接在一句话末尾执行的指令（「第一行，换行」「今天吃什么，发送」「这句不对，删掉上一句」）。
@@ -55,8 +72,9 @@ pub fn parse_trailing_command(text: &str, options: &CommandOptions) -> Option<Vo
         .trim();
     let explicit = core.contains("上一") || core.contains("上句");
     match command {
-        // 「翻译」和「发送」一样，单独说或接在句尾都算（主人 2026-11-19：指令只用这一个词）
-        VoiceCommand::NewLine | VoiceCommand::Send | VoiceCommand::Translate => Some(command),
+        // 翻译和「发送」一样，单独说或接在句尾都算（主人 2026-11-19；11-21 加了「翻译成英文 / 中文」）
+        VoiceCommand::NewLine | VoiceCommand::Send => Some(command),
+        command if command.is_translate() => Some(command),
         VoiceCommand::DeleteLastSentence if explicit => Some(command),
         _ => None,
     }

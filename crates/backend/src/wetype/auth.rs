@@ -428,13 +428,12 @@ impl Client {
         Ok(id)
     }
 
-    /// Translate `text` on the cloud engine. The direction is chosen by the
-    /// service from the text itself (Chinese to English and vice versa).
+    /// Send one translation request without waiting. The service picks the
+    /// direction from the text itself (Chinese to English and vice versa).
+    /// Its answer comes back from `poll_translation` under the returned id,
+    /// so several can be in flight on the one connection.
     #[cfg(windows)]
-    pub(crate) fn translate_before(&mut self, text: &str, deadline: Instant) -> Result<String> {
-        if Instant::now() >= deadline {
-            return Err("微信输入法翻译超时".into());
-        }
+    pub(crate) fn send_translation(&mut self, text: &str) -> Result<u32> {
         let mut ver = Vec::new();
         wire::put_integer(&mut ver, 5, 6);
         wire::put_bytes(&mut ver, 10, VERSION.as_bytes());
@@ -451,36 +450,43 @@ impl Client {
         wire::put_integer(&mut body, 1, 4);
         wire::put_bytes(&mut body, 4, &body4);
         wire::put_integer(&mut body, 5, 11520);
+        self.send_business(4329, 4, &body)
+            .map_err(|_| "微信输入法翻译请求没发出去".into())
+    }
 
-        let id = self
-            .send_business(4329, 4, &body)
-            .map_err(|_| "微信输入法翻译请求没发出去")?;
-        while Instant::now() < deadline {
-            let response = self
-                .transport
-                .poll()
-                .map_err(|_| "微信输入法翻译连接中断")?;
-            let Some(response) = response else {
-                continue;
-            };
-            if response.id != u64::from(id) {
-                continue;
-            }
-            if response.status != 200 {
-                return Err(match response.status {
+    /// One bounded read (about 25 ms): an answer to a translation request
+    /// as (id, translation or the reason it failed). The connection itself
+    /// failing is the outer error.
+    #[cfg(windows)]
+    pub(crate) fn poll_translation(&mut self) -> Result<Option<(u32, Result<String>)>> {
+        let response = self
+            .transport
+            .poll()
+            .map_err(|_| "微信输入法翻译连接中断")?;
+        let Some(response) = response else {
+            return Ok(None);
+        };
+        let Ok(id) = u32::try_from(response.id) else {
+            return Ok(None);
+        };
+        if response.status != 200 {
+            return Ok(Some((
+                id,
+                Err(match response.status {
                     429 => "微信输入法翻译限流".into(),
                     status => format!("微信输入法翻译出错（HTTP {status}）").into(),
-                });
-            }
-            let plain = crypto::decrypt(&self.key, &response.body)
-                .map_err(|_| "读不懂微信输入法翻译的返回内容")?;
-            if let Some(translation) =
-                translation_of(&plain).map_err(|_| "读不懂微信输入法翻译的返回内容")?
-            {
-                return Ok(translation);
-            }
+                }),
+            )));
         }
-        Err("微信输入法翻译超时".into())
+        let answer = crypto::decrypt(&self.key, &response.body)
+            .ok()
+            .and_then(|plain| translation_of(&plain).ok());
+        Ok(match answer {
+            Some(Some(translation)) => Some((id, Ok(translation))),
+            // 同一个请求先回的不带译文的包：接着等
+            Some(None) => None,
+            None => Some((id, Err("读不懂微信输入法翻译的返回内容".into()))),
+        })
     }
 
     pub fn poll(&mut self) -> Result<Option<Response>> {

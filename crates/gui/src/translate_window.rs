@@ -55,6 +55,8 @@ const DOTS_TIMER: usize = 2;
 const COPIED_TIMER: usize = 3;
 /// 译文回来了
 const DONE: u32 = WM_APP + 21;
+/// 长文翻好了几段（wparam = 第几次请求，lparam = 已翻 << 16 | 一共几段）
+const PROGRESS: u32 = WM_APP + 22;
 
 /// 初始卡片尺寸（96 DPI）：上半白底原文，下半浅灰底译文。窗口可以拖边改大小、最大化，
 /// 下面的位置都按当前大小算（`Layout`）
@@ -411,7 +413,18 @@ unsafe fn ask(window: HWND, state: &mut State) {
     }
     let target_language = state.target;
     thread::spawn(move || {
-        let result = xueer_ear_backend::translate::translate_into(&source, target_language);
+        // 长文分好几段同时翻：每翻好一段报一次，底栏写「已翻 3/15 段」，不让人干等
+        let progress = |done: usize, total: usize| {
+            if total > 1 {
+                let packed = (done.min(0xffff) << 16) | total.min(0xffff);
+                PostMessageW(target as HWND, PROGRESS, id, packed as LPARAM);
+            }
+        };
+        let result = xueer_ear_backend::translate::translate_into_with_progress(
+            &source,
+            target_language,
+            &progress,
+        );
         let _ = sender.send((id, result));
         PostMessageW(target as HWND, DONE, id, 0);
     });
@@ -763,6 +776,14 @@ unsafe extern "system" fn procedure(
             }
             0
         }
+        PROGRESS => {
+            if wparam == state.asked && state.busy {
+                let (done, total) = ((lparam as usize) >> 16, (lparam as usize) & 0xffff);
+                state.note = format!("已翻 {done}/{total} 段…");
+                invalidate(hwnd, state.dpi, Layout::of(hwnd, state.dpi).note());
+            }
+            0
+        }
         DONE => {
             while let Ok((id, result)) = state.replies.try_recv() {
                 state.in_flight = false;
@@ -772,6 +793,7 @@ unsafe extern "system" fn procedure(
                 state.busy = false;
                 KillTimer(hwnd, DOTS_TIMER);
                 ShowWindow(GetDlgItem(hwnd, RESULT as i32), SW_SHOWNOACTIVATE);
+                state.note.clear();
                 match result {
                     Ok(text) => set_text(hwnd, RESULT, &text),
                     Err(reason) => {
