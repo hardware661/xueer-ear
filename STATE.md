@@ -3,6 +3,12 @@
 > 任何 AI 接手先读这里；每次会话收尾在最上面追加一节（最新在上），写清做了什么、验证了什么、还差什么。
 > 计划原文：主人桌面 `雪耳xueer-ear计划-v1.md`（v1.1）。
 
+## 2026-11-20 21:39 · 1.2 计划草稿（待主人确认，代码没动）
+
+- 主人要两件事：用雪耳说话时雪儿 speaker 先等着，这轮听写结束再念（主人原话："when I'm speaking using Xue'er … Xue'er can wait and read after this dictation round is over"）；把雪耳打磨到值得别人点星（"I want to get a ton of stars"）。
+- 草稿在 `~/tools/ai/claude/scratch/tmp/xueer-ear-1.2-plan.md`：一、听写时 speaker 排队等；二、默认不要管理员权限、首次打开自动开好、深色、一键更新、诊断信息；三、README 动图与对比表、英文版、关键词、发布说明、issue 模板；四、winget、误报检查、签名。待主人定：AI 整理（11-14 说过不要）、推广、Windows 10。
+- 发现：控制面板清单是 highestAvailable，主人电脑设了管理员不弹 UAC，所以没见过；默认设置的电脑每次打开都会弹确认框（开机自启被拦是推测）。
+
 ## 2026-11-20 19:26 · 微信输入法翻译双向实测并装机
 
 - 经主人同意，用 `14793bc` 的 Windows CLI 和没有任何翻译 Key 的隔离配置实测。只发两句固定样例：「窗边有三盆绿植。」→ “There are three potted plants by the window.”（721 毫秒）；“There are three books on the desk.” →「桌子上有三本书。」（525 毫秒）。两次退出码都为 0。
