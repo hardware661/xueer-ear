@@ -125,7 +125,7 @@ fn run() -> Result<(), Box<dyn Error + Send + Sync>> {
                     Event::Activity(phase) => println!("activity={phase}"),
                     Event::Input { name, muted, volume } => println!("device={name} muted={muted:?} volume={volume:?}"),
                     Event::Progress { samples, peak, rms, gain, pieces, responses, partials, finals } => println!("samples={samples} peak={peak} rms={rms:.1} gain={gain:.1} uploaded={pieces} responses={responses} partials={partials} finals={finals}"),
-                    Event::Speech(_) | Event::Channel { .. } => (),
+                    Event::Speech(_) | Event::Channel { .. } | Event::Voice { .. } => (),
                 }
                 Ok(())
             })?;
@@ -150,21 +150,29 @@ fn run() -> Result<(), Box<dyn Error + Send + Sync>> {
             println!("{}", xueer_ear_backend::translate::translate(&text.to_string_lossy())?);
             Ok(())
         }
-        // 和翻译小窗、语音「翻译成英文 / 中文」同一条路：原文从文件读，译成 en / zh，打印用时、进度和译文
+        // 和翻译小窗同一条路：原文从文件读，译成 en / zh，打印用时、进度、各家翻了几段和译文。
+        // 设了 XUEER_EAR_TRANSLATE_ONLY（volcengine / microsoft / bilibili / wetype / azure / google / zhipu）就只用那一家
         #[cfg(windows)]
         (Some(command), Some(path), Some(target)) if command == "translate-file" => {
-            use xueer_ear_backend::translate::{Target, translate_into_with_progress};
+            use xueer_ear_backend::translate::{Service, Target, translate_into_with_progress};
             let target = match target.to_string_lossy().as_ref() {
                 "en" => Target::English,
                 "zh" => Target::Chinese,
                 _ => return Err("target must be en or zh".into()),
             };
+            let only = match std::env::var("XUEER_EAR_TRANSLATE_ONLY") {
+                Ok(id) => Some(Service::from_id(&id).ok_or("unknown service")?),
+                Err(_) => None,
+            };
             let text = fs::read_to_string(path)?;
             let started = std::time::Instant::now();
             let progress = |done: usize, total: usize| eprintln!("{done}/{total} at {} ms", started.elapsed().as_millis());
-            let out = translate_into_with_progress(&text, target, &progress)?;
-            eprintln!("done in {} ms, {} chars -> {} chars", started.elapsed().as_millis(), text.chars().count(), out.chars().count());
-            println!("{out}");
+            let out = translate_into_with_progress(&text, target, only, &progress)?;
+            eprintln!("done in {} ms, {} chars -> {} chars; {}", started.elapsed().as_millis(), text.chars().count(), out.text.chars().count(), out.summary);
+            for reason in &out.reasons {
+                eprintln!("failed: {reason}");
+            }
+            println!("{}", out.text);
             Ok(())
         }
         // 排查长文翻译：只走微信输入法，原文从文件读（UTF-8），每次请求一段，打印每段的字数、换行数、用时和结果

@@ -65,18 +65,24 @@ impl BoxText {
         }
     }
 
-    /// 整框换成 `text`（译文）
+    /// 整框换成 `text`（译文）。终端里回车就是提交，译文并成一行打；别的程序里多行的译文整段粘贴
     pub fn replace(&self, text: &str) -> Change {
-        let text = match self.kind {
-            Kind::Terminal => text.split_whitespace().collect::<Vec<_>>().join(" "),
-            _ => text.replace("\r\n", "\n"),
+        if self.kind == Kind::Terminal {
+            let text = text.split_whitespace().collect::<Vec<_>>().join(" ");
+            let mut keys = self.clear();
+            keys.push(Key::Text(text.clone()));
+            return Change { keys, after: text };
+        }
+        let text = normalize(text);
+        let insert = if text.contains('\n') {
+            Key::Paste(text.clone())
+        } else {
+            Key::Text(text.clone())
         };
-        let mut keys = match self.kind {
-            Kind::Terminal => self.clear(),
-            _ => vec![Key::SelectAll],
-        };
-        keys.push(Key::Text(text.clone()));
-        Change { keys, after: text }
+        Change {
+            keys: vec![Key::SelectAll, insert],
+            after: text,
+        }
     }
 
     /// 光标挪到框的最后：普通程序按 Ctrl+End；终端里按光标后面有几个字往右挪
@@ -546,6 +552,25 @@ mod tests {
             apply("手打的，说的话。", &change.keys),
             "Typed by hand, then spoken."
         );
+    }
+
+    // 多行的译文一个字一个字打，换行在微信里就是回车，会直接发出去：整段粘贴
+    #[test]
+    fn a_translation_with_line_breaks_is_pasted_not_typed() {
+        for kind in [Kind::Edit, Kind::Copied] {
+            let b = BoxText {
+                text: "第一段。\n第二段。".into(),
+                caret: None,
+                kind,
+            };
+            let change = b.replace("First.\r\nSecond.");
+            assert_eq!(
+                change.keys,
+                [Key::SelectAll, Key::Paste("First.\nSecond.".into())]
+            );
+            assert_eq!(change.after, "First.\nSecond.");
+            assert_eq!(apply(&b.text, &change.keys), "First.\nSecond.");
+        }
     }
 
     fn screen(lines: &[&str]) -> Vec<String> {

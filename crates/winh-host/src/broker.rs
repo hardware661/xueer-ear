@@ -263,6 +263,8 @@ fn start(
                         }
                         return Ok(());
                     }
+                    // 语音指令的「先停够」只在雪耳自己的听写里用
+                    Event::Voice { .. } => return Ok(()),
                     Event::Channel { name, fallback, waited_ms } => {
                         status.channel(name);
                         if fallback || waited_ms > 800 {

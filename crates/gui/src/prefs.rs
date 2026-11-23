@@ -396,29 +396,10 @@ pub fn history_pick(texts: &[String], id: usize) -> Option<&str> {
     texts.get(id.checked_sub(HISTORY_BASE)?).map(String::as_str)
 }
 
-/// 按实际尝试顺序列出已启用的服务。
-fn translate_services(keys: &xueer_ear_backend::translate::Keys) -> Vec<&'static str> {
-    keys.wetype_enabled
-        .then_some("微信输入法")
-        .into_iter()
-        .chain(
-            [
-                ("微软", &keys.azure_key),
-                ("谷歌", &keys.google_key),
-                ("智谱", &keys.zhipu_key),
-            ]
-            .into_iter()
-            .filter(|(_, key)| !key.trim().is_empty())
-            .map(|(name, _)| name),
-        )
-        .collect()
-}
-
-/// 「翻译」一行按钮上的字
+/// 「翻译」一行按钮上的字：火山、微软、B 站三家免费的总在，没有「未配置」
 pub fn translate_summary(config: &Result<xueer_ear_backend::translate::Keys, String>) -> String {
     match config {
         Err(_) => "设置出错",
-        Ok(keys) if !keys.wetype_enabled && keys.is_empty() => "未配置",
         Ok(_) => "打开",
     }
     .to_owned()
@@ -430,14 +411,14 @@ pub fn translate_choices(
 ) -> Vec<Choice> {
     let status = match config {
         Err(reason) => reason.clone(),
-        Ok(keys) => {
-            let services = translate_services(keys);
-            if services.is_empty() {
-                "还没配翻译服务".to_owned()
-            } else {
-                format!("服务：{}", services.join(" → "))
-            }
-        }
+        Ok(keys) => format!(
+            "服务：{}，谁快先用谁",
+            xueer_ear_backend::translate::services(keys)
+                .into_iter()
+                .map(|service| service.name())
+                .collect::<Vec<_>>()
+                .join("、")
+        ),
     };
     vec![
         (OPEN_TRANSLATOR, "打开翻译小窗".to_owned(), false),
@@ -702,7 +683,7 @@ mod translate_menu_tests {
     use xueer_ear_backend::translate::Keys;
 
     #[test]
-    fn translate_menu_lists_configured_services_in_order() {
+    fn translate_menu_lists_the_free_services_then_configured_ones() {
         let configured = Ok(Keys {
             google_key: "g".into(),
             zhipu_key: "z".into(),
@@ -713,18 +694,19 @@ mod translate_menu_tests {
         assert_eq!(menu[0].0, OPEN_TRANSLATOR);
         assert!(
             menu.iter()
-                .any(|(_, t, _)| t == "服务：微信输入法 → 谷歌 → 智谱")
+                .any(|(_, t, _)| t == "服务：火山、微软、B站、微信、谷歌、智谱，谁快先用谁"),
+            "{menu:?}"
         );
-        assert_eq!(translate_summary(&Ok(Keys::default())), "打开");
+        // 不用微信、也没配 Key：三家免费的照样能翻
         let disabled = Ok(Keys {
             wetype_enabled: false,
             ..Keys::default()
         });
-        assert_eq!(translate_summary(&disabled), "未配置");
+        assert_eq!(translate_summary(&disabled), "打开");
         assert!(
             translate_choices(&disabled)
                 .iter()
-                .any(|(_, t, _)| t == "还没配翻译服务")
+                .any(|(_, t, _)| t == "服务：火山、微软、B站，谁快先用谁")
         );
         let invalid = Err("翻译设置文件坏了".to_owned());
         assert_eq!(translate_summary(&invalid), "设置出错");

@@ -1,14 +1,27 @@
 //! 剪贴板：没找到输入框时，这一轮说的话放这里（主人自己 Ctrl+V）；
-//! 读不到的输入框（微信）全选复制来读时，先把主人原来的剪贴板存下来，读完原样放回去。
-use std::ptr;
+//! 读不到的输入框（微信）全选复制来读时，先把主人原来的剪贴板存下来，读完原样放回去；
+//! 多行的译文整段粘贴进输入框，粘贴完也把原来的放回去。
+use std::{
+    cell::{Cell, RefCell},
+    ptr,
+    sync::OnceLock,
+    time::{Duration, Instant},
+};
 use windows_sys::Win32::{
-    Foundation::{GlobalFree, HANDLE, HWND},
+    Foundation::{GlobalFree, HANDLE, HWND, LPARAM, LRESULT, WPARAM},
     System::{
         DataExchange::{
             CloseClipboard, EmptyClipboard, EnumClipboardFormats, GetClipboardData,
-            GetClipboardSequenceNumber, OpenClipboard, RegisterClipboardFormatW, SetClipboardData,
+            GetClipboardSequenceNumber, GetOpenClipboardWindow, OpenClipboard,
+            RegisterClipboardFormatW, SetClipboardData,
         },
+        LibraryLoader::GetModuleHandleW,
         Memory::{GMEM_MOVEABLE, GlobalAlloc, GlobalLock, GlobalSize, GlobalUnlock},
+    },
+    UI::WindowsAndMessaging::{
+        CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetForegroundWindow,
+        GetWindowThreadProcessId, HWND_MESSAGE, MSG, PM_REMOVE, PeekMessageW, RegisterClassW,
+        WM_RENDERALLFORMATS, WM_RENDERFORMAT, WNDCLASSW,
     },
 };
 
@@ -18,13 +31,7 @@ const MAX_SAVED_BYTES: usize = 64 << 20;
 
 /// `owner` 是剪贴板的拥有者窗口（传空窗口时 SetClipboardData 会失败）。换行按 Windows 的 \r\n 放
 pub fn copy(owner: usize, text: &str) -> Result<(), String> {
-    let units: Vec<u16> = text
-        .replace("\r\n", "\n")
-        .replace('\n', "\r\n")
-        .encode_utf16()
-        .chain(Some(0))
-        .collect();
-    let bytes: Vec<u8> = units.iter().flat_map(|u| u.to_le_bytes()).collect();
+    let bytes = unicode_bytes(text);
     let _open = Open::new(owner)?;
     unsafe {
         EmptyClipboard();
@@ -33,6 +40,166 @@ pub fn copy(owner: usize, text: &str) -> Result<(), String> {
         Ok(())
     } else {
         Err("复制失败".to_owned())
+    }
+}
+
+/// 剪贴板上的文字：UTF-16、换行是 \r\n、末尾一个 0
+fn unicode_bytes(text: &str) -> Vec<u8> {
+    text.replace("\r\n", "\n")
+        .replace('\n', "\r\n")
+        .encode_utf16()
+        .chain(Some(0))
+        .flat_map(u16::to_le_bytes)
+        .collect()
+}
+
+/// 粘贴没成
+#[derive(Debug)]
+pub enum PasteError {
+    /// 还没按 Ctrl+V（剪贴板打不开、里面的东西太大存不下）：可以改成打字
+    NotPressed(String),
+    /// 按了 Ctrl+V，前台程序 2 秒内没来取字（主人原来的剪贴板已经放回去了）
+    NotTaken,
+}
+
+/// 把 `text` 粘贴进前台的输入框（`press` 按 Ctrl+V）：先存下主人的剪贴板，放上这段字，按 Ctrl+V，
+/// 等前台程序把字取走，再把原来的放回去。
+///
+/// 字不马上放上去（延迟提供）：前台程序来取时系统才叫我们给，这样就知道它什么时候取走了，
+/// 不用猜要等多久——放回得早了，粘贴进去的就成了主人原来剪贴板里的东西（可能是密码）。
+/// 要是别的程序（剪贴板工具）先来取了，之后前台程序再取就看不到了，只能按时间等
+pub fn paste(text: &str, press: &dyn Fn()) -> Result<(), PasteError> {
+    let window = OfferWindow::new().map_err(PasteError::NotPressed)?;
+    let saved = save(window.0).map_err(PasteError::NotPressed)?;
+    OFFER.set(Some(unicode_bytes(text)));
+    TAKEN_BY.set(None);
+    {
+        let _open = Open::new(window.0).map_err(PasteError::NotPressed)?;
+        unsafe {
+            EmptyClipboard();
+            SetClipboardData(CF_UNICODETEXT, ptr::null_mut());
+        }
+        exclude_from_history();
+    }
+    let target = unsafe {
+        let mut pid = 0;
+        GetWindowThreadProcessId(GetForegroundWindow(), &mut pid);
+        pid
+    };
+    press();
+    let pressed = Instant::now();
+    let outcome = loop {
+        window.pump();
+        match TAKEN_BY.get() {
+            // 取字的窗口不知道是谁（打开剪贴板时没给窗口）也算前台程序
+            Some(pid) if pid == 0 || pid == target => break Ok(()),
+            Some(_) => {
+                while pressed.elapsed() < Duration::from_millis(800) {
+                    window.pump();
+                    std::thread::sleep(Duration::from_millis(5));
+                }
+                break Ok(());
+            }
+            None if pressed.elapsed() >= Duration::from_secs(2) => break Err(PasteError::NotTaken),
+            None => std::thread::sleep(Duration::from_millis(5)),
+        }
+    };
+    OFFER.set(None);
+    if let Err(reason) = restore(window.0, &saved) {
+        eprintln!("粘贴后没能放回原来的剪贴板：{reason}");
+    }
+    outcome
+}
+
+thread_local! {
+    /// 这次粘贴要给出去的字
+    static OFFER: RefCell<Option<Vec<u8>>> = const { RefCell::new(None) };
+    /// 来取字的是哪个进程（取字的窗口不知道是谁时是 0）
+    static TAKEN_BY: Cell<Option<u32>> = const { Cell::new(None) };
+}
+
+/// 粘贴时剪贴板的拥有者：看不见的消息窗口，前台程序来取字时它把字给出去
+struct OfferWindow(usize);
+
+impl OfferWindow {
+    fn new() -> Result<Self, String> {
+        static CLASS: OnceLock<Vec<u16>> = OnceLock::new();
+        let class = CLASS.get_or_init(|| {
+            let name: Vec<u16> = "XueerEar.ClipboardOffer".encode_utf16().chain(Some(0)).collect();
+            let class = WNDCLASSW {
+                lpfnWndProc: Some(offer_procedure),
+                hInstance: unsafe { GetModuleHandleW(ptr::null()) },
+                lpszClassName: name.as_ptr(),
+                ..unsafe { std::mem::zeroed() }
+            };
+            unsafe { RegisterClassW(&class) };
+            name
+        });
+        let window = unsafe {
+            CreateWindowExW(
+                0,
+                class.as_ptr(),
+                ptr::null(),
+                0,
+                0,
+                0,
+                0,
+                0,
+                HWND_MESSAGE,
+                ptr::null_mut(),
+                GetModuleHandleW(ptr::null()),
+                ptr::null(),
+            )
+        };
+        if window.is_null() {
+            return Err("开不了粘贴用的窗口".to_owned());
+        }
+        Ok(Self(window as usize))
+    }
+
+    /// 处理发给这个窗口的消息（别的程序来取字时，系统在这里叫我们给）
+    fn pump(&self) {
+        unsafe {
+            let mut message: MSG = std::mem::zeroed();
+            while PeekMessageW(&mut message, self.0 as HWND, 0, 0, PM_REMOVE) != 0 {
+                DispatchMessageW(&message);
+            }
+        }
+    }
+}
+
+impl Drop for OfferWindow {
+    fn drop(&mut self) {
+        unsafe {
+            DestroyWindow(self.0 as HWND);
+        }
+    }
+}
+
+unsafe extern "system" fn offer_procedure(
+    window: HWND,
+    message: u32,
+    wparam: WPARAM,
+    lparam: LPARAM,
+) -> LRESULT {
+    match message {
+        WM_RENDERFORMAT if wparam as u32 == CF_UNICODETEXT => {
+            OFFER.with_borrow(|bytes| {
+                if let Some(bytes) = bytes {
+                    put(CF_UNICODETEXT, bytes);
+                }
+            });
+            let opener = unsafe { GetOpenClipboardWindow() };
+            let mut pid = 0;
+            if !opener.is_null() {
+                unsafe { GetWindowThreadProcessId(opener, &mut pid) };
+            }
+            TAKEN_BY.set(Some(pid));
+            0
+        }
+        // 窗口要关了、字还没给出去：不给，马上就把主人原来的剪贴板放回去
+        WM_RENDERALLFORMATS => 0,
+        _ => unsafe { DefWindowProcW(window, message, wparam, lparam) },
     }
 }
 
@@ -91,6 +258,12 @@ pub fn restore(owner: usize, saved: &Saved) -> Result<(), String> {
     for (format, bytes) in &saved.0 {
         put(*format, bytes);
     }
+    exclude_from_history();
+    Ok(())
+}
+
+/// 剪贴板正开着时标上「别进剪贴板历史、别同步、剪贴板工具别管」
+fn exclude_from_history() {
     for (name, value) in [
         ("CanIncludeInClipboardHistory", 0_u32),
         ("CanUploadToCloudClipboard", 0),
@@ -102,7 +275,6 @@ pub fn restore(owner: usize, saved: &Saved) -> Result<(), String> {
             put(format, &value.to_le_bytes());
         }
     }
-    Ok(())
 }
 
 /// 这种格式的数据是不是一块普通内存（能原样存、原样放回）

@@ -20,6 +20,9 @@ pub enum Key {
     End,
     /// 往右挪光标若干个字（终端的输入框里挪到最后）
     Right(usize),
+    /// 整段粘贴（多行的译文：一个字一个字打，换行在微信里就是回车，会直接发出去）。
+    /// 先存下主人的剪贴板，粘贴完放回去
+    Paste(String),
 }
 
 /// 记着刚打出去的上一句：终端里下一句要按它补分隔（「，」或空格）
@@ -285,7 +288,7 @@ pub fn apply_keys(doc: &mut String, keys: &[Key]) {
     use unicode_segmentation::UnicodeSegmentation;
     for key in keys {
         match key {
-            Key::Text(text) => doc.push_str(text),
+            Key::Text(text) | Key::Paste(text) => doc.push_str(text),
             Key::Enter => doc.push('\n'),
             Key::Backspace(count) => {
                 let keep = doc.graphemes(true).count().saturating_sub(*count);

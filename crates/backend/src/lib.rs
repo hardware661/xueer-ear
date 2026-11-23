@@ -14,6 +14,7 @@ pub mod replay;
 pub mod runtime_account;
 pub mod settings;
 pub mod translate;
+pub mod translate_pool;
 pub mod wetype;
 use serde::Deserialize;
 use std::{

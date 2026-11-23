@@ -1,5 +1,6 @@
-//! 雪耳翻译：微信输入法自动翻译，失败时用本机配置的服务。
-//! 配置在 `%LOCALAPPDATA%\XueerEar\translate.json`。
+//! 雪耳翻译：长文先切段，交给服务池（`translate_pool`）分段翻：火山、微软、B 站、微信输入法四家免费的，
+//! 本机配了 Key 的微软正式版、谷歌 Gemini、智谱排在后面（主人 2026-11-24 定）。
+//! Key 和「用不用微信输入法」在 `%LOCALAPPDATA%\XueerEar\translate.json`。
 pub use crate::https::Request;
 #[cfg(windows)]
 use crate::https::send;
@@ -40,12 +41,6 @@ impl Keys {
             Err(_) => Err("读不了翻译设置".into()),
         }
     }
-
-    pub fn is_empty(&self) -> bool {
-        self.azure_key.trim().is_empty()
-            && self.google_key.trim().is_empty()
-            && self.zhipu_key.trim().is_empty()
-    }
 }
 
 /// 译成哪种语言：英文为主的原文翻成中文，其他翻成英文
@@ -84,9 +79,9 @@ fn is_cjk(c: char) -> bool {
     matches!(c, '\u{3400}'..='\u{4dbf}' | '\u{4e00}'..='\u{9fff}' | '\u{f900}'..='\u{faff}')
 }
 
-/// 一次请求最多送这么多字；更长的按段落（段太长再按句子）切开，逐段翻译再拼回去。
-/// 段落很短也会先合并到接近这个长度再送，免得一篇几十段的文章发几十次请求撞上免费档的每分钟次数
-pub const CHUNK_CHARS: usize = 1500;
+/// 一段最多这么多字；更长的按段落（段太长再按句子）切开，分段翻译再拼回去（主人 2026-11-24：
+/// 1 万字切成二三十段，每段各自计时）。段落很短也会先合并到接近这个长度再送，免得发太多次请求
+pub const CHUNK_CHARS: usize = 600;
 /// 整段最长多少字（输入框上限，约 5 万汉字，正常用不到）
 pub const MAX_CHARS: usize = 50_000;
 
@@ -190,14 +185,6 @@ fn usable_text(text: &str) -> Option<&str> {
     (!text.is_empty() && !text.contains('\0')).then_some(text)
 }
 
-/// 限流后等几秒再试（测试里不真等）
-fn pause(seconds: u64) {
-    #[cfg(not(test))]
-    std::thread::sleep(std::time::Duration::from_secs(seconds));
-    #[cfg(test)]
-    let _ = seconds;
-}
-
 /// HTTP 状态码 → 给主人看的一句原因
 pub fn status_reason(service: &str, status: u32) -> String {
     match status {
@@ -207,32 +194,7 @@ pub fn status_reason(service: &str, status: u32) -> String {
     }
 }
 
-/// 按顺序试：微软 → 谷歌 → 智谱。`send` 负责真正发请求，返回（状态码, 响应体）。
-/// 都没配 Key、文字太长或都失败时返回原因（最后一个失败的原因）。
-pub fn translate_with(
-    keys: &Keys,
-    text: &str,
-    send: impl FnMut(&Request) -> Result<(u32, Vec<u8>), String>,
-) -> Result<String, String> {
-    translate_to(keys, text, Target::for_text(text.trim()), send)
-}
-
-/// 指定译成哪种语言（翻译小窗手动选了方向时用）
-pub fn translate_to(
-    keys: &Keys,
-    text: &str,
-    target: Target,
-    mut send: impl FnMut(&Request) -> Result<(u32, Vec<u8>), String>,
-) -> Result<String, String> {
-    let text = validated_text(text)?;
-    if keys.is_empty() {
-        return Err("还没配翻译 Key".into());
-    }
-    translate_batches(text, target, |piece| {
-        translate_piece(keys, piece, target, &mut send)
-    })
-}
-
+#[cfg(any(windows, test))]
 fn validated_text(text: &str) -> Result<&str, String> {
     let text = text.trim();
     if text.is_empty() {
@@ -244,6 +206,7 @@ fn validated_text(text: &str) -> Result<&str, String> {
     Ok(text)
 }
 
+#[cfg(any(windows, test))]
 /// 一批要翻的原文：前面原样保留的换行、正文、后面的分隔符
 struct Batch<'a> {
     lead: &'a str,
@@ -251,6 +214,7 @@ struct Batch<'a> {
     separator: &'a str,
 }
 
+#[cfg(any(windows, test))]
 impl Batch<'_> {
     fn needs_translation(&self) -> bool {
         !self.body.trim().is_empty()
@@ -273,6 +237,7 @@ impl Batch<'_> {
     }
 }
 
+#[cfg(any(windows, test))]
 fn batches(text: &str) -> Vec<Batch<'_>> {
     merge(text, chunks(text, CHUNK_CHARS), CHUNK_CHARS)
         .into_iter()
@@ -285,23 +250,6 @@ fn batches(text: &str) -> Vec<Batch<'_>> {
             }
         })
         .collect()
-}
-
-fn translate_batches(
-    text: &str,
-    target: Target,
-    mut translate: impl FnMut(&str) -> Result<String, String>,
-) -> Result<String, String> {
-    let mut out = String::new();
-    for batch in batches(text) {
-        let translated = if batch.needs_translation() {
-            translate(batch.body)?
-        } else {
-            batch.body.to_owned()
-        };
-        batch.join_into(&mut out, &translated, target);
-    }
-    Ok(out)
 }
 
 /// 切成不超过 `limit` 字的段：先按换行切；单行太长按句末标点切；一句还太长就按字数硬切。
@@ -388,761 +336,6 @@ fn split_line(line: &str, limit: usize) -> Vec<(&str, &str)> {
         out.push((&line[start..], ""));
     }
     out
-}
-
-fn translate_piece(
-    keys: &Keys,
-    text: &str,
-    target: Target,
-    send: &mut impl FnMut(&Request) -> Result<(u32, Vec<u8>), String>,
-) -> Result<String, String> {
-    let attempts: [(&str, Option<Request>, fn(&[u8]) -> Result<String, String>); 3] = [
-        ("微软翻译", azure_request(keys, text, target), parse_azure),
-        ("谷歌", google_request(keys, text, target), parse_google),
-        ("智谱", zhipu_request(keys, text, target), parse_google),
-    ];
-    let mut reason = String::new();
-    // 免费档每分钟次数有限（谷歌约 10 次）。为了体感，被限流的那家先跳过、马上换下一家；
-    // 只有每一家都被限流时才等一会儿再从头试（8 秒、20 秒）。主人 2026-11-19：不能影响体感
-    for wait in [0, 8, 20] {
-        if wait > 0 {
-            pause(wait);
-        }
-        let mut all_limited = true;
-        for (service, request, parse) in &attempts {
-            let Some(request) = request else { continue };
-            let reply = send(request);
-            all_limited &= matches!(&reply, Ok((429, _)));
-            reason = match reply {
-                Ok((200, body)) => match parse(&body) {
-                    Ok(text) => return Ok(text),
-                    Err(error) => error,
-                },
-                Ok((status, _)) => status_reason(service, status),
-                Err(error) => format!("{service} 连不上（{error}）"),
-            };
-        }
-        // 不是限流（Key 不对、连不上）的错，等也没用
-        if !all_limited {
-            break;
-        }
-    }
-    Err(reason)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn both() -> Keys {
-        Keys {
-            azure_key: "a".into(),
-            azure_region: "eastasia".into(),
-            google_key: "g".into(),
-            ..Keys::default()
-        }
-    }
-
-    /// 假的微信输入法：每批按 `answer` 回答，记下收到了哪几批
-    fn fake_wetype<'a>(
-        asked: &'a std::cell::RefCell<Vec<String>>,
-        answer: impl Fn(&str) -> Result<String, String> + 'a,
-    ) -> impl FnOnce(&[&str], &mut dyn FnMut(usize, Result<String, String>)) + 'a {
-        move |pieces, done| {
-            for (i, piece) in pieces.iter().enumerate() {
-                asked.borrow_mut().push(piece.to_string());
-                done(i, answer(piece));
-            }
-        }
-    }
-
-    fn no_progress(_: usize, _: usize) {}
-
-    #[test]
-    fn invalid_input_never_reaches_a_service_or_settings() {
-        for source in ["  ".to_owned(), "中".repeat(MAX_CHARS + 1)] {
-            assert!(
-                translate_routed(
-                    &source,
-                    Target::English,
-                    || panic!("invalid input should not load settings"),
-                    |_| panic!("invalid input should not reach a keyed provider"),
-                    |_, _| panic!("invalid input should not reach WeType"),
-                    &no_progress,
-                )
-                .is_err()
-            );
-        }
-    }
-
-    #[test]
-    fn long_text_uses_bounded_requests_and_can_fall_back_between_batches() {
-        let source = format!("{}。\n第二段。", "中".repeat(CHUNK_CHARS - 1));
-        let asked = std::cell::RefCell::new(Vec::new());
-        let out = translate_routed(
-            &source,
-            Target::English,
-            || Ok(both()),
-            |request| {
-                let body: serde_json::Value = serde_json::from_str(&request.body).unwrap();
-                assert_eq!(body[0]["Text"], "第二段。");
-                Ok((
-                    200,
-                    br#"[{"translations":[{"text":"Second paragraph."}]}]"#.to_vec(),
-                ))
-            },
-            fake_wetype(&asked, |piece| {
-                assert!(
-                    piece.chars().count() <= CHUNK_CHARS,
-                    "oversized WeType request"
-                );
-                if piece == "第二段。" {
-                    Err("微信输入法翻译超时".into())
-                } else {
-                    Ok(
-                        "First paragraph is long and goes on for quite a while in English. "
-                            .repeat(60),
-                    )
-                }
-            }),
-            &no_progress,
-        )
-        .unwrap();
-        assert_eq!(asked.borrow().len(), 2);
-        assert!(out.ends_with(".\nSecond paragraph."), "{out}");
-    }
-
-    // 2026-11-20 主人粘了约 3000 词英文：微信把硬换行并回段落，换行数对不上，
-    // 每批都被丢给智谱、撞上限流等了一分多钟，最后什么都没出。换行变少是正常的
-    #[test]
-    fn wetype_may_join_hard_wrapped_lines() {
-        let source = "This is a line that was\r\nwrapped by hand in the\r\nmiddle of a sentence.";
-        let asked = std::cell::RefCell::new(Vec::new());
-        let out = translate_routed(
-            source,
-            Target::Chinese,
-            || Ok(both()),
-            |_| panic!("WeType answered; keyed providers must not be used"),
-            fake_wetype(&asked, |_| Ok("这是一句在句子中间被手动换行的话。".into())),
-            &no_progress,
-        );
-        assert_eq!(out.as_deref(), Ok("这是一句在句子中间被手动换行的话。"));
-    }
-
-    #[test]
-    fn an_empty_wrong_direction_extra_line_or_cut_short_reply_falls_back() {
-        let source = "你好，今天的测试全部通过了，可以发布新版本。\n明天再看一下安装包有没有被杀毒软件误报。";
-        for unusable in [
-            "  ",
-            "你好，世界。",
-            "Hello\0\nworld.",
-            "Hello,\nall tests\npassed.\nTomorrow",
-            "Hello.",
-        ] {
-            let asked = std::cell::RefCell::new(Vec::new());
-            let out = translate_routed(
-                source,
-                Target::English,
-                || Ok(both()),
-                |_| {
-                    Ok((
-                        200,
-                        br#"[{"translations":[{"text":"Hello, all tests passed today.\nTomorrow check the installer."}]}]"#.to_vec(),
-                    ))
-                },
-                fake_wetype(&asked, |_| Ok(unusable.into())),
-                &no_progress,
-            );
-            assert_eq!(
-                out.as_deref(),
-                Ok("Hello, all tests passed today.\nTomorrow check the installer."),
-                "{unusable:?}"
-            );
-        }
-    }
-
-    #[test]
-    fn every_batch_goes_to_wetype_at_once_and_progress_is_reported() {
-        let source = "第一段很长。".repeat(400) + "\n" + &"第二段也很长。".repeat(300);
-        let asked = std::cell::RefCell::new(Vec::new());
-        let seen = std::cell::RefCell::new(Vec::new());
-        let out = translate_routed(
-            &source,
-            Target::English,
-            || Ok(Keys::default()),
-            |_| panic!("no keyed providers are configured"),
-            move |pieces: &[&str], done: &mut dyn FnMut(usize, Result<String, String>)| {
-                asked
-                    .borrow_mut()
-                    .extend(pieces.iter().map(|p| p.to_string()));
-                // 谁先回来先记谁：倒着回
-                for i in (0..pieces.len()).rev() {
-                    done(
-                        i,
-                        Ok(format!(
-                            "Part {i} {}",
-                            "word ".repeat(pieces[i].chars().count() / 2)
-                        )),
-                    );
-                }
-                assert!(pieces.len() >= 3, "{}", pieces.len());
-            },
-            &|done, total| seen.borrow_mut().push((done, total)),
-        )
-        .unwrap();
-        let seen = seen.into_inner();
-        assert_eq!(seen.last().map(|p| p.0), seen.last().map(|p| p.1));
-        assert!(seen.windows(2).all(|w| w[0].0 < w[1].0));
-        // 译文按原文的顺序拼回去
-        assert!(out.starts_with("Part 0 "), "{}", &out[..40]);
-        assert!(out.find("Part 1 ").unwrap() < out.find("Part 2 ").unwrap());
-    }
-
-    // 主人 2026-11-21：翻译成英文就全部变成英文，已经是英文的部分不动；翻译成中文同理
-    #[test]
-    fn only_the_other_language_is_sent_and_the_rest_stays() {
-        let asked = std::cell::RefCell::new(Vec::new());
-        let out = translate_routed(
-            "The tests all pass.\n今天先这样，明天再发布。",
-            Target::English,
-            || Ok(Keys::default()),
-            |_| panic!("no keyed providers are configured"),
-            fake_wetype(&asked, |piece| {
-                assert_eq!(piece, "今天先这样，明天再发布。");
-                Ok("That's it for today; release tomorrow.".into())
-            }),
-            &no_progress,
-        );
-        assert_eq!(
-            out.as_deref(),
-            Ok("The tests all pass.\nThat's it for today; release tomorrow.")
-        );
-        let asked = std::cell::RefCell::new(Vec::new());
-        let out = translate_routed(
-            "The tests all pass.\n今天先这样，明天再发布。",
-            Target::Chinese,
-            || Ok(Keys::default()),
-            |_| panic!("no keyed providers are configured"),
-            fake_wetype(&asked, |piece| {
-                assert_eq!(piece, "The tests all pass.");
-                Ok("测试全部通过了。".into())
-            }),
-            &no_progress,
-        );
-        assert_eq!(
-            out.as_deref(),
-            Ok("测试全部通过了。\n今天先这样，明天再发布。")
-        );
-    }
-
-    #[test]
-    fn chinese_and_english_in_one_line_are_split_by_sentence() {
-        let parts = |text: &'static str, target| -> Vec<(&'static str, bool)> {
-            plan(text, target)
-                .into_iter()
-                .map(|p| (&text[p.range], p.translate))
-                .collect()
-        };
-        assert_eq!(
-            parts(
-                "We shipped it. 然后我们再测一遍，没问题就发。",
-                Target::English
-            ),
-            [
-                ("We shipped it. ", false),
-                ("然后我们再测一遍，没问题就发。", true)
-            ]
-        );
-        // 中文句子里夹着的英文词跟着整句一起翻，不单独留下
-        assert_eq!(
-            parts("用 Claude Code 跑一下测试。", Target::English),
-            [("用 Claude Code 跑一下测试。", true)]
-        );
-        // 英文句子里的数字、标点不会把句子切开
-        assert_eq!(
-            parts("Version 3.5, released on 1,000 machines.", Target::Chinese),
-            [("Version 3.5, released on 1,000 machines.", true)]
-        );
-        // 两种语言一句一句交替时，各翻各的，留下的原样
-        assert_eq!(
-            parts("好的。Sounds good. 那就这样。", Target::Chinese),
-            [
-                ("好的。", false),
-                ("Sounds good.", true),
-                (" 那就这样。", false)
-            ]
-        );
-        let asked = std::cell::RefCell::new(Vec::new());
-        let out = translate_routed(
-            "We shipped it. 然后我们再测一遍，没问题就发。",
-            Target::English,
-            || Ok(Keys::default()),
-            |_| panic!("no keyed providers are configured"),
-            fake_wetype(&asked, |_| {
-                Ok("Then we test it again and ship if it's fine.".into())
-            }),
-            &no_progress,
-        );
-        assert_eq!(
-            out.as_deref(),
-            Ok("We shipped it. Then we test it again and ship if it's fine.")
-        );
-    }
-
-    #[test]
-    fn hard_wrapped_english_is_joined_back_into_paragraphs() {
-        assert_eq!(
-            unwrap_english(
-                "This license was wrapped by hand in the middle,\r\nof a sentence that goes on for a while and\r\nends here.\r\n\r\nNext paragraph."
-            ),
-            "This license was wrapped by hand in the middle, of a sentence that goes on for a while and ends here.\r\n\r\nNext paragraph."
-        );
-        // 短行的清单、列表、标题、句末换行、中文都不并
-        for kept in [
-            "apples\nbananas\noranges",
-            "Steps:\n- run the tests\n- ship it",
-            "The release notes are ready and the tests pass.\nanother sentence starts here",
-            "TERMS AND CONDITIONS\n\n0. Definitions.",
-            "第一行\n第二行",
-        ] {
-            assert_eq!(unwrap_english(kept), kept);
-        }
-    }
-
-    #[test]
-    fn nothing_to_translate_returns_the_text_unchanged() {
-        let out = translate_routed(
-            "Already English.",
-            Target::English,
-            || Ok(Keys::default()),
-            |_| panic!("nothing to translate"),
-            |_, _| panic!("nothing to translate"),
-            &no_progress,
-        );
-        assert_eq!(out.as_deref(), Ok("Already English."));
-    }
-
-    #[test]
-    fn a_wetype_failure_without_keys_reports_the_actual_failure() {
-        let asked = std::cell::RefCell::new(Vec::new());
-        let err = translate_routed(
-            "你好",
-            Target::English,
-            || Ok(Keys::default()),
-            |_| panic!("no keyed providers are configured"),
-            fake_wetype(&asked, |_| Err("微信输入法翻译超时".into())),
-            &no_progress,
-        )
-        .unwrap_err();
-        assert!(err.contains("微信输入法翻译超时"), "{err}");
-    }
-
-    #[test]
-    fn empty_config_supports_both_directions_without_keys() {
-        for (source, target, expected) in [
-            ("你好", Target::English, "Hello"),
-            ("Hello", Target::Chinese, "你好"),
-        ] {
-            let asked = std::cell::RefCell::new(Vec::new());
-            let out = translate_routed(
-                source,
-                target,
-                || Ok(Keys::default()),
-                |_| panic!("no keyed providers are configured"),
-                fake_wetype(&asked, |piece| {
-                    assert_eq!(piece, source);
-                    Ok(expected.into())
-                }),
-                &no_progress,
-            );
-            assert_eq!(out.as_deref(), Ok(expected));
-        }
-    }
-
-    #[test]
-    fn explicit_disable_keeps_the_existing_keyed_flow() {
-        let keys: Keys =
-            serde_json::from_str(r#"{"wetype_enabled":false,"azure_key":"a"}"#).unwrap();
-        let out = translate_routed(
-            "你好",
-            Target::English,
-            || Ok(keys),
-            |request| {
-                assert!(request.path.ends_with("to=en"));
-                Ok((200, br#"[{"translations":[{"text":"Hello"}]}]"#.to_vec()))
-            },
-            |_, _| panic!("WeType is disabled"),
-            &no_progress,
-        );
-        assert_eq!(out.as_deref(), Ok("Hello"));
-    }
-
-    #[test]
-    fn chinese_goes_to_english_and_english_to_chinese() {
-        assert_eq!(Target::for_text("今天吃什么"), Target::English);
-        assert_eq!(Target::for_text("用 Claude Code 跑测试"), Target::English);
-        assert_eq!(Target::for_text("What to eat today?"), Target::Chinese);
-    }
-
-    #[test]
-    fn azure_is_tried_first_and_google_is_the_fallback() {
-        let mut hosts = Vec::new();
-        let out = translate_with(&both(), "你好", |r| {
-            hosts.push(r.host);
-            Ok(match r.host {
-                "api.cognitive.microsofttranslator.com" => (429, vec![]),
-                _ => (
-                    200,
-                    br#"{"choices":[{"message":{"content":" Hello \n"}}]}"#.to_vec(),
-                ),
-            })
-        });
-        assert_eq!(out.as_deref(), Ok("Hello"));
-        assert_eq!(
-            hosts,
-            [
-                "api.cognitive.microsofttranslator.com",
-                "generativelanguage.googleapis.com"
-            ],
-            "微软限流马上换谷歌"
-        );
-    }
-
-    #[test]
-    fn azure_answer_is_used_when_it_works() {
-        let out = translate_with(&both(), "你好", |r| {
-            assert!(r.path.ends_with("to=en"));
-            assert!(
-                r.headers
-                    .iter()
-                    .any(|(k, v)| k == "Ocp-Apim-Subscription-Region" && v == "eastasia")
-            );
-            Ok((
-                200,
-                br#"[{"translations":[{"text":"Hello","to":"en"}]}]"#.to_vec(),
-            ))
-        });
-        assert_eq!(out.as_deref(), Ok("Hello"));
-    }
-
-    #[test]
-    fn only_configured_services_are_called() {
-        let keys = Keys {
-            google_key: "g".into(),
-            ..Keys::default()
-        };
-        let mut calls = 0;
-        let out = translate_with(&keys, "你好", |_| {
-            calls += 1;
-            Err("timeout".into())
-        });
-        assert_eq!(calls, 1);
-        assert_eq!(out, Err("谷歌 连不上（timeout）".into()));
-        assert_eq!(
-            translate_with(&Keys::default(), "你好", |_| unreachable!()),
-            Err("还没配翻译 Key".into())
-        );
-    }
-
-    #[test]
-    fn rate_limited_service_is_retried_then_the_next_one_is_used() {
-        let keys = Keys {
-            google_key: "g".into(),
-            zhipu_key: "z".into(),
-            ..Keys::default()
-        };
-        let mut google = 0;
-        let out = translate_with(&keys, "你好", |r| {
-            if r.host == "generativelanguage.googleapis.com" {
-                google += 1;
-                return Ok((429, vec![]));
-            }
-            assert!(r.body.contains("glm-4.7-flash") && !r.body.contains("reasoning_effort"));
-            Ok((
-                200,
-                br#"{"choices":[{"message":{"content":"Hello"}}]}"#.to_vec(),
-            ))
-        });
-        assert_eq!(out.as_deref(), Ok("Hello"));
-        assert_eq!(google, 1, "谷歌限流就马上换智谱，不干等");
-        // 第二次重试成功就不用换
-        let mut calls = 0;
-        let out = translate_with(&keys, "你好", |_| {
-            calls += 1;
-            Ok(if calls < 2 {
-                (429, vec![])
-            } else {
-                (
-                    200,
-                    br#"{"choices":[{"message":{"content":"Hi"}}]}"#.to_vec(),
-                )
-            })
-        });
-        assert_eq!(out.as_deref(), Ok("Hi"));
-    }
-
-    #[test]
-    fn an_explicit_direction_wins_over_detection() {
-        let keys = Keys {
-            azure_key: "a".into(),
-            ..Keys::default()
-        };
-        // 原文是中文，但主人把方向反转成「英 → 中」：照样按译成中文发
-        let out = translate_to(&keys, "你好", Target::Chinese, |r| {
-            assert!(r.path.ends_with("to=zh-Hans"), "{}", r.path);
-            Ok((
-                200,
-                r#"[{"translations":[{"text":"你好"}]}]"#.as_bytes().to_vec(),
-            ))
-        });
-        assert_eq!(out.as_deref(), Ok("你好"));
-    }
-
-    #[test]
-    fn only_when_every_service_is_limited_does_it_wait_and_retry() {
-        let keys = Keys {
-            google_key: "g".into(),
-            zhipu_key: "z".into(),
-            ..Keys::default()
-        };
-        let mut calls = Vec::new();
-        let out = translate_with(&keys, "你好", |r| {
-            calls.push(r.host);
-            // 第一轮两家都限流，第二轮谷歌好了
-            Ok(if calls.len() <= 2 {
-                (429, vec![])
-            } else {
-                (
-                    200,
-                    br#"{"choices":[{"message":{"content":"Hi"}}]}"#.to_vec(),
-                )
-            })
-        });
-        assert_eq!(out.as_deref(), Ok("Hi"));
-        assert_eq!(
-            calls,
-            [
-                "generativelanguage.googleapis.com",
-                "open.bigmodel.cn",
-                "generativelanguage.googleapis.com"
-            ]
-        );
-    }
-
-    #[test]
-    fn a_rate_limit_and_an_invalid_key_do_not_retry() {
-        let mut calls = 0;
-        let err = translate_with(&both(), "你好", |request| {
-            calls += 1;
-            let status = if request.host == "api.cognitive.microsofttranslator.com" {
-                429
-            } else {
-                401
-            };
-            Ok((status, Vec::new()))
-        });
-        assert_eq!(calls, 2);
-        assert_eq!(err.unwrap_err(), "谷歌 的 Key 不对或没开通");
-    }
-
-    #[test]
-    fn bad_key_reason_is_plain() {
-        let keys = Keys {
-            azure_key: "a".into(),
-            ..Keys::default()
-        };
-        assert_eq!(
-            translate_with(&keys, "你好", |_| Ok((401, vec![]))),
-            Err("微软翻译 的 Key 不对或没开通".into())
-        );
-    }
-
-    #[test]
-    fn long_text_is_split_by_paragraph_and_sentence_and_joined_back() {
-        let text = "第一段。\n第二段很长。第二段第二句。\n\n第三段";
-        let parts = chunks(text, 8);
-        let joined: String = parts.iter().map(|(p, s)| format!("{p}{s}")).collect();
-        assert_eq!(joined, text, "切开再拼回去要和原文一样");
-        assert!(
-            parts.iter().all(|(p, _)| p.chars().count() <= 8),
-            "{parts:?}"
-        );
-        // 每段单独去翻，结果按原来的换行拼
-        let keys = Keys {
-            google_key: "g".into(),
-            ..Keys::default()
-        };
-        let mut calls = 0;
-        let out = translate_with(&keys, text, |r| {
-            calls += 1;
-            let body: serde_json::Value = serde_json::from_str(&r.body).unwrap();
-            let said = body["messages"][1]["content"].as_str().unwrap().to_string();
-            let reply =
-                serde_json::json!({"choices":[{"message":{"content": format!("<{said}>")}}]});
-            Ok((200, reply.to_string().into_bytes()))
-        })
-        .unwrap();
-        // 短文合成一批送一次，换行留在里面
-        assert_eq!(calls, 1);
-        assert_eq!(out, format!("<{text}>"));
-    }
-
-    #[test]
-    fn short_paragraphs_are_sent_together() {
-        // 主人粘过的说明文字：几十个短段，一段一请求会撞上谷歌每分钟 10 次
-        let text = "第一段。\n\n- 第二条\n- 第三条\n\n**第四段**\n".repeat(20);
-        let batches = merge(&text, chunks(&text, CHUNK_CHARS), CHUNK_CHARS);
-        assert_eq!(batches.len(), 1, "{batches:?}");
-        let joined: String = batches.iter().map(|(p, s)| format!("{p}{s}")).collect();
-        assert_eq!(joined, text);
-        let long = "很长的一句话没有标点".repeat(400);
-        let batches = merge(&long, chunks(&long, 1500), 1500);
-        assert!(batches.len() >= 3 && batches.iter().all(|(p, _)| p.chars().count() <= 1500));
-    }
-
-    #[test]
-    fn a_ten_thousand_character_text_is_accepted() {
-        let text = "今天吃什么。".repeat(1700);
-        let keys = Keys {
-            google_key: "g".into(),
-            ..Keys::default()
-        };
-        let out = translate_with(&keys, &text, |r| {
-            assert!(r.body.chars().count() < CHUNK_CHARS * 2 + 600);
-            Ok((
-                200,
-                br#"{"choices":[{"message":{"content":"x"}}]}"#.to_vec(),
-            ))
-        });
-        // 同一行切开的几段，英文译文之间隔一个空格
-        assert_eq!(
-            out.as_deref().map(|t| t.contains("x x")),
-            Ok(true),
-            "{out:?}"
-        );
-    }
-
-    #[test]
-    fn missing_settings_file_means_no_keys() {
-        let dir = tempfile::tempdir().unwrap();
-        assert_eq!(
-            Keys::load(&dir.path().join("translate.json")),
-            Ok(Keys::default())
-        );
-        std::fs::write(dir.path().join("t.json"), "{\"google_key\":\"g\"}").unwrap();
-        let legacy_keys = Keys::load(&dir.path().join("t.json")).unwrap();
-        assert_eq!(legacy_keys.google_key, "g");
-        assert!(legacy_keys.wetype_enabled);
-        std::fs::write(dir.path().join("bad.json"), "{").unwrap();
-        assert!(Keys::load(&dir.path().join("bad.json")).is_err());
-    }
-}
-
-/// 翻译：微信输入法云端主力（免 Key），失败落到有 Key 的微软 → 谷歌 → 智谱
-#[cfg(windows)]
-pub fn translate(text: &str) -> Result<String, String> {
-    translate_entry(text, Target::for_text(text.trim()))
-}
-
-/// 译成指定语言（翻译小窗手动选了方向时用）
-#[cfg(windows)]
-pub fn translate_into(text: &str, target: Target) -> Result<String, String> {
-    translate_entry(text, target)
-}
-
-/// 同一条连接上最多同时在途几批（实测 3000 词 15 批：一批一批等要 27 秒，16 批同时发 3 秒）
-pub const PARALLEL_BATCHES: usize = 16;
-
-/// 翻译进度：已经翻好几批、一共几批（翻译小窗显示「已翻 3/15 段」）
-pub type Progress<'a> = &'a dyn Fn(usize, usize);
-
-#[cfg(windows)]
-fn translate_entry(text: &str, target: Target) -> Result<String, String> {
-    translate_entry_with_progress(text, target, &|_, _| {})
-}
-
-/// 译成指定语言，边翻边报进度（翻译小窗用）。从网页、PDF 复制来的英文常在句子中间硬换行，
-/// 一行一行翻出来的中文一截一截的，先并回段落；语音翻译不走这里（那里的换行是主人特意说的）
-#[cfg(windows)]
-pub fn translate_into_with_progress(
-    text: &str,
-    target: Target,
-    progress: Progress,
-) -> Result<String, String> {
-    translate_entry_with_progress(&unwrap_english(text), target, progress)
-}
-
-#[cfg(windows)]
-fn translate_entry_with_progress(
-    text: &str,
-    target: Target,
-    progress: Progress,
-) -> Result<String, String> {
-    translate_routed(
-        text,
-        target,
-        local_keys,
-        send,
-        |pieces, done| wetype_batches(pieces, done),
-        progress,
-    )
-}
-
-/// 微信输入法：所有批同时排队发（最多 `PARALLEL_BATCHES` 批在途），谁先回来先记谁。
-/// `done(i, 结果)` 每批回来调一次；连不上、整体超时时没回来的批记失败。
-#[cfg(windows)]
-fn wetype_batches(pieces: &[&str], done: &mut dyn FnMut(usize, Result<String, String>)) {
-    use std::time::{Duration, Instant};
-    // 连接和认证 8 秒；每批从发出起 20 秒没回就算超时（实测单批 1～2.5 秒）
-    let connect_by = Instant::now() + Duration::from_secs(8);
-    let mut client = match crate::wetype::Client::from_default_device_cancellable(&|| {
-        Instant::now() >= connect_by
-    }) {
-        Ok(client) => client,
-        Err(_) => {
-            for i in 0..pieces.len() {
-                done(i, Err("连不上微信输入法翻译".into()));
-            }
-            return;
-        }
-    };
-    let mut next = 0;
-    let mut flying: Vec<(u32, usize, Instant)> = Vec::new();
-    while next < pieces.len() || !flying.is_empty() {
-        while next < pieces.len() && flying.len() < PARALLEL_BATCHES {
-            match client.send_translation(pieces[next]) {
-                Ok(id) => flying.push((id, next, Instant::now())),
-                Err(err) => done(next, Err(err.to_string())),
-            }
-            next += 1;
-        }
-        flying.retain(|&(_, i, sent)| {
-            let late = sent.elapsed() >= Duration::from_secs(20);
-            if late {
-                done(i, Err("微信输入法翻译超时".into()));
-            }
-            !late
-        });
-        match client.poll_translation() {
-            Ok(Some((id, result))) => {
-                if let Some(at) = flying.iter().position(|f| f.0 == id) {
-                    let (_, i, _) = flying.remove(at);
-                    done(i, result.map_err(|err| err.to_string()));
-                }
-            }
-            Ok(None) => {}
-            Err(_) => {
-                for (_, i, _) in flying.drain(..) {
-                    done(i, Err("微信输入法翻译连接中断".into()));
-                }
-                for i in next..pieces.len() {
-                    done(i, Err("微信输入法翻译连接中断".into()));
-                }
-                return;
-            }
-        }
-    }
-    client.close();
 }
 
 /// 原文里的一段：原样留着，还是要翻
@@ -1329,98 +522,6 @@ fn unwrap_english(text: &str) -> String {
     out
 }
 
-/// 先把所有要翻的批交给微信输入法（同时发），没翻成的批再一批一批交给有 Key 的服务。
-/// `wetype(批, 回调)`：每批回来调一次回调（测试里换成假的）。
-#[cfg(any(windows, test))]
-fn translate_routed(
-    text: &str,
-    target: Target,
-    load_keys: impl FnOnce() -> Result<Keys, String>,
-    mut send: impl FnMut(&Request) -> Result<(u32, Vec<u8>), String>,
-    wetype: impl FnOnce(&[&str], &mut dyn FnMut(usize, Result<String, String>)),
-    progress: Progress,
-) -> Result<String, String> {
-    let text = validated_text(text)?;
-    let keys = load_keys()?;
-    let parts = plan(text, target);
-    // 每个要翻的段再按长度切批：（第几段, 这一批）
-    let jobs: Vec<(usize, Batch)> = parts
-        .iter()
-        .enumerate()
-        .filter(|(_, part)| part.translate)
-        .flat_map(|(n, part)| {
-            batches(&text[part.range.clone()])
-                .into_iter()
-                .map(move |batch| (n, batch))
-        })
-        .collect();
-    let wanted: Vec<usize> = (0..jobs.len())
-        .filter(|&j| jobs[j].1.needs_translation())
-        .collect();
-    let total = wanted.len();
-    let mut results: Vec<Option<Result<String, String>>> = vec![None; jobs.len()];
-    let mut finished = 0;
-    if keys.wetype_enabled && !wanted.is_empty() {
-        let bodies: Vec<&str> = wanted.iter().map(|&j| jobs[j].1.body).collect();
-        wetype(&bodies, &mut |n, reply| {
-            let j = wanted[n];
-            let reply = reply.and_then(|reply| usable_wetype_reply(jobs[j].1.body, target, reply));
-            if reply.is_ok() {
-                finished += 1;
-                progress(finished, total);
-            }
-            results[j] = Some(reply);
-        });
-    }
-    for &j in &wanted {
-        if matches!(results[j], Some(Ok(_))) {
-            continue;
-        }
-        let reason = match results[j].take() {
-            Some(Err(reason)) => Some(reason),
-            _ if keys.wetype_enabled => Some("微信输入法翻译没有回应".to_owned()),
-            _ => None,
-        };
-        if keys.is_empty() {
-            return Err(match reason {
-                Some(reason) => format!("{reason}；可在翻译设置里配置备用服务"),
-                None => "还没配翻译 Key".into(),
-            });
-        }
-        let reply =
-            translate_piece(&keys, jobs[j].1.body, target, &mut send).map_err(
-                |err| match reason {
-                    Some(reason) => format!("{reason}；备用服务：{err}"),
-                    None => err,
-                },
-            )?;
-        finished += 1;
-        progress(finished, total);
-        results[j] = Some(Ok(reply));
-    }
-    let mut out = String::new();
-    let mut next_job = 0;
-    for (n, part) in parts.iter().enumerate() {
-        let original = &text[part.range.clone()];
-        if !part.translate {
-            push_part(&mut out, original, target);
-            continue;
-        }
-        let mut translated = String::new();
-        while next_job < jobs.len() && jobs[next_job].0 == n {
-            let batch = &jobs[next_job].1;
-            let reply = match results[next_job].take() {
-                Some(Ok(reply)) => reply,
-                _ => batch.body.to_owned(),
-            };
-            batch.join_into(&mut translated, &reply, target);
-            next_job += 1;
-        }
-        push_part(&mut out, &translated, target);
-    }
-    Ok(out)
-}
-
 /// 开发排查：把原文按 `size` 字切批，只问微信输入法，打印每批的字数、换行数、用时、结果。
 /// `parallel` 是同时在途的请求数（同一条连接）
 #[cfg(windows)]
@@ -1478,27 +579,27 @@ pub fn probe_wetype(text: &str, size: usize, parallel: usize) -> Result<(), Stri
 }
 
 #[cfg(any(windows, test))]
-fn usable_wetype_reply(source: &str, target: Target, reply: String) -> Result<String, String> {
-    let reply = usable_text(&reply).ok_or("微信输入法没返回有效译文")?;
-    // 自动检测由服务端完成；明显答错方向时不能覆盖原文。
+/// 译文能不能用：空的、方向不对（该是英文的里一个英文字母都没有）、比原文多出换行、
+/// 明显少了一截（原文 60 个字以上、译文不到四成）都不能用，换一家
+pub(crate) fn usable_reply(source: &str, target: Target, reply: &str) -> Result<(), String> {
+    let reply = usable_text(reply).ok_or("没返回有效译文")?;
     let has_language = source.chars().any(|c| is_cjk(c) || c.is_ascii_alphabetic());
     let has_target = reply.chars().any(|c| match target {
         Target::Chinese => is_cjk(c),
         Target::English => c.is_ascii_alphabetic(),
     });
     if has_language && !has_target {
-        return Err("微信输入法返回的译文方向不对".into());
+        return Err("译文方向不对".into());
     }
-    // 硬换行的长文（从网页、PDF 复制的）微信会把断开的行并回段落，译文换行变少是正常的；
-    // 变多不行：听写时多出来的换行在聊天框里会变成回车，把半截话发出去
+    // 硬换行的长文（从网页、PDF 复制的）会被并回段落，译文换行变少是正常的；变多不行
     let lines = |t: &str| t.bytes().filter(|&c| c == b'\n').count();
     if lines(reply) > lines(source) {
-        return Err("微信输入法的译文多出了换行".into());
+        return Err("译文多出了换行".into());
     }
     if weight(source) >= 60 && weight(reply) * 5 < weight(source) * 2 {
-        return Err("微信输入法的译文像是少了一截".into());
+        return Err("译文像是少了一截".into());
     }
-    Ok(reply.to_owned())
+    Ok(())
 }
 
 #[cfg(any(windows, test))]
@@ -1519,6 +620,893 @@ fn weight(text: &str) -> usize {
 pub fn local_keys() -> Result<Keys, String> {
     let dir = std::env::var_os("LOCALAPPDATA").ok_or("LOCALAPPDATA 不可用")?;
     Keys::load(&std::path::PathBuf::from(dir).join("XueerEar/translate.json"))
+}
+
+/// 翻译服务（排在前面的四家都免费、不用 Key；后面三家要在 translate.json 里配 Key）
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum Service {
+    /// 火山翻译（浏览器插件用的接口）
+    Volcengine,
+    /// 微软翻译（Edge 浏览器自带翻译用的接口）
+    Microsoft,
+    /// B 站 Index-Translate 官方免费接口（小模型）
+    Bilibili,
+    /// 微信输入法云端翻译
+    Wetype,
+    /// 微软翻译正式版（要 Key）
+    Azure,
+    /// 谷歌 Gemini（要 Key）
+    Google,
+    /// 智谱（要 Key）
+    Zhipu,
+}
+
+impl Service {
+    pub const ALL: [Self; 7] = [
+        Self::Volcengine,
+        Self::Microsoft,
+        Self::Bilibili,
+        Self::Wetype,
+        Self::Azure,
+        Self::Google,
+        Self::Zhipu,
+    ];
+
+    /// 命令行里用的名字
+    pub fn id(self) -> &'static str {
+        match self {
+            Self::Volcengine => "volcengine",
+            Self::Microsoft => "microsoft",
+            Self::Bilibili => "bilibili",
+            Self::Wetype => "wetype",
+            Self::Azure => "azure",
+            Self::Google => "google",
+            Self::Zhipu => "zhipu",
+        }
+    }
+
+    pub fn from_id(id: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|service| service.id() == id)
+    }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Volcengine => "火山",
+            Self::Microsoft => "微软",
+            Self::Bilibili => "B站",
+            Self::Wetype => "微信",
+            Self::Azure => "微软正式版",
+            Self::Google => "谷歌",
+            Self::Zhipu => "智谱",
+        }
+    }
+
+    /// 还没实测过时，估计翻一段要多少毫秒（2026-11-24 华为上测的：火山 0.1～0.4 秒、微软 0.4～0.8 秒、
+    /// B 站小模型 0.3～1 秒；微信实测 1～2.5 秒）。之后按本机最近的实测排先后
+    pub fn expected_ms(self) -> u32 {
+        match self {
+            Self::Volcengine => 300,
+            Self::Microsoft => 600,
+            Self::Bilibili => 900,
+            Self::Wetype => 1500,
+            Self::Azure => 800,
+            Self::Google => 2500,
+            Self::Zhipu => 3000,
+        }
+    }
+}
+
+/// 这次能用哪些服务：四家免费的（微信可以在 translate.json 里关掉），再加配了 Key 的
+pub fn services(keys: &Keys) -> Vec<Service> {
+    let mut out = vec![Service::Volcengine, Service::Microsoft, Service::Bilibili];
+    if keys.wetype_enabled {
+        out.push(Service::Wetype);
+    }
+    if !keys.azure_key.trim().is_empty() {
+        out.push(Service::Azure);
+    }
+    if !keys.google_key.trim().is_empty() {
+        out.push(Service::Google);
+    }
+    if !keys.zhipu_key.trim().is_empty() {
+        out.push(Service::Zhipu);
+    }
+    out
+}
+
+/// 火山：地址结尾要带斜杠（不带是 307 跳转）；源语言留空自动认
+pub fn volcengine_request(text: &str, target: Target) -> Request {
+    Request {
+        host: "translate.volcengine.com",
+        path: "/crx/translate/v1/".into(),
+        headers: vec![("Content-Type".into(), "application/json".into())],
+        body: serde_json::json!({
+            "source_language": "",
+            "target_language": match target {
+                Target::English => "en",
+                Target::Chinese => "zh",
+            },
+            "text": text,
+        })
+        .to_string(),
+    }
+}
+
+pub fn parse_volcengine(body: &[u8]) -> Result<String, String> {
+    let value: serde_json::Value =
+        serde_json::from_slice(body).map_err(|_| "火山返回的内容看不懂".to_string())?;
+    let code = value["base_resp"]["status_code"].as_i64().unwrap_or(0);
+    if code != 0 {
+        return Err(format!("火山出错（{code}）"));
+    }
+    value["translation"]
+        .as_str()
+        .and_then(usable_text)
+        .map(str::to_owned)
+        .ok_or_else(|| "火山没给结果".to_string())
+}
+
+/// 微软：Edge 浏览器自带翻译用的接口，不用 Key，请求体是一组字符串
+pub fn microsoft_request(text: &str, target: Target) -> Request {
+    Request {
+        host: "edge.microsoft.com",
+        path: format!(
+            "/translate/translatetext?from=&to={}&isEnterpriseClient=false",
+            target.azure_code()
+        ),
+        headers: vec![("Content-Type".into(), "application/json".into())],
+        body: serde_json::json!([text]).to_string(),
+    }
+}
+
+/// B 站 Index-Translate（官方免费公开接口，OpenAI 兼容）：小模型最快；关掉思考，只要译文
+pub fn bilibili_request(text: &str, target: Target) -> Request {
+    let name = match target {
+        Target::English => "英语",
+        Target::Chinese => "中文",
+    };
+    Request {
+        host: "index-translate.bilibili.com",
+        path: "/v1/chat/completions".into(),
+        headers: vec![("Content-Type".into(), "application/json".into())],
+        body: serde_json::json!({
+            "model": "Index-Translate-2B",
+            "temperature": 0.0,
+            "max_tokens": (text.chars().count() * 4).clamp(256, 4096),
+            "stream": false,
+            "chat_template_kwargs": {"enable_thinking": false},
+            "messages": [{
+                "role": "user",
+                "content": format!("请将以下文本翻译为{name}，直接输出翻译结果，不要进行任何解释。\n\n{}", text.trim()),
+            }],
+        })
+        .to_string(),
+    }
+}
+
+pub fn parse_bilibili(body: &[u8]) -> Result<String, String> {
+    let text = parse_google(body).map_err(|_| "B站没给结果".to_string())?;
+    // 万一带了思考过程，只要后面的译文
+    let text = match text.split_once("</think>") {
+        Some((_, after)) => after.trim().to_owned(),
+        None => text,
+    };
+    usable_text(&text)
+        .map(str::to_owned)
+        .ok_or_else(|| "B站没给结果".to_string())
+}
+
+/// 走 HTTPS 的服务这次要发的请求（微信输入法不走这里；没配 Key 的返回 None）
+pub fn http_request(service: Service, keys: &Keys, text: &str, target: Target) -> Option<Request> {
+    match service {
+        Service::Volcengine => Some(volcengine_request(text, target)),
+        Service::Microsoft => Some(microsoft_request(text, target)),
+        Service::Bilibili => Some(bilibili_request(text, target)),
+        Service::Azure => azure_request(keys, text, target),
+        Service::Google => google_request(keys, text, target),
+        Service::Zhipu => zhipu_request(keys, text, target),
+        Service::Wetype => None,
+    }
+}
+
+/// 解析 HTTPS 服务的回答（状态码已经是 200）
+pub fn parse_reply(service: Service, body: &[u8]) -> Result<String, String> {
+    match service {
+        Service::Volcengine => parse_volcengine(body),
+        Service::Microsoft | Service::Azure => parse_azure(body),
+        Service::Bilibili => parse_bilibili(body),
+        Service::Google | Service::Zhipu => parse_google(body),
+        Service::Wetype => Err("微信输入法不走 HTTPS".into()),
+    }
+}
+
+/// HTTP 状态码分成三种：限流、Key 不对、别的
+pub fn http_failure(service: Service, status: u32) -> crate::translate_pool::Failure {
+    use crate::translate_pool::Failure;
+    let reason = status_reason(service.name(), status);
+    match status {
+        429 => Failure::Limited(reason),
+        401 | 403 => Failure::Denied(reason),
+        _ => Failure::Other(reason),
+    }
+}
+
+/// 翻一篇的结果
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Outcome {
+    pub text: String,
+    /// 一共几段、几段没翻成（没翻成的段原样留着）
+    pub total: usize,
+    pub failed: usize,
+    /// 没翻成的原因（各家的）
+    pub reasons: Vec<String>,
+    /// 一行日志：各家翻了几段、补位几次（不含内容）
+    pub summary: String,
+}
+
+/// 切段、只把另一种语言的部分交给服务池去翻、按原来的样子拼回去
+#[cfg(any(windows, test))]
+#[allow(clippy::too_many_arguments)]
+fn translate_planned(
+    text: &str,
+    target: Target,
+    services: &[Service],
+    translator: std::sync::Arc<dyn crate::translate_pool::Translator>,
+    stats: &std::sync::Mutex<Option<crate::translate_pool::Stats>>,
+    progress: Progress,
+    timing: &crate::translate_pool::Timing,
+) -> Result<Outcome, String> {
+    let text = validated_text(text)?;
+    let parts = plan(text, target);
+    // 每个要翻的部分再按长度切段：（第几部分, 这一段）
+    let jobs: Vec<(usize, Batch)> = parts
+        .iter()
+        .enumerate()
+        .filter(|(_, part)| part.translate)
+        .flat_map(|(n, part)| {
+            batches(&text[part.range.clone()])
+                .into_iter()
+                .map(move |batch| (n, batch))
+        })
+        .collect();
+    let wanted: Vec<usize> = (0..jobs.len())
+        .filter(|&j| jobs[j].1.needs_translation())
+        .collect();
+    let report = crate::translate_pool::run(
+        wanted.iter().map(|&j| jobs[j].1.body.to_owned()).collect(),
+        target,
+        services,
+        translator,
+        stats,
+        &|source, reply| usable_reply(source, target, reply),
+        progress,
+        timing,
+    );
+    let mut replies: Vec<Option<String>> = vec![None; jobs.len()];
+    let mut used: std::collections::BTreeMap<Service, usize> = Default::default();
+    let mut reasons = Vec::new();
+    for (&j, result) in wanted.iter().zip(report.results) {
+        match result {
+            Ok((reply, service)) => {
+                *used.entry(service).or_default() += 1;
+                replies[j] = Some(reply);
+            }
+            Err(reason) => reasons.push(reason),
+        }
+    }
+    let mut out = String::new();
+    let mut next_job = 0;
+    for (n, part) in parts.iter().enumerate() {
+        let original = &text[part.range.clone()];
+        if !part.translate {
+            push_part(&mut out, original, target);
+            continue;
+        }
+        let mut translated = String::new();
+        while next_job < jobs.len() && jobs[next_job].0 == n {
+            let batch = &jobs[next_job].1;
+            let reply = replies[next_job]
+                .take()
+                .unwrap_or_else(|| batch.body.to_owned());
+            batch.join_into(&mut translated, &reply, target);
+            next_job += 1;
+        }
+        push_part(&mut out, &translated, target);
+    }
+    let summary = format!(
+        "{} 字 {} 段：{}{}{}",
+        text.chars().count(),
+        wanted.len(),
+        used.iter()
+            .map(|(service, n)| format!("{}{n}段", service.name()))
+            .collect::<Vec<_>>()
+            .join("、"),
+        if report.hedges > 0 {
+            format!("，补位 {} 次", report.hedges)
+        } else {
+            String::new()
+        },
+        if reasons.is_empty() {
+            String::new()
+        } else {
+            format!("，{} 段没翻成", reasons.len())
+        }
+    );
+    Ok(Outcome {
+        text: out,
+        total: wanted.len(),
+        failed: reasons.len(),
+        reasons,
+        summary,
+    })
+}
+
+/// 翻译进度：已经翻好几段、一共几段（翻译小窗显示「已翻 3/15 段」）
+pub type Progress<'a> = &'a dyn Fn(usize, usize);
+
+/// 同一条微信输入法连接上最多同时在途几段（实测 3000 词 15 批：一批一批等要 27 秒，16 批同时发 3 秒）
+pub const PARALLEL_BATCHES: usize = 16;
+
+/// 往 %LOCALAPPDATA%\XueerEar\translate.log 记一行（只记字数、段数、哪家、多久，不记内容）
+pub fn log_line(what: &str) {
+    use std::io::Write;
+    let Some(dir) = std::env::var_os("LOCALAPPDATA") else {
+        return;
+    };
+    let path = std::path::PathBuf::from(dir)
+        .join("XueerEar")
+        .join("translate.log");
+    if let Ok(mut file) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+    {
+        let at = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_millis());
+        let _ = writeln!(file, "{at} {what}");
+    }
+}
+
+/// 翻译（方向按内容自动定）
+#[cfg(windows)]
+pub fn translate(text: &str) -> Result<String, String> {
+    translate_into(text, Target::for_text(text.trim()))
+}
+
+/// 语音「翻译成英文 / 中文」：整框换成译文，所以每一段都要翻成才算成
+#[cfg(windows)]
+pub fn translate_into(text: &str, target: Target) -> Result<String, String> {
+    let outcome = live::translate(text, target, None, &|_, _| {}, "语音")?;
+    if outcome.failed > 0 {
+        return Err(format!(
+            "{} 段没翻成（{}）",
+            outcome.failed,
+            outcome.reasons.first().map_or("", String::as_str)
+        ));
+    }
+    Ok(outcome.text)
+}
+
+/// 翻译小窗：边翻边报进度。从网页、PDF 复制来的英文常在句子中间硬换行，一行一行翻出来的中文一截一截的，
+/// 先并回段落；语音翻译不走这里。有的段没翻成就原样留着（`Outcome::failed` 说几段），全都没翻成才算失败。
+/// `only`：命令行排查时只用这一家
+#[cfg(windows)]
+pub fn translate_into_with_progress(
+    text: &str,
+    target: Target,
+    only: Option<Service>,
+    progress: Progress,
+) -> Result<Outcome, String> {
+    let outcome = live::translate(&unwrap_english(text), target, only, progress, "小窗")?;
+    if outcome.total > 0 && outcome.failed == outcome.total {
+        return Err(outcome
+            .reasons
+            .first()
+            .cloned()
+            .unwrap_or_else(|| "没翻成".into()));
+    }
+    Ok(outcome)
+}
+
+/// 真的去翻：HTTPS 的几家走 WinHTTP，微信输入法这一篇开一条连接
+#[cfg(windows)]
+mod live {
+    use super::*;
+    use crate::translate_pool::{Failure, STATS, Timing, Translator};
+    use std::{
+        collections::HashMap,
+        sync::{Arc, Mutex, mpsc},
+        time::{Duration, Instant},
+    };
+
+    pub(super) fn translate(
+        text: &str,
+        target: Target,
+        only: Option<Service>,
+        progress: Progress,
+        from: &str,
+    ) -> Result<Outcome, String> {
+        let keys = local_keys()?;
+        let services = match only {
+            Some(service) => vec![service],
+            None => services(&keys),
+        };
+        let started = Instant::now();
+        let translator: Arc<dyn Translator> = Arc::new(Live {
+            keys,
+            wetype: Mutex::new(None),
+        });
+        let outcome = translate_planned(
+            text,
+            target,
+            &services,
+            translator,
+            &STATS,
+            progress,
+            &Timing::REAL,
+        );
+        match &outcome {
+            Ok(outcome) => log_line(&format!(
+                "{from}翻译 {}，{} ms",
+                outcome.summary,
+                started.elapsed().as_millis()
+            )),
+            Err(reason) => log_line(&format!("{from}翻译失败：{reason}")),
+        }
+        outcome
+    }
+
+    struct Live {
+        keys: Keys,
+        /// 微信输入法：第一次用到时开一条连接，这一篇的段都从这条连接走
+        wetype: Mutex<Option<mpsc::Sender<Ask>>>,
+    }
+
+    impl Translator for Live {
+        fn translate(&self, service: Service, text: &str, target: Target) -> Result<String, Failure> {
+            if service == Service::Wetype {
+                return self.ask_wetype(text);
+            }
+            let request = http_request(service, &self.keys, text, target)
+                .ok_or_else(|| Failure::Other("没配 Key".into()))?;
+            match send(&request) {
+                Ok((200, body)) => parse_reply(service, &body).map_err(Failure::Other),
+                Ok((status, _)) => Err(http_failure(service, status)),
+                Err(error) => Err(Failure::Other(format!("连不上（{error}）"))),
+            }
+        }
+    }
+
+    /// 交给微信输入法连接线程的一段：原文和回话的地方
+    type Ask = (String, mpsc::Sender<Result<String, String>>);
+
+    impl Live {
+        fn ask_wetype(&self, text: &str) -> Result<String, Failure> {
+            let (reply, answer) = mpsc::channel();
+            {
+                let mut worker = self.wetype.lock().unwrap_or_else(|e| e.into_inner());
+                let sender = worker.get_or_insert_with(spawn_wetype);
+                sender
+                    .send((text.to_owned(), reply))
+                    .map_err(|_| Failure::Other("微信输入法翻译连接中断".into()))?;
+            }
+            match answer.recv_timeout(Duration::from_secs(25)) {
+                Ok(result) => result.map_err(Failure::Other),
+                Err(_) => Err(Failure::Other("超时".into())),
+            }
+        }
+    }
+
+    /// 开一条微信输入法连接，在自己的线程里收段、发出去、把回来的译文交回去。
+    /// 连接和认证最多等 8 秒；一段 20 秒没回算超时；这一篇翻完（没人再交段）就关掉
+    fn spawn_wetype() -> mpsc::Sender<Ask> {
+        let (sender, asks) = mpsc::channel::<Ask>();
+        std::thread::spawn(move || {
+            let connect_by = Instant::now() + Duration::from_secs(8);
+            let client = crate::wetype::Client::from_default_device_cancellable(&|| {
+                Instant::now() >= connect_by
+            });
+            let mut client = match client {
+                Ok(client) => client,
+                Err(_) => {
+                    for (_, reply) in asks.iter() {
+                        let _ = reply.send(Err("连不上微信输入法翻译".into()));
+                    }
+                    return;
+                }
+            };
+            let mut flying: HashMap<u32, (mpsc::Sender<Result<String, String>>, Instant)> =
+                HashMap::new();
+            let mut open = true;
+            while open || !flying.is_empty() {
+                loop {
+                    match asks.try_recv() {
+                        Ok((text, reply)) => match client.send_translation(&text) {
+                            Ok(id) => {
+                                flying.insert(id, (reply, Instant::now()));
+                            }
+                            Err(error) => {
+                                let _ = reply.send(Err(error.to_string()));
+                            }
+                        },
+                        Err(mpsc::TryRecvError::Empty) => break,
+                        Err(mpsc::TryRecvError::Disconnected) => {
+                            open = false;
+                            break;
+                        }
+                    }
+                    if flying.len() >= PARALLEL_BATCHES {
+                        break;
+                    }
+                }
+                flying.retain(|_, (reply, sent)| {
+                    let late = sent.elapsed() >= Duration::from_secs(20);
+                    if late {
+                        let _ = reply.send(Err("微信输入法翻译超时".into()));
+                    }
+                    !late
+                });
+                match client.poll_translation() {
+                    Ok(Some((id, result))) => {
+                        if let Some((reply, _)) = flying.remove(&id) {
+                            let _ = reply.send(result.map_err(|error| error.to_string()));
+                        }
+                    }
+                    Ok(None) => {
+                        if flying.is_empty() && open {
+                            std::thread::sleep(Duration::from_millis(10));
+                        }
+                    }
+                    Err(_) => {
+                        for (_, (reply, _)) in flying.drain() {
+                            let _ = reply.send(Err("微信输入法翻译连接中断".into()));
+                        }
+                        for (_, reply) in asks.try_iter() {
+                            let _ = reply.send(Err("微信输入法翻译连接中断".into()));
+                        }
+                        return;
+                    }
+                }
+            }
+            client.close();
+        });
+        sender
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::translate_pool::{Failure, Stats, Timing, Translator};
+    use std::sync::{Arc, Mutex};
+    use std::time::Duration;
+
+    /// 假的服务：按 `answer(哪家, 原文)` 回答，记下问了哪家哪段
+    struct Fake<F: Fn(Service, &str) -> Result<String, Failure> + Send + Sync> {
+        answer: F,
+        asked: Mutex<Vec<(Service, String)>>,
+    }
+
+    impl<F: Fn(Service, &str) -> Result<String, Failure> + Send + Sync> Translator for Fake<F> {
+        fn translate(&self, service: Service, text: &str, _: Target) -> Result<String, Failure> {
+            self.asked
+                .lock()
+                .unwrap()
+                .push((service, text.to_owned()));
+            (self.answer)(service, text)
+        }
+    }
+
+    const QUICK: Timing = Timing {
+        hedge_base: Duration::from_millis(300),
+        hedge_per_300: Duration::from_millis(100),
+        hedge_max: Duration::from_millis(800),
+        attempt_limit: Duration::from_secs(2),
+    };
+
+    fn translate_with<F: Fn(Service, &str) -> Result<String, Failure> + Send + Sync + 'static>(
+        text: &str,
+        target: Target,
+        answer: F,
+    ) -> (Result<Outcome, String>, Vec<(Service, String)>) {
+        let fake = Arc::new(Fake {
+            answer,
+            asked: Mutex::new(Vec::new()),
+        });
+        let stats = Mutex::new(Some(Stats::default()));
+        let out = translate_planned(
+            text,
+            target,
+            &[Service::Volcengine, Service::Microsoft, Service::Bilibili],
+            fake.clone(),
+            &stats,
+            &|_, _| {},
+            &QUICK,
+        );
+        let asked = fake.asked.lock().unwrap().clone();
+        (out, asked)
+    }
+
+    #[test]
+    fn only_the_other_language_is_sent_and_the_rest_stays() {
+        let (out, asked) = translate_with(
+            "We shipped it. 然后我们再测一遍，没问题就发。",
+            Target::English,
+            |_, _| Ok("Then we test it again and ship if it's fine.".into()),
+        );
+        assert_eq!(
+            out.unwrap().text,
+            "We shipped it. Then we test it again and ship if it's fine."
+        );
+        assert_eq!(
+            asked,
+            [(Service::Volcengine, "然后我们再测一遍，没问题就发。".to_owned())]
+        );
+    }
+
+    #[test]
+    fn nothing_to_translate_returns_the_text_unchanged() {
+        let (out, asked) = translate_with("Already English.", Target::English, |_, _| {
+            panic!("nothing to translate")
+        });
+        assert_eq!(out.unwrap().text, "Already English.");
+        assert!(asked.is_empty());
+    }
+
+    // 一家回来的译文不能用（空的、方向不对、多出换行、少了一截），换下一家
+    #[test]
+    fn an_unusable_reply_goes_to_the_next_service() {
+        let source = "你好，今天的测试全部通过了，可以发布新版本。\n明天再看一下安装包有没有被杀毒软件误报。";
+        for unusable in [
+            "  ",
+            "你好，世界。",
+            "Hello,\nall tests\npassed.\nTomorrow",
+            "Hello.",
+        ] {
+            let (out, asked) = translate_with(source, Target::English, move |service, _| {
+                Ok(match service {
+                    Service::Volcengine => unusable.to_owned(),
+                    _ => "Hello, all tests passed today.\nTomorrow check the installer.".into(),
+                })
+            });
+            assert_eq!(
+                out.unwrap().text,
+                "Hello, all tests passed today.\nTomorrow check the installer.",
+                "{unusable:?}"
+            );
+            assert_eq!(asked.len(), 2);
+        }
+    }
+
+    // 主人 2026-11-24：1 万字也要能翻；切成几十段分给各家，不是整篇 5 秒算失败
+    #[test]
+    fn a_ten_thousand_character_text_is_split_into_pieces_and_joined_back() {
+        let text = "今天吃什么。明天去哪里？".repeat(830);
+        // 假译文：英文字母的量和原文差不多（一个汉字约三个字母），能过「少了一截」的检查
+        let (out, asked) = translate_with(&text, Target::English, |_, piece| {
+            Ok(format!("[{}]", "x".repeat(piece.chars().count() * 3)))
+        });
+        let outcome = out.unwrap();
+        assert_eq!(outcome.failed, 0);
+        assert!(asked.len() >= 15, "{}", asked.len());
+        assert!(
+            asked
+                .iter()
+                .all(|(_, piece)| piece.chars().count() <= CHUNK_CHARS)
+        );
+        // 同一行切开的几段，英文译文之间隔一个空格
+        assert!(
+            outcome.text.contains("] ["),
+            "{}",
+            outcome.text.chars().take(80).collect::<String>()
+        );
+    }
+
+    #[test]
+    fn failed_pieces_keep_the_original_and_are_counted() {
+        let (out, _) = translate_with("第一段。\n\n第二段。", Target::English, |_, piece| {
+            if piece.contains("第二段") {
+                Err(Failure::Other("出错".into()))
+            } else {
+                Ok("Paragraph.".into())
+            }
+        });
+        let outcome = out.unwrap();
+        // 短段合成一段送：一起失败
+        assert_eq!(outcome.total, 1);
+        assert_eq!(outcome.failed, 1);
+        assert!(outcome.summary.contains("1 段没翻成"), "{}", outcome.summary);
+        assert_eq!(outcome.text, "第一段。\n\n第二段。");
+    }
+
+    #[test]
+    fn invalid_input_never_reaches_a_service() {
+        for source in ["  ".to_owned(), "中".repeat(MAX_CHARS + 1)] {
+            let (out, asked) = translate_with(&source, Target::English, |_, _| {
+                panic!("invalid input should not be translated")
+            });
+            assert!(out.is_err());
+            assert!(asked.is_empty());
+        }
+    }
+
+    #[test]
+    fn the_free_services_come_first_and_keyed_ones_only_when_configured() {
+        assert_eq!(
+            services(&Keys::default()),
+            [
+                Service::Volcengine,
+                Service::Microsoft,
+                Service::Bilibili,
+                Service::Wetype
+            ]
+        );
+        let keys = Keys {
+            wetype_enabled: false,
+            google_key: "g".into(),
+            ..Keys::default()
+        };
+        assert_eq!(
+            services(&keys),
+            [
+                Service::Volcengine,
+                Service::Microsoft,
+                Service::Bilibili,
+                Service::Google
+            ]
+        );
+    }
+
+    // 2026-11-24 在华为上真请求过的三家：请求长什么样、回答怎么读
+    #[test]
+    fn the_free_services_are_asked_and_read_the_way_they_answered() {
+        let volc = volcengine_request("今天天气不错", Target::English);
+        assert_eq!(volc.host, "translate.volcengine.com");
+        assert_eq!(volc.path, "/crx/translate/v1/");
+        let body: serde_json::Value = serde_json::from_str(&volc.body).unwrap();
+        assert_eq!(body["target_language"], "en");
+        assert_eq!(body["source_language"], "");
+        assert_eq!(
+            parse_volcengine(br#"{"translation":"The weather is nice today","detected_language":"zh","probability":1,"base_resp":{"status_code":0,"status_message":""}}"#),
+            Ok("The weather is nice today".into())
+        );
+        assert!(parse_volcengine(br#"{"base_resp":{"status_code":1001}}"#).is_err());
+        let ms = microsoft_request("Hello", Target::Chinese);
+        assert_eq!(ms.host, "edge.microsoft.com");
+        assert!(ms.path.contains("to=zh-Hans") && ms.path.contains("from=&"));
+        assert_eq!(ms.body, r#"["Hello"]"#);
+        assert_eq!(
+            parse_reply(
+                Service::Microsoft,
+                r#"[{"detectedLanguage":{"language":"en","score":1.0},"translations":[{"text":"你好","to":"zh-Hans"}]}]"#
+                    .as_bytes()
+            ),
+            Ok("你好".into())
+        );
+        let bili = bilibili_request("Hello", Target::Chinese);
+        let body: serde_json::Value = serde_json::from_str(&bili.body).unwrap();
+        assert_eq!(body["model"], "Index-Translate-2B");
+        assert_eq!(body["chat_template_kwargs"]["enable_thinking"], false);
+        assert!(body["messages"][0]["content"].as_str().unwrap().contains("翻译为中文"));
+        assert_eq!(
+            parse_bilibili(
+                r#"{"choices":[{"message":{"content":"<think>\n</think>\n\n你好"}}]}"#.as_bytes()
+            ),
+            Ok("你好".into())
+        );
+        assert!(matches!(
+            http_failure(Service::Volcengine, 429),
+            Failure::Limited(_)
+        ));
+        assert!(matches!(
+            http_failure(Service::Azure, 401),
+            Failure::Denied(_)
+        ));
+    }
+
+    #[test]
+    fn chinese_and_english_in_one_line_are_split_by_sentence() {
+        let parts = |text: &'static str, target| -> Vec<(&'static str, bool)> {
+            plan(text, target)
+                .into_iter()
+                .map(|p| (&text[p.range], p.translate))
+                .collect()
+        };
+        assert_eq!(
+            parts(
+                "We shipped it. 然后我们再测一遍，没问题就发。",
+                Target::English
+            ),
+            [
+                ("We shipped it. ", false),
+                ("然后我们再测一遍，没问题就发。", true)
+            ]
+        );
+        // 中文句子里夹着的英文词跟着整句一起翻，不单独留下
+        assert_eq!(
+            parts("用 Claude Code 跑一下测试。", Target::English),
+            [("用 Claude Code 跑一下测试。", true)]
+        );
+        // 英文句子里的数字、标点不会把句子切开
+        assert_eq!(
+            parts("Version 3.5, released on 1,000 machines.", Target::Chinese),
+            [("Version 3.5, released on 1,000 machines.", true)]
+        );
+        // 两种语言一句一句交替时，各翻各的，留下的原样
+        assert_eq!(
+            parts("好的。Sounds good. 那就这样。", Target::Chinese),
+            [
+                ("好的。", false),
+                ("Sounds good.", true),
+                (" 那就这样。", false)
+            ]
+        );
+    }
+
+    #[test]
+    fn hard_wrapped_english_is_joined_back_into_paragraphs() {
+        assert_eq!(
+            unwrap_english(
+                "This license was wrapped by hand in the middle,\r\nof a sentence that goes on for a while and\r\nends here.\r\n\r\nNext paragraph."
+            ),
+            "This license was wrapped by hand in the middle, of a sentence that goes on for a while and ends here.\r\n\r\nNext paragraph."
+        );
+        // 短行的清单、列表、标题、句末换行、中文都不并
+        for kept in [
+            "apples\nbananas\noranges",
+            "Steps:\n- run the tests\n- ship it",
+            "The release notes are ready and the tests pass.\nanother sentence starts here",
+            "TERMS AND CONDITIONS\n\n0. Definitions.",
+            "第一行\n第二行",
+        ] {
+            assert_eq!(unwrap_english(kept), kept);
+        }
+    }
+
+    #[test]
+    fn long_text_is_split_by_paragraph_and_sentence_and_joined_back() {
+        let text = "第一段。\n第二段很长。第二段第二句。\n\n第三段";
+        let parts = chunks(text, 8);
+        let joined: String = parts.iter().map(|(p, s)| format!("{p}{s}")).collect();
+        assert_eq!(joined, text, "切开再拼回去要和原文一样");
+        assert!(
+            parts.iter().all(|(p, _)| p.chars().count() <= 8),
+            "{parts:?}"
+        );
+    }
+
+    #[test]
+    fn short_paragraphs_are_sent_together() {
+        let text = "第一段。\n\n- 第二条\n- 第三条\n\n**第四段**\n".repeat(10);
+        let batches = merge(&text, chunks(&text, CHUNK_CHARS), CHUNK_CHARS);
+        assert_eq!(batches.len(), 1, "{batches:?}");
+        let joined: String = batches.iter().map(|(p, s)| format!("{p}{s}")).collect();
+        assert_eq!(joined, text);
+        let long = "很长的一句话没有标点".repeat(400);
+        let batches = merge(&long, chunks(&long, CHUNK_CHARS), CHUNK_CHARS);
+        assert!(
+            batches.len() >= 6
+                && batches
+                    .iter()
+                    .all(|(p, _)| p.chars().count() <= CHUNK_CHARS)
+        );
+    }
+
+    #[test]
+    fn missing_settings_file_means_no_keys() {
+        let dir = tempfile::tempdir().unwrap();
+        assert_eq!(
+            Keys::load(&dir.path().join("translate.json")),
+            Ok(Keys::default())
+        );
+        std::fs::write(dir.path().join("t.json"), "{\"google_key\":\"g\"}").unwrap();
+        let legacy_keys = Keys::load(&dir.path().join("t.json")).unwrap();
+        assert_eq!(legacy_keys.google_key, "g");
+        assert!(legacy_keys.wetype_enabled);
+        std::fs::write(dir.path().join("bad.json"), "{").unwrap();
+        assert!(Keys::load(&dir.path().join("bad.json")).is_err());
+    }
 }
 
 #[cfg(test)]

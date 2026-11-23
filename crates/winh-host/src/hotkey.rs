@@ -36,7 +36,6 @@ use windows_sys::Win32::UI::{
 };
 use xueer_ear_backend::{
     engine::{self, Event, Source},
-    postprocess::Postprocess,
     settings::{Engine, Settings},
 };
 use xueer_ear_textflow::{Output, VoiceCommand};
@@ -755,9 +754,9 @@ impl VoiceTranslation {
         }
     }
 
+    /// 等译文：不设总时限（每段每家最多等 20 秒，服务池保证都会结束），框变了就不等了
     fn wait(&self, still_current: impl Fn() -> bool) -> Option<Result<String, String>> {
-        let deadline = Instant::now() + Duration::from_secs(60);
-        while still_current() && Instant::now() < deadline {
+        while still_current() {
             match self.result.recv_timeout(Duration::from_millis(25)) {
                 Ok(result) => return Some(result),
                 Err(mpsc::RecvTimeoutError::Timeout) => {}
@@ -801,7 +800,11 @@ fn apply_translation(
         }
     }
     let change = job.source.replace(&translated);
-    send_keys(&change.keys);
+    if let Err(reason) = try_send_keys(&change.keys) {
+        println!("翻译回来：{reason}（{waited} ms）");
+        panel.listening_notice(&format!("译文没换上：{reason}"));
+        return true;
+    }
     live.box_changed(&change.after);
     println!(
         "翻译回来：整框 {} 字 → {} 字，{waited} ms，已替换",
@@ -1197,6 +1200,14 @@ fn is_mark(unit: u16) -> bool {
 const BATCH_UNITS: usize = 12;
 
 fn send_keys(keys: &[Key]) {
+    if let Err(reason) = try_send_keys(keys) {
+        eprintln!("{reason}");
+    }
+}
+
+/// 发按键；只有整段粘贴会失败（前台程序没来取字）
+fn try_send_keys(keys: &[Key]) -> Result<(), String> {
+    let mut outcome = Ok(());
     wait_for_hotkey_release();
     let mut inputs: Vec<INPUT> = Vec::new();
     // 热键可能是 Alt/Ctrl/Shift：先把它们抬起，免得和要键入的字凑成组合键
@@ -1268,9 +1279,31 @@ fn send_keys(keys: &[Key]) {
                     inputs.extend(tap(VK_BACK));
                 }
             }
+            Key::Paste(text) => {
+                flush(&mut inputs);
+                let press = || {
+                    let mut ctrl_v = vec![key(VK_CONTROL, 0, 0)];
+                    ctrl_v.extend(tap(u16::from(b'V')));
+                    ctrl_v.push(key(VK_CONTROL, 0, KEYEVENTF_KEYUP));
+                    flush(&mut ctrl_v);
+                };
+                match crate::clipboard::paste(text, &press) {
+                    Ok(()) => {}
+                    // 剪贴板用不了：并成一行打（换行在微信里是回车，不能打）
+                    Err(crate::clipboard::PasteError::NotPressed(reason)) => {
+                        eprintln!("没法粘贴（{reason}），改成打字");
+                        let line = text.split_whitespace().collect::<Vec<_>>().join(" ");
+                        try_send_keys(&[Key::Text(line)])?;
+                    }
+                    Err(crate::clipboard::PasteError::NotTaken) => {
+                        outcome = Err("粘贴了，但输入框没接收".to_owned());
+                    }
+                }
+            }
         }
     }
     flush(&mut inputs);
+    outcome
 }
 
 /// 热键是 Alt/Ctrl/Shift 这类修饰键、还按着时，先等它松开再发键（最多 3 秒）：

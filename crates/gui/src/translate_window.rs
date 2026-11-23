@@ -165,8 +165,9 @@ struct State {
     asked: usize,
     in_flight: bool,
     queued: bool,
-    replies: mpsc::Receiver<(usize, Result<String, String>)>,
-    sender: mpsc::Sender<(usize, Result<String, String>)>,
+    /// 译文和几段没翻成（没翻成的段留着原文）
+    replies: mpsc::Receiver<(usize, Result<(String, usize), String>)>,
+    sender: mpsc::Sender<(usize, Result<(String, usize), String>)>,
     last_source: String,
     busy: bool,
     phase: f32,
@@ -425,8 +426,10 @@ unsafe fn ask(window: HWND, state: &mut State) {
         let result = xueer_ear_backend::translate::translate_into_with_progress(
             &source,
             target_language,
+            None,
             &progress,
-        );
+        )
+        .map(|outcome| (outcome.text, outcome.failed));
         let _ = sender.send((id, result));
         PostMessageW(target as HWND, DONE, id, 0);
     });
@@ -813,7 +816,12 @@ unsafe extern "system" fn procedure(
                 ShowWindow(GetDlgItem(hwnd, RESULT as i32), SW_SHOWNOACTIVATE);
                 state.note.clear();
                 match result {
-                    Ok(text) => set_text(hwnd, RESULT, &text),
+                    Ok((text, failed)) => {
+                        set_text(hwnd, RESULT, &text);
+                        if failed > 0 {
+                            state.note = format!("有 {failed} 段没翻成，留着原文");
+                        }
+                    }
                     Err(reason) => {
                         state.note = format!("翻译失败：{reason}");
                         note_close(&state.note);
@@ -1256,7 +1264,7 @@ mod tests {
             SendMessageW(window, WM_COMMAND, SOURCE | ((EN_CHANGE as usize) << 16), 0);
             (*state)
                 .sender
-                .send((old_id, Ok("stale translation".into())))
+                .send((old_id, Ok(("stale translation".into(), 0))))
                 .unwrap();
             SendMessageW(window, DONE, old_id, 0);
             let result = text_of(window, RESULT);
