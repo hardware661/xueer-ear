@@ -348,7 +348,7 @@ fn record(
             && target.is_some()
             && foreground_text_target() == target
     };
-    let result = engine::run_wetype(source, engine_stop.clone(), |event| {
+    let result = engine::run_cloud(source, settings.engine, engine_stop.clone(), |event| {
         if stopped.load(Ordering::Acquire) {
             return Ok(());
         }
@@ -356,6 +356,13 @@ fn record(
         let mut sentence_finished = false;
         match event {
             Event::Input { name, .. } => status.microphone(name),
+            // 豆包这句不行、改走了微信：面板上说一声，不打断听写
+            Event::Channel { name, fallback } => {
+                status.channel(name);
+                if fallback {
+                    panel.listening_notice("豆包没连上，这句改用微信");
+                }
+            }
             // 停顿只是一句说完（定稿上屏），不结束：一直听到主人再点一下、点麦克风、Esc，
             // 或者超过「最长听写时间」（主人 2026-11-15：说着说着停顿一下就断了，要能一直说）
             // 蓝麦克风=在听；识别出新字的那一阵子显示波浪（只认真的出字，咳嗽、敲桌子不算）

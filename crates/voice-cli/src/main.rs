@@ -125,7 +125,7 @@ fn run() -> Result<(), Box<dyn Error + Send + Sync>> {
                     Event::Activity(phase) => println!("activity={phase}"),
                     Event::Input { name, muted, volume } => println!("device={name} muted={muted:?} volume={volume:?}"),
                     Event::Progress { samples, peak, rms, gain, pieces, responses, partials, finals } => println!("samples={samples} peak={peak} rms={rms:.1} gain={gain:.1} uploaded={pieces} responses={responses} partials={partials} finals={finals}"),
-                    Event::Speech(_) => (),
+                    Event::Speech(_) | Event::Channel { .. } => (),
                 }
                 Ok(())
             })?;
@@ -184,13 +184,18 @@ fn run() -> Result<(), Box<dyn Error + Send + Sync>> {
             Ok(())
         }
         #[cfg(windows)]
-        (Some(command), Some(path), None) if command == "recognize-wave-wetype" => {
+        (Some(command), Some(path), None) if command == "recognize-wave-wetype" || command == "recognize-wave-doubao" => {
+            // 同一段录音走指定的通道：-doubao 是豆包为主（失败改微信，会打出 [通道] 行），-wetype 只走微信
+            let engine = if command == "recognize-wave-doubao" { xueer_ear_backend::settings::Engine::Doubao } else { xueer_ear_backend::settings::Engine::Wetype };
             let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
             let mut finals = 0;
             let started = std::time::Instant::now();
             let timeline = std::env::var_os("XUEER_EAR_TIMELINE").is_some();
-            let text = xueer_ear_backend::engine::run_wetype(xueer_ear_backend::engine::Source::Wave(path.into()), stop, |event| {
+            let text = xueer_ear_backend::engine::run_cloud(xueer_ear_backend::engine::Source::Wave(path.into()), engine, stop, |event| {
                 match event {
+                    xueer_ear_backend::engine::Event::Channel { name, fallback } => {
+                        println!("{:>6} ms [通道] {name}{}", started.elapsed().as_millis(), if fallback { "（豆包不行，改走微信）" } else { "" });
+                    }
                     xueer_ear_backend::engine::Event::Speech(event) => {
                         finals += usize::from(event.final_result);
                         // 排查「停顿后整理慢」：每个中间结果到达的时间和内容

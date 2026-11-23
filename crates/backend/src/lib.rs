@@ -2,8 +2,10 @@
 pub mod account;
 #[cfg(windows)]
 pub mod check;
+pub mod doubao;
 #[cfg(windows)]
 pub mod engine;
+pub mod https;
 pub mod postprocess;
 pub mod replay;
 #[cfg(windows)]

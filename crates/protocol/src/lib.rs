@@ -1,4 +1,5 @@
 pub mod asr;
+pub mod doubao;
 pub mod receiver;
 pub mod rpc;
 pub mod stream;

@@ -33,6 +33,19 @@ pub struct Settings {
     pub sounds_enabled: bool,
     /// 以管理员身份运行（往管理员权限的窗口里打字要用）。默认关：普通权限就够，打开时不弹确认框
     pub run_as_admin: bool,
+    /// 识别通道：默认豆包，豆包连不上的那句自动改走微信（主人 2026-11-23 定）
+    pub engine: Engine,
+}
+
+/// 识别走哪家的云端
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Engine {
+    /// 豆包输入法为主，失败的那句改走微信输入法
+    #[default]
+    Doubao,
+    /// 只用微信输入法
+    Wetype,
 }
 
 impl Default for Settings {
@@ -49,6 +62,7 @@ impl Default for Settings {
             sounds_enabled: true,
             max_listen_minutes: 30,
             run_as_admin: false,
+            engine: Engine::Doubao,
         }
     }
 }
@@ -195,6 +209,18 @@ impl Settings {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn engine_defaults_to_doubao_and_round_trips() {
+        assert_eq!(Settings::default().engine, Engine::Doubao);
+        let old: Settings = serde_json::from_str(r#"{"silence_seconds":3}"#).unwrap();
+        assert_eq!(old.engine, Engine::Doubao);
+        let chosen: Settings = serde_json::from_str(r#"{"engine":"wetype"}"#).unwrap();
+        assert_eq!(chosen.engine, Engine::Wetype);
+        let json = serde_json::to_string(&chosen).unwrap();
+        assert!(json.contains(r#""engine":"wetype""#));
+        assert!(serde_json::from_str::<Settings>(r#"{"engine":"other"}"#).is_err());
+    }
 
     struct Fixture {
         root: PathBuf,

@@ -1,7 +1,12 @@
 //! One dictation session. The only client access is the bounded read-only account reader.
 use crate::{Connection, Result, Session, check::new_id, runtime_account, settings::Settings};
+#[path = "engine_cloud.rs"]
+mod cloud;
+#[path = "engine_doubao.rs"]
+mod doubao_turn;
 #[path = "engine_wetype.rs"]
 mod wetype;
+pub use cloud::run as run_cloud;
 use std::{
     path::PathBuf,
     sync::{
@@ -12,7 +17,6 @@ use std::{
     thread::{self, JoinHandle},
     time::{Duration, Instant},
 };
-pub use wetype::run as run_wetype;
 use xueer_ear_audio::{
     activity::{Activity, ActivityEvent},
     encoder::{CHUNK_SAMPLES, FRAME_SAMPLES, OpusStream},
@@ -39,6 +43,11 @@ pub fn validate_wave(path: &std::path::Path) -> Result<()> {
 pub enum Event {
     Started,
     Activity(&'static str),
+    /// 这句走的是哪家（"doubao" / "wetype"）；`fallback` 为真表示豆包不行、这句改走了微信
+    Channel {
+        name: &'static str,
+        fallback: bool,
+    },
     Speech(SpeechEvent),
     Input {
         name: String,

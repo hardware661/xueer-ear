@@ -12,6 +12,8 @@ struct Snapshot {
     backend: &'static str,
     phase: &'static str,
     microphone: String,
+    /// 最近一句走的识别通道（"doubao" / "wetype"），诊断信息用
+    channel: &'static str,
     peak: u32,
     partials: usize,
     finals: usize,
@@ -58,6 +60,7 @@ impl Status {
                 backend,
                 phase: "connecting",
                 microphone: String::new(),
+                channel: "",
                 peak: 0,
                 partials: 0,
                 finals: 0,
@@ -117,6 +120,9 @@ impl Status {
     }
     pub fn microphone(&self, name: String) {
         self.change(|s| s.microphone = name);
+    }
+    pub fn channel(&self, name: &'static str) {
+        self.change(|s| s.channel = name);
     }
     pub fn progress(&self, peak: u32, partials: usize, finals: usize) {
         self.change(|s| {

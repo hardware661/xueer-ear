@@ -71,7 +71,7 @@ impl Backend {
             other => output(other),
         };
         match self {
-            Self::WeType => engine::run_wetype(source, stop, output),
+            Self::WeType => engine::run_cloud(source, settings().0.engine, stop, output),
             Self::WeChat => engine::run(install::wechat_pid()?, source, stop, output),
         }
     }
@@ -220,6 +220,13 @@ fn start(
                         if last_log.elapsed() >= Duration::from_secs(if started.elapsed().as_secs() < 10 { 1 } else { 15 }) {
                             println!("链路[{generation}] PCM={samples} peak={peak} rms={rms:.1} 上传={pieces} 回包={responses} partial={partials} final={finals}");
                             last_log = Instant::now();
+                        }
+                        return Ok(());
+                    }
+                    Event::Channel { name, fallback } => {
+                        status.channel(name);
+                        if fallback {
+                            println!("通道[{generation}] 豆包不行，这句改走微信");
                         }
                         return Ok(());
                     }

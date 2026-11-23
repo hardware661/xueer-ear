@@ -49,6 +49,24 @@ impl OpusStream {
     }
 }
 
+/// 把一块 OPUS_RAW_V1（可能带开头的 HEADER，后面是「2 字节小端长度 + 一帧」若干个）拆回一帧一帧的 20 ms 包。
+/// 豆包按帧收音频，一包一帧。
+pub fn packets(chunk: &[u8]) -> Result<Vec<&[u8]>, &'static str> {
+    let mut rest = chunk.strip_prefix(HEADER.as_slice()).unwrap_or(chunk);
+    let mut out = Vec::with_capacity(CHUNK_SAMPLES / FRAME_SAMPLES);
+    while !rest.is_empty() {
+        let (size, tail) = rest.split_first_chunk::<2>().ok_or("Opus 包长度不完整")?;
+        let size = usize::from(u16::from_le_bytes(*size));
+        if size == 0 || size > tail.len() {
+            return Err("Opus 包被截断");
+        }
+        let (packet, tail) = tail.split_at(size);
+        out.push(packet);
+        rest = tail;
+    }
+    Ok(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -75,5 +93,28 @@ mod tests {
         }
         assert_eq!(samples, CHUNK_SAMPLES);
         assert!(!stream.encode(&pcm).unwrap().starts_with(HEADER));
+    }
+
+    #[test]
+    fn chunks_split_back_into_their_20ms_packets() {
+        let pcm: Vec<i16> = (0..CHUNK_SAMPLES)
+            .map(|i| ((i as f32 * 0.11).sin() * 5000.0) as i16)
+            .collect();
+        let mut stream = OpusStream::new().unwrap();
+        let first = stream.encode(&pcm).unwrap();
+        let second = stream.encode(&pcm[..FRAME_SAMPLES * 2]).unwrap();
+        let mut decoder = opus::Decoder::new(SAMPLE_RATE, Channels::Mono).unwrap();
+        let mut decoded = [0_i16; FRAME_SAMPLES];
+        let split = packets(&first).unwrap();
+        assert_eq!(split.len(), CHUNK_SAMPLES / FRAME_SAMPLES);
+        for packet in split {
+            assert_eq!(
+                decoder.decode(packet, &mut decoded, false).unwrap(),
+                FRAME_SAMPLES
+            );
+        }
+        assert_eq!(packets(&second).unwrap().len(), 2);
+        assert!(packets(&first[..first.len() - 1]).is_err());
+        assert!(packets(&[]).unwrap().is_empty());
     }
 }
