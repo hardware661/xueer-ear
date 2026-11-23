@@ -62,7 +62,7 @@ pub const HOTWORD: Form = Form {
 
 pub const SNIPPET: Form = Form {
     title: "添加快捷短语",
-    labels: ["口令（整句只说这几个字）", "换成的文字（打 \\n 表示换行）"],
+    labels: ["口令（整句只说这几个字）", "换成的文字（写成一行）"],
     cues: ["例如 我的邮箱", "例如 someone@example.com"],
     limits: [20, 500],
     submit: "添加",

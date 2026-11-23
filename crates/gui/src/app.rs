@@ -92,7 +92,7 @@ const HOTWORDS_LIMIT: u64 = 256 * 1024;
 const HOTWORDS_HEADER: &str = "# 雪耳热词表：一行一个词，读音像的识别结果会改成这个词。\r\n# 固定的错法写成「错=对」，例如 Cloud Code=Claude Code。# 开头是注释。\r\n";
 /// 快捷短语表最大多少字节（和后台读它时的上限一致）
 const SNIPPETS_LIMIT: u64 = 64 * 1024;
-const SNIPPETS_HEADER: &str = "# 雪耳快捷短语：一行一条「口令=文字」，整句只说口令时换成后面的文字。\r\n# 文字里 \\n 是换行。# 开头是注释。例如：\r\n# 我的邮箱=someone@example.com\r\n";
+const SNIPPETS_HEADER: &str = "# 雪耳快捷短语：一行一条「口令=文字」，整句只说口令时换成后面的文字。\r\n# 文字写成一行，写了 \\n 也打成空格。# 开头是注释。例如：\r\n# 我的邮箱=someone@example.com\r\n";
 /// GDI 的字色（COLORREF），跟着深浅色走
 fn ink() -> u32 {
     view::colorref(view::palette().ink)

@@ -29,10 +29,11 @@ Recognition runs on Doubao Input Method's cloud service, with WeChat Input Metho
 ## What it does
 
 - Streaming dictation: text appears at the cursor while you are still talking. When you pause, the sentence is cleaned up (filler words, numbers, hotwords) and dictation keeps going.
-- Works in terminals: one session can last 30 minutes. Saying "换行" (new line) sends Ctrl+J, so Claude Code gets a line break instead of a submit; "发送" (send) presses Enter.
-- No model download: recognition uses Doubao Input Method's cloud service with WeChat Input Method as the backup (or the other way round); a sentence the main service fails on is resent to the other one automatically. Translation uses WeChat Input Method. Nothing heavy runs on your PC, and you need neither app installed nor an account.
-- Works next to a fan: steady background noise (fans, air conditioning) is filtered out before Xueer Ear decides where a sentence ends.
-- Voice commands: delete the last sentence, delete everything, send, and translate the whole input box into English or Chinese. The words for each command and the timings can be changed in the control panel; the rules stay fixed.
+- Works in terminals: one session can last 30 minutes. In the Claude Code and Codex prompt, voice commands can delete text and translate the whole prompt.
+- No model download: recognition uses Doubao Input Method's cloud service with WeChat Input Method as the backup (or the other way round); a sentence the main service fails on is resent to the other one automatically. Nothing heavy runs on your PC, and you need neither app installed nor an account.
+- Works next to a fan: steady background noise (fans, air conditioning) is filtered out before Xueer Ear decides where a sentence ends. In a noisy room it switches to WeChat as the main service, which recognized fan-noise speech better in our tests.
+- Voice commands: pause, say "删除" (delete), "全部删除" (delete all) or "翻译成英文" (translate into English) on its own, pause again, and it runs. Each command has exactly one phrase and acts on the whole input box.
+- Translation: Volcengine, Microsoft, Bilibili Index-Translate and WeChat Input Method, all free and keyless. Long text is split into pieces that are translated in parallel.
 - Hotwords: add a term once and misheard product names get corrected. Fix a misheard word in the history list and Xueer Ear offers to remember the fix. A built-in list covers common AI and programming terms.
 - Snippets: say a trigger phrase such as "我的邮箱" on its own and a saved text (your email address) is typed instead.
 - Less fuss: other apps are turned down while you dictate; if no text field has focus, the round is copied to the clipboard instead of typed.
@@ -65,39 +66,65 @@ You need Windows 11, a network connection and a microphone. Administrator rights
 1. Download `xueer-ear-<version>-windows-x64-setup.exe` from the [releases page](https://github.com/hardware661/xueer-ear/releases/latest). A portable ZIP is also available.
 2. Run the installer. It is not code-signed, so SmartScreen may say "Windows protected your PC"; click "More info", then "Run anyway". You can check the file against `SHA256SUMS.txt`.
 3. On first launch the background service starts automatically.
-4. Click into any text field, tap Right Alt and start talking. Tap it again, click the panel or press Esc to stop. Dictation also stops after 10 seconds without new text (adjustable).
+4. Click into any text field, tap Right Alt and start talking. Tap it again, click the panel or press Esc to stop. Dictation also stops after 10 seconds without new text (adjustable under 更多设置).
 
-The hotkey can be changed to Right Ctrl, CapsLock, F8 or F9 in the control panel.
+The hotkey can be changed to Right Ctrl, CapsLock, F8 or F9 in the control panel. Holding the key counts as a tap; text waits until you release it (up to 3 seconds), because typing while Alt is held would trigger menu shortcuts.
 
 ## Voice commands
 
-Say a command on its own, with a short pause before and after. These are the default words; under 语音指令 in the control panel you can change them (separate several with 、, leave empty to turn a command off) and pick the timings:
+**Pause for 1 second, say the command on its own, then pause for 0.6 seconds.** Only then does Xueer Ear run it; the command word is never typed.
 
-| Say | Effect |
+| Say | Effect | Default |
+| --- | --- | --- |
+| 删除 | Delete the last sentence in the input box: back to the previous 。？！ or line break, including trailing blanks | On |
+| 全部删除 | Clear the whole input box | On |
+| 发送 | Press Enter | Off |
+| 翻译成英文 | Translate the whole input box into English and replace it | On |
+| 翻译成中文 | Translate the whole input box into Chinese and replace it | On |
+
+- One phrase per command. Matching ignores case and punctuation, not pronunciation.
+- Without the pause before it, or said together with other words, a command is typed as plain text: "今天吃什么，发送" types exactly that. A command right after pressing the hotkey counts, since nothing came before it.
+- Commands act on everything in the focused input box: what you typed, what Xueer Ear typed, earlier rounds.
+- An empty box shows "输入框是空的"; no input box shows "没找到输入框", and nothing changes. Commands win over snippets.
+- The switches and the two timings (pause before: 0.5/1/1.5/2 s; wait after: 0.3/0.6/1/1.5 s) are under 语音指令 in the control panel. The three dictation timings are under 更多设置.
+
+How the input box is read:
+
+| Where | How |
 | --- | --- |
-| 换行 | New line (Ctrl+J in terminals; turn this off for plain bash/zsh, where Ctrl+J runs the command) |
-| 删除 / 删掉上一句 | Delete the last sentence Xueer Ear typed |
-| 全部删除 / 清空 | Delete everything typed in this session |
-| 发送 | Press Enter (off by default) |
-| 翻译成英文 | Translate the whole input box into English, leaving English parts as they are |
-| 翻译成中文 | Translate the whole input box into Chinese |
-| 翻译 | By default Chinese text becomes English and all-English text becomes Chinese; can be set to always English or always Chinese |
+| Notepad, browser text fields | Windows UI Automation, no clipboard |
+| WeChat and other apps UI Automation cannot read | Select all and copy, then restore your clipboard |
+| Claude Code and Codex in Windows Terminal | Read the terminal screen and find the prompt lines |
 
-Only "new line", "send", the translate commands and delete commands that say "上一句" (last sentence) may trail a sentence; everything else counts only when said alone. Matching ignores case and punctuation but not pronunciation, and commands win over snippets.
+Terminals with no recognizable prompt (a plain shell), code editors and web terminals are left alone with a short notice.
 
-Translation reads the whole input box through Windows UI Automation, including text from earlier rounds and text you typed. Where the box cannot be read (terminals), it translates what Xueer Ear typed in that box, across rounds, until you press Enter, touch the keyboard or mouse, or switch windows. The delete commands reach back the same way and never touch text you typed.
+Voice translation refuses boxes over 2000 characters (use the translator window), replaces the box only if every piece translated and the box has not changed meanwhile, never ends dictation and never sends. In normal apps a multi-line result is pasted in one go, because a typed line break is Enter in WeChat and would send the message; your clipboard is restored as soon as the app has taken the text. In terminals, where Enter submits, the result is typed as one line.
+
+## Translation services
+
+The translator window and voice translation share the same services. Four are free and need no key: Volcengine (the API its browser extension uses), Microsoft (the API built into Edge), Bilibili Index-Translate (an official free API, small model) and WeChat Input Method. Microsoft Translator with your own key, Google Gemini and Zhipu come after them if configured.
+
+- Text is split by paragraph and sentence into pieces of at most 600 characters, six in flight at a time.
+- Each piece goes to the service that has recently been fastest. If it has not answered after 2 seconds plus 1 second per 300 characters (8 seconds at most), the next service gets the same piece and the first valid answer wins.
+- One service gets at most 20 seconds per piece. A piece fails only when every service failed; there is no limit for the whole text.
+- An empty answer, the wrong language, extra line breaks or a much shorter answer count as a failure and move on at once. A rate-limited service rests 5 minutes, a rejected key 6 hours.
+- `%LOCALAPPDATA%\XueerEar\translate.log` gets one line per text (characters, pieces, pieces per service, hedges, time), never the content.
+
+These free APIs are mostly internal to web pages and extensions and may change or throttle at any time; Xueer Ear moves on to the next service, and voice translation keeps the original if all fail.
 
 ## Noise, snippets and corrections
 
-- Noise reduction: RNNoise cleans the audio only for deciding where you stopped talking; the cloud still receives the original audio, which it recognizes better. With simulated fan noise 5 dB below speech, Doubao got 3.9% of characters wrong and WeChat 2.2%, about the same as in silence. Without noise reduction the fan kept the sentence open and WeChat lost 86%. On by default.
-- Snippets: add them under 快捷短语 in the control panel, or edit `snippets.txt` (one `trigger=text` per line; `\n` is a line break). Triggers match by pronunciation, only as a whole sentence, and cannot reuse a voice command.
+- Noise reduction: RNNoise cleans the audio only for deciding where you stopped talking; the cloud still receives the original audio, which it recognizes better. Without it, simulated fan noise kept the sentence open and WeChat lost 86% of the characters. On by default.
+- Noisy rooms: with a real fan, Doubao got 14–17% of characters wrong and WeChat 7% (5–6% for both with the fan off), and denoised audio made both worse. So Xueer Ear measures how much louder your speech is than the background each round (about 8 times with the fan on, 256 with it off). Below 20 times, the next hotkey round uses WeChat as the main service; when the room is quiet again it goes back to your choice.
+- Snippets: add them under 快捷短语 in the control panel, or edit `snippets.txt` (one `trigger=text` per line). The text is typed on one line: a `\n` becomes a space, since a line break is Enter in WeChat. Triggers match by pronunciation, only as a whole sentence, and cannot sound like a voice command.
 - Corrections: click a sentence in 历史 (history). It is copied as before, and a small box lets you fix it. Xueer Ear compares the two versions and asks before adding a `wrong=right` rule to your hotword list, telling you how many past sentences the rule would change.
 
 ## Privacy
 
 - Audio is streamed to the main recognition service (Doubao Input Method by default) while you dictate; a sentence it fails on is resent to the backup. Xueer Ear does not save recordings.
 - When Doubao is used, the words in your hotword list (up to 100) are sent along as recognition hints. Recognition never sends the text in your input box or app names.
-- When you say "翻译", the text in the input box (or what Xueer Ear typed, where the box cannot be read) is sent to the translation service in use (WeChat Input Method by default; Microsoft, Google or Zhipu only if you add a key).
+- When you say "翻译成英文" or "翻译成中文", the text in the input box is sent to the translation services: Volcengine, Microsoft, Bilibili and WeChat Input Method, plus Microsoft Translator, Google or Zhipu only if you add a key. A piece that is slow to come back is also sent to the next service. The translator window works the same way.
+- Reading the input box: in apps such as WeChat, Xueer Ear selects all and copies, then restores your clipboard. Terminal screen text is read locally and only the prompt lines are used.
 - No account: a random anonymous device identity for each service is created on first use and kept on your PC.
 - Settings, hotwords, snippets, history and logs live in `%LOCALAPPDATA%\XueerEar`. Apart from recognition and translation, the app only contacts GitHub anonymously to check for and download updates.
 
@@ -122,6 +149,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) before sending a pull request.
 - [CapsWriter-Offline](https://github.com/HaujetZhao/CapsWriter-Offline) (Haujet Zhao, MIT): part of the built-in hotword list follows its examples.
 - [VoiceKey](https://github.com/J3n5en/voicekey) (J3n5en, Apache-2.0), [doubao-asr-free](https://github.com/RayMorTwinkle/doubao-asr-free) (RayMorTwinkle), [doubao-asr-web](https://github.com/glwhappen/doubao-asr-web) (glwhappen, MIT) and [VoxType](https://github.com/melody0709/VoxType) (melody0709): their public notes on the Doubao Input Method protocol were the reference for Xueer Ear's own client.
 - [nnnoiseless](https://github.com/jneem/nnnoiseless) (Joe Neeman, BSD-3-Clause): the Rust port of RNNoise used for noise reduction. Its license ships as `RNNOISE-LICENSE.txt`.
+- [FluentRead](https://github.com/FluentRead/FluentRead) and [kiss-translator](https://github.com/fishjar/kiss-translator): their public notes on the free Volcengine and Microsoft APIs and on hedged scheduling were the reference; the code is Xueer Ear's own. [Bilibili Index-Translate](https://github.com/bilibili/Index-Translate) (Apache-2.0) provides the official free translation API.
 
 ## License
 
