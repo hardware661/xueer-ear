@@ -3,6 +3,14 @@
 > 任何 AI 接手先读这里；每次会话收尾在最上面追加一节（最新在上），写清做了什么、验证了什么、还差什么。
 > 计划原文：主人桌面 `雪耳xueer-ear计划-v1.md`（v1.1）。
 
+## 2026-11-24 03:05 · 翻译小窗卡住：查了一半，主人说先放进下一轮计划（代码没动）
+
+- 主人：翻一段话"felt incredibly difficult"；把雪儿上一条英文回复贴进小窗翻成中文，一直在「翻译中」。主人原话："you can put off fixing it for now and focus on those we just finished … We can put this on the next plan."
+- 复现（命令行 `translate-file` 走和小窗同一条路，原文在 `D:\projects\_build\xe-probe\round2\reply-en.txt`）：2400 字被切成 10 批。测试身份、没备用 Key：9 批 1 秒内回来，第 10 批判成「微信输入法的译文像是少了一截」直接报错。主人的设置（有谷歌、智谱 Key）：2.7 秒翻完，少了的那批走了谷歌。所以「一直在翻」这次没复现，日志里也看不到（translate.log 只记关窗和失败，主人没等完就关了窗）。
+- 查到的毛病：① 微信把「it's still on after the upgrade.\n- **Translation covers…** … such as a terminal,」185 字只翻回第一句 9 字。② 译成中文时按「带一个汉字就算中文」切块，夹着中文词的英文句子被切成碎片，「雪耳 1.3 round two is installed…」整句因为带「雪耳」原样留着没翻，译文是拼起来的碎片。
+- 「一直在翻」的可能原因（都没证实）：备用服务一批一批串着来，每次最多等 30 秒，两家都限流再等 8 秒、20 秒；翻译线程 panic 了就永远收不到 DONE、小点一直转；上一条还没翻完时新的排队。
+- 下一轮候选：按整句多数语言决定翻不翻（不再按标点碎切）；备用服务并发、设总时限；小窗里翻不成的段保留原文并提示几段没翻（语音整框替换仍然全对才换）；每次翻译往 translate.log 记一行（字数、批数、微信成败原因、走了哪家备用、总耗时，不记内容）；翻译线程兜住 panic。
+
 ## 2026-11-24 02:40 · 1.3 第二轮做完 A/B/D/E，C 等主人录风扇（没推送、没发版）
 
 - 主人选的照做，都进 1.3.0：A 主备对称、B 刚醒慢、D 语音指令设置、E 整框翻译，提交 1eff298、559768f、6459c0c、13d90b2 和文档一个。主人说"once you're almost done, I'll give it a try and record some sound - the fan noise too"，用完再一起推。
