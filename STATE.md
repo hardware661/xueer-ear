@@ -3,6 +3,13 @@
 > 任何 AI 接手先读这里；每次会话收尾在最上面追加一节（最新在上），写清做了什么、验证了什么、还差什么。
 > 计划原文：主人桌面 `雪耳xueer-ear计划-v1.md`（v1.1）。
 
+## 2026-11-23 · 修「翻译成英文」多出英文指令（已提交、没装机）+ 1.3 计划改成 v2（待主人确认）
+
+- **bug**（主人："if I say something and then immediately follow it with 'translate into English', it will also translate 'translate into English' into English"）：根因不是停顿时间，是微信云端自己认识「翻译成英文」，把这句直接翻成英文再定稿。雪耳已按中间结果提前翻译，迟到的定稿里找不到指令词，按「宁可多打」整句照打，正文一变又整段重翻 → 译文末尾多 "Translate into English."。本机历史今天 4 次都是这样（历史里单独一条 "Translate into English."）；定稿抢在 600 ms 确认前到时，还会英文上屏、根本不翻。
+- 修法（`260e5dc`）：`typing::Live` 记住提前执行的是不是翻译指令，后续结果找不到指令词就当被云端改写、不上屏；`hotkey` 定稿先到且没有指令词时按中间结果执行（执行指令收成 `settle_command`）。其他指令照旧宁可多打。新增 3 测试先红后绿；WSL typing 45 项、Windows 全工作区 281 项通过，fmt 通过。**没装机、没推送**。
+- 1.3 计划 v2（`~/tools/ai/claude/scratch/tmp/xueer-ear-1.3-plan.md`）：A 豆包主通道（纯协议、只参考不搬代码，主人："作为参考资料的话，看一眼就足够去实现了"）；B 开风扇降噪（推荐 DeepFilterNet3，跟 RNNoise、Windows 自带 Voice Clarity 用主人开/关风扇的录音比识别结果，默认「自动」）；C 上面的 bug。小爱音箱当麦克风不做（主人："If we need to flash the Xiaoai speaker, then we won't need to do this step"）。
+- 等主人定：按 A+B+C 做完一起装？修好的 bug 要不要先单独装？
+
 ## 2026-11-23 · 1.3 计划草稿：豆包做主通道 + 小爱音箱当麦克风（待主人确认，代码没动）
 
 - 主人要（原话英文）："I want to make DouBao the main channel … with WeChat as a backup"；翻译不动（"ours is good enough for now"）；"I'd like to try using this Xiaoai Speaker as our microphone for input."
