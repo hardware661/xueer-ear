@@ -239,6 +239,19 @@ mod tests {
         let started = Instant::now();
         let mut session = Session::start(&device, now_ms(), context.as_deref(), &|| false).unwrap();
         println!("handshake {} ms", started.elapsed().as_millis());
+        // DOUBAO_PROBE_IDLE=秒：会话开好后先空等这么久再发声音（量预连能撑多久）
+        if let Some(idle) = std::env::var("DOUBAO_PROBE_IDLE")
+            .ok()
+            .and_then(|v| v.parse::<u64>().ok())
+        {
+            let until = Instant::now() + Duration::from_secs(idle);
+            while Instant::now() < until {
+                if let Some(update) = session.poll().unwrap() {
+                    println!("idle {update:?}");
+                }
+            }
+            println!("idle {idle} s done");
+        }
         let mut encoder = xueer_ear_audio::encoder::OpusStream::new().unwrap();
         let frame = xueer_ear_audio::encoder::FRAME_SAMPLES;
         let begin = Instant::now();

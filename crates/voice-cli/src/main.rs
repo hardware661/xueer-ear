@@ -193,8 +193,8 @@ fn run() -> Result<(), Box<dyn Error + Send + Sync>> {
             let timeline = std::env::var_os("XUEER_EAR_TIMELINE").is_some();
             let text = xueer_ear_backend::engine::run_cloud(xueer_ear_backend::engine::Source::Wave(path.into()), engine, stop, |event| {
                 match event {
-                    xueer_ear_backend::engine::Event::Channel { name, fallback } => {
-                        println!("{:>6} ms [通道] {name}{}", started.elapsed().as_millis(), if fallback { "（豆包不行，改走微信）" } else { "" });
+                    xueer_ear_backend::engine::Event::Channel { name, fallback, waited_ms } => {
+                        println!("{:>6} ms [通道] {name}，开口后等了 {waited_ms} ms{}", started.elapsed().as_millis(), if fallback { "（主通道不行，改走备用）" } else { "" });
                     }
                     xueer_ear_backend::engine::Event::Speech(event) => {
                         finals += usize::from(event.final_result);

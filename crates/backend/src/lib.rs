@@ -6,7 +6,9 @@ pub mod doubao;
 #[cfg(windows)]
 pub mod engine;
 pub mod https;
+pub mod net;
 pub mod postprocess;
+pub mod race;
 pub mod replay;
 #[cfg(windows)]
 pub mod runtime_account;

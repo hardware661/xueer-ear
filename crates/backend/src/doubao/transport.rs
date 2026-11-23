@@ -1,11 +1,8 @@
 //! 豆包识别服务的 WebSocket。握手要带客户端标识和 `proto-version: v2`（不带就回 JSON 不回 protobuf），
-//! 之后一条消息一个 protobuf 帧。和微信那条一样走直连 IPv4、读超时 25 ms 轮询。
+//! 之后一条消息一个 protobuf 帧。和微信那条一样走直连 IPv4（地址挨个试，见 `net`）、读超时 25 ms 轮询。
 use super::device::{AID, Device};
 use crate::Result;
-use std::{
-    net::{TcpStream, ToSocketAddrs},
-    time::Duration,
-};
+use std::{net::TcpStream, time::Duration};
 use tungstenite::{Message, WebSocket, client::IntoClientRequest, http, stream::MaybeTlsStream};
 use xueer_ear_protocol::{
     doubao::{self, Request, Response},
@@ -41,12 +38,7 @@ impl Transport {
         );
         headers.insert("proto-version", http::HeaderValue::from_static("v2"));
         headers.insert("x-custom-keepalive", http::HeaderValue::from_static("true"));
-        let address = (HOST, 443)
-            .to_socket_addrs()?
-            .find(|a| a.is_ipv4())
-            .ok_or("豆包识别服务没有 IPv4 地址")?;
-        check(cancelled)?;
-        let tcp = TcpStream::connect_timeout(&address, Duration::from_secs(5))?;
+        let tcp = crate::net::connect(HOST, 443, cancelled)?;
         check(cancelled)?;
         tcp.set_nodelay(true)?;
         tcp.set_read_timeout(Some(Duration::from_secs(5)))?;

@@ -74,7 +74,7 @@ impl Backend {
             &source,
             Source::Microphone(_) | Source::MicrophoneHold { .. }
         );
-        let _ducking = microphone.then(|| duck_others(&settings().0)).flatten();
+        let _ducking = microphone.then(|| duck_others(&settings().0));
         match self {
             Self::WeType => engine::run_cloud(source, settings().0.engine, stop, output),
             Self::WeChat => engine::run(install::wechat_pid()?, source, stop, output),
@@ -110,17 +110,33 @@ pub(crate) fn postprocess() -> Postprocess {
     post
 }
 
-/// 听写时把别的程序调小（设置「听写时调小别的声音」）；返回的守卫丢掉时恢复。
-/// 调不了只记日志，不耽误听写
-pub(crate) fn duck_others(settings: &Settings) -> Option<xueer_ear_audio::duck::Ducking> {
+/// 听写时把别的程序调小（设置「听写时调小别的声音」）。在后台线程里调，不挡开麦
+/// （刚醒来时枚举音频会话可能要一阵子）；返回的守卫丢掉时先等它调完，再恢复。调不了只记日志，不耽误听写
+pub(crate) fn duck_others(settings: &Settings) -> DuckGuard {
     if !settings.duck_others {
-        return None;
+        return DuckGuard(None);
     }
-    match xueer_ear_audio::duck::Ducking::start(&data_dir().join("ducking.txt")) {
-        Ok(ducking) => Some(ducking),
-        Err(error) => {
-            eprintln!("调小别的声音失败：{error}");
-            None
+    let path = data_dir().join("ducking.txt");
+    DuckGuard(Some(std::thread::spawn(
+        move || match xueer_ear_audio::duck::Ducking::start(&path) {
+            Ok(ducking) => Some(ducking),
+            Err(error) => {
+                eprintln!("调小别的声音失败：{error}");
+                None
+            }
+        },
+    )))
+}
+
+pub(crate) struct DuckGuard(
+    Option<std::thread::JoinHandle<Option<xueer_ear_audio::duck::Ducking>>>,
+);
+
+impl Drop for DuckGuard {
+    fn drop(&mut self) {
+        if let Some(worker) = self.0.take() {
+            // 调小那一步做完以后，连同 Ducking 一起丢掉：Ducking 丢掉时恢复音量
+            drop(worker.join());
         }
     }
 }
@@ -247,10 +263,10 @@ fn start(
                         }
                         return Ok(());
                     }
-                    Event::Channel { name, fallback } => {
+                    Event::Channel { name, fallback, waited_ms } => {
                         status.channel(name);
-                        if fallback {
-                            println!("通道[{generation}] 豆包不行，这句改走微信");
+                        if fallback || waited_ms > 800 {
+                            println!("通道[{generation}] {name}，开口后 {waited_ms} ms 连上{}", if fallback { "（主通道不行，改走备用）" } else { "" });
                         }
                         return Ok(());
                     }

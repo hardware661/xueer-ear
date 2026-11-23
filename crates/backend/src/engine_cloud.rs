@@ -1,8 +1,15 @@
-//! 一轮听写的云端识别：按句（本地断句出来的一段）连一次云端。设置选了豆包就每句先走豆包，
-//! 豆包连不上、被拒或中途断了，这句录好的音整句改发微信输入法；这一轮豆包连着失败 3 次，剩下的话都走微信，
-//! 下一轮再试豆包。只选微信就一直走微信，断线时和以前一样重连重发一次。
+//! 一轮听写的云端识别：按句（本地断句出来的一段）连一次云端。设置里选主通道（豆包或微信），另一家是备用：
+//! 每句先连主通道，1.5 秒还没连好就同时连备用，谁先好用谁；主通道出错、被拒或中途断了，这句录好的音整句
+//! 改发备用；这一轮主通道连着失败 3 次，剩下的话都走备用，下一轮再试主通道。
+//! 为了一开口就有字，开麦后、每句说完后都在后台先把下一句要用的连好；豆包的会话空等 15 秒还能用、
+//! 30 秒就被服务端断了，所以预先连好的超过 10 秒没用上就重连。
 use super::{Audio, Capture, Counts, Event, Source, doubao_turn, wetype};
-use crate::{Result, replay::Replay, settings::Engine};
+use crate::{
+    Result,
+    race::{self, Won},
+    replay::Replay,
+    settings::Engine,
+};
 use std::{
     sync::{
         Arc,
@@ -13,8 +20,63 @@ use std::{
     time::{Duration, Instant},
 };
 
-/// 这一轮豆包连着失败几次后不再试
-const DOUBAO_GIVE_UP: u32 = 3;
+/// 主通道多久没连好就同时连备用
+const PATIENCE: Duration = Duration::from_millis(1500);
+/// 预先连好的放多久就不用了
+const WARM_MAX_AGE: Duration = Duration::from_secs(10);
+/// 这一轮主通道连着失败几次后不再试
+const GIVE_UP: u32 = 3;
+
+/// 两家云端
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Kind {
+    Doubao,
+    WeType,
+}
+
+impl Kind {
+    fn of(engine: Engine) -> Self {
+        match engine {
+            Engine::Doubao => Self::Doubao,
+            Engine::Wetype => Self::WeType,
+        }
+    }
+
+    fn other(self) -> Self {
+        match self {
+            Self::Doubao => Self::WeType,
+            Self::WeType => Self::Doubao,
+        }
+    }
+
+    fn name(self) -> &'static str {
+        match self {
+            Self::Doubao => "doubao",
+            Self::WeType => "wetype",
+        }
+    }
+
+    fn chinese(self) -> &'static str {
+        match self {
+            Self::Doubao => "豆包",
+            Self::WeType => "微信",
+        }
+    }
+
+    /// 连这一家（阻塞）；被取消返回 None
+    fn connect(self, stop: &AtomicBool, context: Option<&str>) -> Result<Option<Turn>> {
+        Ok(match self {
+            Self::Doubao => doubao_turn::Turn::start(stop, context)?.map(Turn::Doubao),
+            Self::WeType => wetype::Turn::start(stop)?.map(Turn::WeType),
+        })
+    }
+
+    /// 在后台线程里连这一家
+    fn spawn(self, stop: &Arc<AtomicBool>, context: &Option<String>) -> race::Pending<Turn> {
+        let (stop, context) = (stop.clone(), context.clone());
+        race::spawn(move || self.connect(&stop, context.as_deref()))
+    }
+}
 
 /// 一句话正在用的那条连接
 enum Turn {
@@ -54,104 +116,158 @@ impl Turn {
         }
     }
 
-    fn is_doubao(&self) -> bool {
-        matches!(self, Self::Doubao(_))
+    fn kind(&self) -> Kind {
+        match self {
+            Self::Doubao(_) => Kind::Doubao,
+            Self::WeType(_) => Kind::WeType,
+        }
     }
 }
 
-/// 这一轮走哪条
+/// 这一轮走哪家
 struct Channel {
-    doubao: bool,
-    /// 豆包连着失败的次数（成功一句就清零）
+    primary: Kind,
+    /// 主通道连着失败的次数（主通道好好说完一句就清零）
     failures: u32,
     /// 带给豆包的热词提示（这一轮开始时读一次）
     context: Option<String>,
+    /// 后台预先在连的下一句：哪家、什么时候开始连的
+    warm: Option<(Kind, Instant, race::Pending<Turn>)>,
 }
 
 impl Channel {
     fn new(engine: Engine, context: Option<String>) -> Self {
         Self {
-            doubao: engine == Engine::Doubao,
+            primary: Kind::of(engine),
             failures: 0,
             context,
+            warm: None,
         }
     }
 
-    /// 新的一句：该走豆包就先试豆包，不行改走微信
+    /// 这一句先连哪家：主通道这一轮失败太多次就直接用备用
+    fn first(&self) -> Kind {
+        if self.failures < GIVE_UP {
+            self.primary
+        } else {
+            self.primary.other()
+        }
+    }
+
+    /// 在后台先把下一句要用的连好；已经有一个新鲜的就不重复连
+    fn prepare(&mut self, stop: &Arc<AtomicBool>) {
+        let kind = self.first();
+        let fresh = self
+            .warm
+            .as_ref()
+            .is_some_and(|(k, since, _)| *k == kind && since.elapsed() < WARM_MAX_AGE);
+        if !fresh && !stop.load(Ordering::Acquire) {
+            self.warm = Some((kind, Instant::now(), kind.spawn(stop, &self.context)));
+        }
+    }
+
+    /// 新的一句：用预先连好的（没有就现连）；主通道慢或出错就抢着连备用，告诉面板这句走了哪家、等了多久
     fn start(
         &mut self,
-        stop: &AtomicBool,
+        stop: &Arc<AtomicBool>,
         output: &mut impl FnMut(Event) -> Result<()>,
     ) -> Result<Option<Turn>> {
-        if self.doubao && self.failures < DOUBAO_GIVE_UP {
-            match doubao_turn::Turn::start(stop, self.context.as_deref()) {
-                Ok(Some(turn)) => {
-                    output(Event::Channel {
-                        name: "doubao",
-                        fallback: false,
-                    })?;
-                    return Ok(Some(Turn::Doubao(turn)));
-                }
-                Ok(None) => return Ok(None),
-                Err(error) => self.fell_back(&*error, output)?,
-            }
+        let began = Instant::now();
+        let kind = self.first();
+        let pending = match self.warm.take() {
+            Some((k, since, pending)) if k == kind && since.elapsed() < WARM_MAX_AGE => pending,
+            _ => kind.spawn(stop, &self.context),
+        };
+        let cancelled = || stop.load(Ordering::Acquire);
+        let won = if kind == self.primary {
+            let (backup, context) = (kind.other(), &self.context);
+            race::first_ready(
+                pending,
+                || backup.spawn(stop, context),
+                PATIENCE,
+                &cancelled,
+            )?
+        } else {
+            race::wait(pending, &cancelled)?.map(|turn| Won {
+                side: race::Side::Primary,
+                turn,
+                primary_miss: None,
+            })
+        };
+        let Some(won) = won else {
+            return Ok(None);
+        };
+        let used = won.turn.kind();
+        if let Some(reason) = &won.primary_miss {
+            self.failures += 1;
+            eprintln!(
+                "{}没连上，这句改用{}：{reason}",
+                self.primary.chinese(),
+                used.chinese()
+            );
         }
-        let turn = wetype::Turn::start(stop)?.map(Turn::WeType);
-        if turn.is_some() && !self.doubao {
-            output(Event::Channel {
-                name: "wetype",
-                fallback: false,
-            })?;
-        }
-        Ok(turn)
-    }
-
-    /// 豆包这句不行了：记一次失败，告诉面板这句改用微信
-    fn fell_back(
-        &mut self,
-        error: &dyn std::error::Error,
-        output: &mut impl FnMut(Event) -> Result<()>,
-    ) -> Result<()> {
-        self.failures += 1;
-        eprintln!("豆包没连上，这句改用微信：{error}");
         output(Event::Channel {
-            name: "wetype",
-            fallback: true,
-        })
+            name: used.name(),
+            fallback: used != self.primary,
+            waited_ms: began.elapsed().as_millis().min(u128::from(u32::MAX)) as u32,
+        })?;
+        Ok(Some(won.turn))
     }
 
-    /// 豆包好好说完了一句
-    fn succeeded(&mut self) {
-        self.failures = 0;
+    /// 这一句用 `from` 出错了：换哪家重发（主通道出的错换备用；备用出的错换回主通道，主通道已放弃就还用备用）
+    fn retry_with(&mut self, from: Kind, error: &dyn std::error::Error) -> Kind {
+        let to = if from == self.primary || self.failures < GIVE_UP {
+            from.other()
+        } else {
+            from
+        };
+        if from == self.primary {
+            self.failures += 1;
+        }
+        eprintln!(
+            "{}出错，这句改用{}重发：{error}",
+            from.chinese(),
+            to.chinese()
+        );
+        to
+    }
+
+    /// 主通道好好说完了一句
+    fn succeeded(&mut self, kind: Kind) {
+        if kind == self.primary {
+            self.failures = 0;
+        }
     }
 }
 
-/// 这一句的连接出错了：还没重试过就重连，并把这句已经录的音重发一遍；重试过了就把原错往外抛。
-/// 豆包出的错直接改走微信重发（同一台虚拟设备马上重试多半还是不行）；微信出的错就重连微信。
-/// 重连前发一个 `reconnecting` 活动事件，让面板能显示出来。
+/// 这一句的连接出错了：还没重试过就换一家（见 `Channel::retry_with`）连上，并把这句已经录的音重发一遍；
+/// 重试过了就把原错往外抛。重连前发一个 `reconnecting` 活动事件，让面板能显示出来。
 fn reconnect(
     stop: &AtomicBool,
     channel: &mut Channel,
     replay: &mut Replay,
-    from_doubao: bool,
+    from: Kind,
     error: Box<dyn std::error::Error + Send + Sync>,
     output: &mut impl FnMut(Event) -> Result<()>,
 ) -> Result<Option<Turn>> {
     if replay.retried() {
         return Err(error);
     }
-    if from_doubao {
-        channel.fell_back(&*error, output)?;
-    } else {
-        eprintln!("识别连接出错，重连并重发这一句：{error}");
-    }
+    let to = channel.retry_with(from, &*error);
     output(Event::Activity("reconnecting"))?;
+    let began = Instant::now();
+    let context = channel.context.clone();
     let turn = replay.recover(
         error,
-        || Ok(wetype::Turn::start(stop)?.map(Turn::WeType)),
+        || to.connect(stop, context.as_deref()),
         |turn, chunk| turn.upload(chunk),
     )?;
-    if turn.is_some() {
+    if let Some(turn) = turn.as_ref() {
+        output(Event::Channel {
+            name: turn.kind().name(),
+            fallback: turn.kind() != channel.primary,
+            waited_ms: began.elapsed().as_millis().min(u128::from(u32::MAX)) as u32,
+        })?;
         output(Event::Activity("recognizing"))?;
     }
     Ok(turn)
@@ -172,11 +288,8 @@ pub fn run(
     mut output: impl FnMut(Event) -> Result<()>,
 ) -> Result<String> {
     let mut capture = Capture::start(source, stop.clone());
-    // 走豆包时把热词表带过去当提示（这一轮开始时读一次）
-    let context = (engine == Engine::Doubao)
-        .then(hints)
-        .and_then(|words| crate::doubao::context(&words));
-    let mut channel = Channel::new(engine, context);
+    // 热词表带给豆包当提示（豆包是主通道还是备用都带；这一轮开始时读一次）
+    let mut channel = Channel::new(engine, crate::doubao::context(&hints()));
     let mut turn: Option<Turn> = None;
     let mut counts = Counts::default();
     let mut ready = false;
@@ -197,6 +310,7 @@ pub fn run(
                 }
                 output(Event::Started)?;
                 output(Event::Activity("armed"))?;
+                channel.prepare(&stop);
             }
             Ok(Audio::Start) => {
                 if turn.is_some() {
@@ -208,7 +322,8 @@ pub fn run(
                     let started = match channel.start(&stop, &mut output) {
                         Ok(started) => started,
                         Err(error) => {
-                            reconnect(&stop, &mut channel, &mut replay, false, error, &mut output)?
+                            let first = channel.first();
+                            reconnect(&stop, &mut channel, &mut replay, first, error, &mut output)?
                         }
                     };
                     if !stop.load(Ordering::Acquire) {
@@ -223,12 +338,12 @@ pub fn run(
                     if let Some(current) = turn.as_mut() {
                         if let Err(error) = current.upload(&audio) {
                             // replay 里已经含这一块，重连时会一起重发
-                            let from_doubao = current.is_doubao();
+                            let from = current.kind();
                             turn = reconnect(
                                 &stop,
                                 &mut channel,
                                 &mut replay,
-                                from_doubao,
+                                from,
                                 error,
                                 &mut output,
                             )?;
@@ -240,16 +355,14 @@ pub fn run(
             Ok(Audio::End) => {
                 if let Some(ended) = turn.take() {
                     // 收句等最终结果时断线（最容易超时的几秒）：和说话中途断线一样，重连、整句重发、再收一次（审查 R8）
-                    let from_doubao = ended.is_doubao();
+                    let from = ended.kind();
                     let mut sink_failed = false;
                     let finished = ended.finish(&stop, &mut counts, &mut |event| {
                         output(event).inspect_err(|_| sink_failed = true)
                     });
                     let part = match finished {
                         Ok(part) => {
-                            if from_doubao {
-                                channel.succeeded();
-                            }
+                            channel.succeeded(from);
                             part
                         }
                         Err(error) if sink_failed => return Err(error),
@@ -257,7 +370,7 @@ pub fn run(
                             &stop,
                             &mut channel,
                             &mut replay,
-                            from_doubao,
+                            from,
                             error,
                             &mut output,
                         )? {
@@ -270,6 +383,8 @@ pub fn run(
                     }
                     text.push_str(&part);
                     output(Event::Activity("paused"))?;
+                    // 下一句先在后台连着
+                    channel.prepare(&stop);
                 }
             }
             Err(TryRecvError::Disconnected) => {
@@ -281,6 +396,10 @@ pub fn run(
             }
             Err(TryRecvError::Empty) => {
                 if turn.is_none() {
+                    if ready {
+                        // 预先连好的放太久了就换个新的
+                        channel.prepare(&stop);
+                    }
                     thread::sleep(Duration::from_millis(10));
                 }
             }
@@ -296,15 +415,8 @@ pub fn run(
                     if sink_failed {
                         return Err(error);
                     }
-                    let from_doubao = current.is_doubao();
-                    turn = reconnect(
-                        &stop,
-                        &mut channel,
-                        &mut replay,
-                        from_doubao,
-                        error,
-                        &mut output,
-                    )?;
+                    let from = current.kind();
+                    turn = reconnect(&stop, &mut channel, &mut replay, from, error, &mut output)?;
                 }
             }
         }

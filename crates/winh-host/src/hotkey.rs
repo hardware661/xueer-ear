@@ -296,6 +296,9 @@ fn record(
     panel: &PanelHandle,
     status: &Status,
 ) -> crate::install::Result<()> {
+    // 这一轮开头每一步的耗时（只记毫秒和通道），排查「刚醒来按右 Alt 反应慢」
+    let round_began = Instant::now();
+    let mut opening = Opening::default();
     let mut seen_sent = 0;
     let mut seen_touched = 0;
     // 设置文件坏了就先用默认值听写，这一轮结束时再提示（开头提示会被「在听」的样子马上盖掉）
@@ -315,9 +318,7 @@ fn record(
     };
     let wave_probe = matches!(&source, Source::Wave(_));
     // 这一轮听写期间别的程序小声一点，record 结束（含出错返回）时恢复
-    let _ducking = (!wave_probe)
-        .then(|| crate::broker::duck_others(&settings))
-        .flatten();
+    let _ducking = (!wave_probe).then(|| crate::broker::duck_others(&settings));
     // 前台有没有能打字的地方（终端一律当能打字）；没有的话这一轮的字攒着、说完复制
     let mut delivery = Delivery::new((!wave_probe && !terminal).then(Probe::start));
     // 「被新一轮取消」要单独记：引擎收完一轮正常结束时也会把传进去的 stop 置位（Capture 的 Drop），
@@ -364,12 +365,22 @@ fn record(
         let mut sentence_finished = false;
         match event {
             Event::Input { name, .. } => status.microphone(name),
-            // 豆包这句不行、改走了微信：面板上说一声，不打断听写
-            Event::Channel { name, fallback } => {
+            Event::Started => opening.microphone = Some(round_began.elapsed()),
+            // 主通道这句不行、改走了备用：面板上说一声，不打断听写
+            Event::Channel {
+                name,
+                fallback,
+                waited_ms,
+            } => {
                 status.channel(name);
                 if fallback {
-                    panel.listening_notice("豆包没连上，这句改用微信");
+                    panel.listening_notice(&format!(
+                        "{}没连上，这句改用{}",
+                        channel_name(other_channel(name)),
+                        channel_name(name)
+                    ));
                 }
+                opening.connected(name, waited_ms);
             }
             // 停顿只是一句说完（定稿上屏），不结束：一直听到主人再点一下、点麦克风、Esc，
             // 或者超过「最长听写时间」（主人 2026-11-15：说着说着停顿一下就断了，要能一直说）
@@ -426,6 +437,9 @@ fn record(
                 }
             }
             Event::Speech(speech) => {
+                if !speech.text.trim().is_empty() {
+                    opening.first_text(round_began.elapsed());
+                }
                 // 定稿只补标点不算新字，不能给本轮的空闲计时续命。
                 if !speech.text.trim().is_empty()
                     && !speech
@@ -498,7 +512,6 @@ fn record(
                 typed_any |= keys.iter().any(|k| matches!(k, Key::Text(_)));
                 deliver(&mut delivery, &keys, panel);
             }
-            _ => {}
         }
         translated_requested |= request_translation.is_some();
         if release.load(Ordering::Acquire) && !wave_probe {
@@ -594,6 +607,51 @@ fn record(
         crate::sound::play(crate::sound::Cue::Missed, settings.sounds_enabled);
     }
     Ok(())
+}
+
+/// 一轮开头的耗时：按下后多久开好麦，第一句开口后多久连上哪家，按下后多久出第一个字。
+/// 出第一个字时写一行日志；之后哪句连得慢（超过 0.8 秒）再单独记一行
+#[derive(Default)]
+struct Opening {
+    microphone: Option<Duration>,
+    channel: Option<(&'static str, u32)>,
+    logged: bool,
+}
+
+impl Opening {
+    fn connected(&mut self, name: &'static str, waited_ms: u32) {
+        if self.channel.is_none() {
+            self.channel = Some((name, waited_ms));
+        } else if waited_ms > 800 {
+            println!("这句开口后 {waited_ms} ms 才连上{}", channel_name(name));
+        }
+    }
+
+    fn first_text(&mut self, since_press: Duration) {
+        if self.logged {
+            return;
+        }
+        self.logged = true;
+        let microphone = self.microphone.map_or(0, |d| d.as_millis());
+        let (name, waited) = self.channel.unwrap_or(("", 0));
+        println!(
+            "这轮开头：按下后 {microphone} ms 开麦，开口后 {waited} ms 连上{}，按下后 {} ms 出第一个字",
+            channel_name(name),
+            since_press.as_millis()
+        );
+    }
+}
+
+fn channel_name(name: &str) -> &'static str {
+    match name {
+        "doubao" => "豆包",
+        "wetype" => "微信",
+        _ => "云端",
+    }
+}
+
+fn other_channel(name: &str) -> &'static str {
+    if name == "doubao" { "wetype" } else { "doubao" }
 }
 
 /// 拉起同目录的 xueer-ear.exe（控制面板程序）。它自己保证只开一个控制面板。

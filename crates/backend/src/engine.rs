@@ -43,10 +43,12 @@ pub fn validate_wave(path: &std::path::Path) -> Result<()> {
 pub enum Event {
     Started,
     Activity(&'static str),
-    /// 这句走的是哪家（"doubao" / "wetype"）；`fallback` 为真表示豆包不行、这句改走了微信
+    /// 这句走的是哪家（"doubao" / "wetype"）；`fallback` 为真表示主通道不行、这句改走了备用；
+    /// `waited_ms` 是开口后等了多久才连上（预先连好的接近 0）
     Channel {
         name: &'static str,
         fallback: bool,
+        waited_ms: u32,
     },
     Speech(SpeechEvent),
     Input {

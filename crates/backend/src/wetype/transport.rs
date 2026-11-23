@@ -1,9 +1,5 @@
 use crate::Result;
-use std::{
-    collections::BTreeMap,
-    net::{TcpStream, ToSocketAddrs},
-    time::Duration,
-};
+use std::{collections::BTreeMap, net::TcpStream, time::Duration};
 use tungstenite::{Message, WebSocket, client::IntoClientRequest, http, stream::MaybeTlsStream};
 use xueer_ear_protocol::wire::{self, Value};
 
@@ -24,12 +20,7 @@ impl Transport {
             "sec-websocket-protocol",
             http::HeaderValue::from_static("wxws_pb"),
         );
-        let address = (HOST, 443)
-            .to_socket_addrs()?
-            .find(|p| p.is_ipv4())
-            .ok_or("WeType endpoint has no IPv4 address")?;
-        super::auth::check_cancelled(cancelled)?;
-        let tcp = TcpStream::connect_timeout(&address, Duration::from_secs(5))?;
+        let tcp = crate::net::connect(HOST, 443, cancelled)?;
         super::auth::check_cancelled(cancelled)?;
         tcp.set_nodelay(true)?;
         tcp.set_read_timeout(Some(Duration::from_secs(5)))?;
