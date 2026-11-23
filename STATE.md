@@ -9,7 +9,8 @@
 - 验证：Windows 全工作区 352 项通过、0 失败；打包脚本里再跑 277 项（lib+bins）通过；包体检查通过。包在 `D:\projects\_build\xueer-ear-1.3.0\release`：安装包 4,214,491 字节（SHA-256 c2d08b24…），便携包 f23bdbf8…；host 因降噪模型和 FFT 大了约 1.3 MB，README 改成「安装包 4 MB 左右」。
 - 01:29 静默装到主人电脑（`/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /MERGETASKS=autostart`），7 秒装完、退出码 0，旧桥接 1.2.0 已删；按开机自启方式（`--autostart`）启动：后台 ready、没有报错，xueer-ear.exe、host、桥接 1.3.0、README、RNNoise 许可 5 个文件和包里哈希一致，开机自启的 Run 值还在，没有遗留 ducking.txt。旧版备份 `~/tools/ai/claude/scratch/backups/20261124-0126-xueer-ear/`。装的时候没弹任何窗口。
 - 没验（等主人真机）：开风扇听写、豆包主通道日常用、快捷短语、放着音乐听写（调小再恢复）、点桌面说一句（复制）、历史里改字记规则。
-- 没推送、没打标签、没发 Release：公开仓，等主人点头。
+- 没推送、没打标签、没发 Release：公开仓。主人定（2026-11-24）：先用一阵，用完一起推（"after I'm done, we can push it together since we might still need to make some changes"）。
+- 装完主人已经用过：status.json 显示上一轮走豆包、没有报错，豆包设备已注册；设置文件没写 engine，按默认走豆包。
 
 ## 2026-11-24 · 1.3 施工记录：B 降噪、G 快捷短语、设置界面
 
