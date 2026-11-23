@@ -3,6 +3,21 @@
 > 任何 AI 接手先读这里；每次会话收尾在最上面追加一节（最新在上），写清做了什么、验证了什么、还差什么。
 > 计划原文：主人桌面 `雪耳xueer-ear计划-v1.md`（v1.1）。
 
+## 2026-11-23 · 主人批准 1.3：豆包 + 降噪 + 翻译指令修复，做完一次装、一次发版
+
+- 主人原话（英文，经雪耳翻译）："add the beanbag design（豆包）, noise cancellation, and this fix. We can do all that together and release it as version 1.3 … There's no need to install them separately - you can wait until everything's done and install them all at once."
+- 修复 `260e5dc` 不单独装，跟 1.3 一起装。主人又勾了四个常用功能一起进 1.3：听写时调小别的声音、没输入框就自动复制、改错自动记成热词、快捷短语；音视频转文字「不需要这个」。计划 v3 见 scratch `xueer-ear-1.3-plan.md`（A 豆包、B 降噪、C 修复、D～G 四个功能）。
+- 施工顺序：录音小工具（让主人开/关风扇各录一遍）→ A 豆包 → B 降噪 → D、E、F、G → 设置界面 → README/CHANGELOG/1.3.0 → 全量测试、打包、装机。每步提交、在这里打勾。
+- [ ] 录音小工具 `record-wave`
+- [ ] A 豆包通道（纯协议，自写；微信自动备用）
+- [ ] B 降噪（DeepFilterNet3 / RNNoise / Voice Clarity 比后定）
+- [ ] D 听写时调小别的声音
+- [ ] E 没输入框就自动复制
+- [ ] F 改错自动记成热词（+ 豆包热词提示）
+- [ ] G 快捷短语
+- [ ] 设置界面、README（中英）、CHANGELOG、版本 1.3.0
+- [ ] A/B（主人录音）定默认值；Windows 全量测试、打包、装机、主人验收
+
 ## 2026-11-23 · 修「翻译成英文」多出英文指令（已提交、没装机）+ 1.3 计划改成 v2（待主人确认）
 
 - **bug**（主人："if I say something and then immediately follow it with 'translate into English', it will also translate 'translate into English' into English"）：根因不是停顿时间，是微信云端自己认识「翻译成英文」，把这句直接翻成英文再定稿。雪耳已按中间结果提前翻译，迟到的定稿里找不到指令词，按「宁可多打」整句照打，正文一变又整段重翻 → 译文末尾多 "Translate into English."。本机历史今天 4 次都是这样（历史里单独一条 "Translate into English."）；定稿抢在 600 ms 确认前到时，还会英文上屏、根本不翻。
