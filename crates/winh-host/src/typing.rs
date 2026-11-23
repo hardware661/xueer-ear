@@ -218,6 +218,8 @@ pub struct Live {
 struct Early {
     /// 指令词（中间结果最后那一小句）
     word: String,
+    /// 指令前面已经上屏的原话（整句只有指令时是空的）
+    head: String,
     /// 是不是翻译指令
     translate: bool,
 }
@@ -271,6 +273,7 @@ impl Live {
         self.frozen = self.frozen.map(|_| 0);
         self.early = Some(Early {
             word: spoken,
+            head: String::new(),
             translate: command.is_translate(),
         });
         let mut keys = edit(erase, "");
@@ -296,8 +299,10 @@ impl Live {
         }
         let mut keys = self.finalize(Output::Text(head));
         keys.extend(self.typist.command(command, self.terminal));
+        let (said_before, word) = split_last_clause(spoken);
         self.early = Some(Early {
-            word: last_clause(spoken),
+            word,
+            head: said_before.to_string(),
             translate: command.is_translate(),
         });
         keys
@@ -331,6 +336,12 @@ impl Live {
         } else {
             Carried(self.typist.typed.clone())
         }
+    }
+
+    /// 现在说删除类指令会不会什么都删不了：主人动过键盘鼠标（雪耳已经不碰之前的字），
+    /// 或者整句只有指令、雪耳在这个输入框里还没打过字。句尾带指令的（「这句不对，删掉上一句」）删的是这句自己
+    pub fn nothing_to_delete(&self, whole_sentence: bool) -> bool {
+        self.frozen.is_some() || (whole_sentence && self.typist.typed.is_empty())
     }
 
     /// 雪耳打出去、还留在输入框里的全部文字，含前几轮接着的（读不到输入框时说「翻译」整段拿去翻）。
@@ -406,9 +417,11 @@ impl Live {
 
     /// 提前执行过指令的这句：去掉指令词和它前面的部分（前面的已经上屏或发走了），只留后面接着说的。
     /// 按「去掉标点后」找指令词最后一次出现的位置：云端常改前面几个字、换标点，
-    /// 也会把后面的话直接粘在指令词后面（「换行接着说」）。找不到就整句照打，宁可多打也不丢字（审查 R3）。
-    /// 翻译指令例外：微信云端会把「翻译成英文」那句自己翻成英文再定稿（主人 2026-11-23），
-    /// 找不到指令词就是被云端改写了，译文由雪耳整段出，这句不再上屏。
+    /// 也会把后面的话直接粘在指令词后面（「换行接着说」）。
+    /// 找不到指令词时：
+    /// - 翻译指令：微信云端会把「翻译成英文」那句自己翻成英文再定稿（主人 2026-11-23），这句不再上屏，译文由雪耳整段出；
+    /// - 别的指令：豆包会把指令词吞掉（2026-11-24），定稿开头就是已经上屏的那半句，只打它后面多出来的；
+    ///   连前面也对不上（云端改写了整句）才整句照打，宁可多打也不丢字（审查 R3）。
     fn without_early(&self, text: &str) -> String {
         let Some(early) = self.early.as_ref().filter(|e| !e.word.is_empty()) else {
             return text.to_string();
@@ -416,7 +429,7 @@ impl Live {
         match find_last(text, &early.word) {
             Some(end) => text[end..].trim_start_matches(is_punct).to_string(),
             None if early.translate => String::new(),
-            None => text.to_string(),
+            None => after_said(text, &early.head).unwrap_or(text).to_string(),
         }
     }
 
@@ -597,11 +610,42 @@ fn find_last(text: &str, word: &str) -> Option<usize> {
 }
 
 fn last_clause(text: &str) -> String {
+    split_last_clause(text).1
+}
+
+/// （最后那一小句前面的原话, 最后那一小句去掉标点）
+fn split_last_clause(text: &str) -> (&str, String) {
     let body = text.trim_end_matches(is_punct);
     let start = body.rfind(is_punct).map_or(0, |i| {
         i + body[i..].chars().next().map_or(0, char::len_utf8)
     });
-    body[start..].chars().filter(|c| !is_punct(*c)).collect()
+    (
+        &body[..start],
+        body[start..].chars().filter(|c| !is_punct(*c)).collect(),
+    )
+}
+
+/// `text` 开头是不是 `said`（去掉标点后逐字一样）：是就返回后面多出来的部分（去掉开头的标点），否则 None。
+/// `said` 没有字时返回整个 `text`
+fn after_said<'a>(text: &'a str, said: &str) -> Option<&'a str> {
+    let mut wanted = said.chars().filter(|c| !is_punct(*c)).peekable();
+    let mut cut = 0;
+    for (i, c) in text.char_indices() {
+        if wanted.peek().is_none() {
+            break;
+        }
+        if is_punct(c) {
+            continue;
+        }
+        if wanted.next() != Some(c) {
+            return None;
+        }
+        cut = i + c.len_utf8();
+    }
+    if wanted.peek().is_some() {
+        return None;
+    }
+    Some(text[cut..].trim_start_matches(is_punct))
 }
 
 fn is_punct(c: char) -> bool {
@@ -896,6 +940,21 @@ mod tests {
             &second.replace_typed("Read the docs first, then run the tests"),
         );
         assert_eq!(doc, "Read the docs first, then run the tests");
+    }
+
+    #[test]
+    fn deleting_reports_when_there_is_nothing_it_may_delete() {
+        let mut live = Live::new(false);
+        assert!(live.nothing_to_delete(true), "还没打过字");
+        live.finalize(Output::Text("第一句。".into()));
+        assert!(!live.nothing_to_delete(true));
+        // 主人动了键盘鼠标：之前的字不碰了；句尾带的删除这句也不执行
+        live.user_touched();
+        assert!(live.nothing_to_delete(true));
+        assert!(live.nothing_to_delete(false));
+        // 动过之后又打了一句，这句冻结着，定稿后雪耳也不记它：还是删不了
+        live.finalize(Output::Text("第二句。".into()));
+        assert!(live.nothing_to_delete(true));
     }
 
     #[test]
@@ -1358,6 +1417,75 @@ mod tests {
         let rest = live.unsent("第一行。换行。第二行。");
         type_into(&mut doc, &live.finalize(Output::Text(rest)));
         assert_eq!(doc, "第一行，\n第二行。");
+    }
+
+    // 2026-11-24：豆包会把指令词吞掉，定稿只剩前面已经上屏的那半句，不能再打一遍
+    #[test]
+    fn a_final_that_lost_a_trailing_command_word_is_not_typed_twice() {
+        let mut live = Live::new(false);
+        let mut doc = String::new();
+        let spoken = "今天吃什么，发送";
+        type_into(&mut doc, &live.partial(spoken));
+        type_into(
+            &mut doc,
+            &live.early_finish(
+                Output::TextThen("今天吃什么，".into(), VoiceCommand::Send),
+                spoken,
+            ),
+        );
+        assert_eq!(doc, "今天吃什么，\n");
+        let late = live.unsent("今天吃什么？");
+        type_into(
+            &mut doc,
+            &live.finalize_from(&late, Output::Text(late.clone())),
+        );
+        assert_eq!(doc, "今天吃什么，\n");
+    }
+
+    #[test]
+    fn words_after_a_swallowed_trailing_command_are_still_typed() {
+        let mut live = Live::new(false);
+        let mut doc = String::new();
+        let spoken = "今天吃什么，发送";
+        type_into(&mut doc, &live.partial(spoken));
+        type_into(
+            &mut doc,
+            &live.early_finish(
+                Output::TextThen("今天吃什么，".into(), VoiceCommand::Send),
+                spoken,
+            ),
+        );
+        let late = live.unsent("今天吃什么？好的");
+        type_into(
+            &mut doc,
+            &live.finalize_from(&late, Output::Text(late.clone())),
+        );
+        assert_eq!(doc, "今天吃什么，\n好的");
+    }
+
+    #[test]
+    fn a_swallowed_undo_deletes_the_last_sentence_and_types_nothing() {
+        let mut live = Live::new(false);
+        let mut doc = String::new();
+        type_into(
+            &mut doc,
+            &live.finalize(Output::Text("今天先跑测试。".into())),
+        );
+        type_into(&mut doc, &live.partial("然后我准备"));
+        type_into(&mut doc, &live.finalize(Output::Text("然后我准备".into())));
+        type_into(&mut doc, &live.partial("撤回"));
+        // 豆包随后给了空的中间结果和空的定稿：按中间结果执行
+        type_into(&mut doc, &live.partial(""));
+        type_into(
+            &mut doc,
+            &live.early_command(VoiceCommand::DeleteLastSentence),
+        );
+        let late = live.unsent("");
+        type_into(
+            &mut doc,
+            &live.finalize_from(&late, Output::Text(late.clone())),
+        );
+        assert_eq!(doc, "今天先跑测试。");
     }
 
     #[test]

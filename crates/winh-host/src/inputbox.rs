@@ -197,8 +197,12 @@ mod windows_tests {
         },
     };
 
+    /// 同一进程里几个测试同时用 UI 自动化读自己建的输入框会互相干扰（并行跑时偶尔读不到），一个一个来
+    static ONE_AT_A_TIME: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     /// 在单独的线程上建一个输入框并转消息循环（UI 自动化读它时要这个线程回消息），读完关掉
     fn read_edit(text: &str, style: u32) -> Option<String> {
+        let _turn = ONE_AT_A_TIME.lock().unwrap_or_else(|e| e.into_inner());
         let (sender, receiver) = std::sync::mpsc::channel();
         let text: Vec<u16> = text.encode_utf16().chain(Some(0)).collect();
         let window = std::thread::spawn(move || unsafe {

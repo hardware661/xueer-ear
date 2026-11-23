@@ -5,13 +5,14 @@
 //! 只轮询自己关心的几个键（GetAsyncKeyState），不装全局键盘钩子、不记录按键。
 //! 键入用 SendInput 的 Unicode 方式，只发我们识别出的文字和语音指令对应的键。
 use crate::{
+    command_wait::CommandWait,
     dictation::{Dictation, Effect, Input, Panel},
     focus::{Delivery, Probe, Route},
     panel::{self, Click, Look, PanelHandle},
     recovery,
     reload::KeyWatch,
     status::Status,
-    typing::{Carried, Key, Live, keeps_last_clause},
+    typing::{Carried, Key, Live},
 };
 use std::{
     mem::size_of,
@@ -388,8 +389,8 @@ fn record(
     let max_listen = Duration::from_secs(u64::from(settings.max_listen_minutes) * 60);
     // 这一句里说话的最大音量和最后的增益，一句说完写一行日志（只记数字，不记内容）
     let (mut loudest, mut last_gain) = (0_u32, 1_f32);
-    // 中间结果整句是指令、或者句尾是指令：（此刻的中间结果, 从什么时候开始没变）
-    let mut pending_command: Option<(String, Instant)> = None;
+    // 中间结果里说了指令：停够了就执行；云端把指令词吞了也照样执行
+    let mut command_wait = CommandWait::default();
     let mut translated_requested = false;
     let mut translation: Option<VoiceTranslation> = None;
     let still_current = |(sent_at_command, touched_at_command)| {
@@ -456,17 +457,14 @@ fn record(
             } => {
                 loudest = loudest.max(peak);
                 last_gain = gain;
-                // 指令说完停了一下、没再出新字：现在就执行，不等静音收句
-                if let Some((text, since)) = &pending_command {
-                    // 单独说完指令停一小会儿（设置「说完指令后等」，默认 0.6 秒）就执行，不等静音收句。
-                    // 主人 2026-11-16：「撤回和删除的速度…不是特别快，还有发送的速度」——原来要等 3 秒静音
-                    if since.elapsed() >= settings.commands.settle() {
-                        let (keys, translate) = settle_command(&post, &mut live, text);
-                        request_translation = translate;
-                        pending_command = None;
-                        typed_any |= keys.iter().any(|k| matches!(k, Key::Text(_)));
-                        deliver(&mut delivery, &keys, panel);
-                    }
+                // 单独说完指令停一小会儿（设置「说完指令后等」，默认 0.6 秒）没再出新字就执行，不等静音收句。
+                // 主人 2026-11-16：「撤回和删除的速度…不是特别快，还有发送的速度」——原来要等 3 秒静音
+                if let Some(spoken) = command_wait.due(settings.commands.settle(), Instant::now()) {
+                    let (keys, translate) =
+                        settle_command(&post, &mut live, &spoken, panel, "停够了执行");
+                    request_translation = translate;
+                    typed_any |= keys.iter().any(|k| matches!(k, Key::Text(_)));
+                    deliver(&mut delivery, &keys, panel);
                 }
                 status.progress(peak, partials, finals);
                 panel.level(peak);
@@ -525,15 +523,19 @@ fn record(
                 }
                 let keys = if speech.final_result {
                     sentence_finished = true;
-                    // 中间结果已经是翻译指令、还没停够定稿就到了，定稿里却没有指令词：微信云端会把
-                    // 「翻译成英文」那句自己翻成英文再定稿（主人 2026-11-23）。按中间结果执行，这句定稿不上屏
+                    // 中间结果已经是指令、还没停够定稿就到了，定稿里却没有指令词：豆包会把单独说的「撤回」
+                    // 吞掉、定稿是空的（2026-11-24）；微信会把「翻译成英文」那句自己翻成英文（2026-11-23）。
+                    // 按中间结果执行，这句定稿只打多出来的字
                     let mut keys = Vec::new();
                     let mut text = text;
-                    if let Some((spoken, _)) = pending_command.take()
-                        && is_translate_command(&post, &spoken)
-                        && !keeps_last_clause(&spoken, &speech.text)
-                    {
-                        let (settled, translate) = settle_command(&post, &mut live, &spoken);
+                    if let Some(spoken) = command_wait.finished(&speech.text) {
+                        let (settled, translate) = settle_command(
+                            &post,
+                            &mut live,
+                            &spoken,
+                            panel,
+                            "定稿里没有指令词，按中间结果执行",
+                        );
                         keys = settled;
                         request_translation = translate;
                         text = live.unsent(&speech.text);
@@ -542,6 +544,9 @@ fn record(
                     if let Some(command) = translation_of(&output) {
                         request_translation = Some((command, false));
                     }
+                    if let Some((command, whole)) = command_of(&output) {
+                        report_command(command, whole, &live, panel, "定稿时执行");
+                    }
                     keys.extend(live.finalize_from(&text, output));
                     keys
                 } else {
@@ -549,11 +554,7 @@ fn record(
                     // 记下来，停一小会儿没再说别的就提前执行
                     let is_command = post.command_only(&text).is_some()
                         || post.trailing_command(&text).is_some();
-                    pending_command = match pending_command.take() {
-                        Some((old, since)) if is_command && old == text => Some((old, since)),
-                        _ if is_command => Some((text.clone(), Instant::now())),
-                        _ => None,
-                    };
+                    command_wait.partial(&text, is_command, Instant::now());
                     live.partial(&text)
                 };
                 typed_any |= keys.iter().any(|k| matches!(k, Key::Text(_)));
@@ -749,25 +750,59 @@ fn settle_command(
     post: &Postprocess,
     live: &mut Live,
     spoken: &str,
+    panel: &PanelHandle,
+    how: &str,
 ) -> (Vec<Key>, Option<(VoiceCommand, bool)>) {
     match post.command_only(spoken) {
-        Some(command) => (
-            live.early_command(command),
-            command.is_translate().then_some((command, true)),
-        ),
+        Some(command) => {
+            report_command(command, true, live, panel, how);
+            (
+                live.early_command(command),
+                command.is_translate().then_some((command, true)),
+            )
+        }
         None => {
             let output = post.finalize(spoken, crate::broker::now_ms());
             let translate = translation_of(&output).map(|c| (c, true));
+            if let Some((command, whole)) = command_of(&output) {
+                report_command(command, whole, live, panel, how);
+            }
             (live.early_finish(output, spoken), translate)
         }
     }
 }
 
-/// 中间结果整句、或句尾那一小句是不是翻译指令
-fn is_translate_command(post: &Postprocess, spoken: &str) -> bool {
-    post.command_only(spoken)
-        .or_else(|| post.trailing_command(spoken))
-        .is_some_and(VoiceCommand::is_translate)
+/// 这句是哪个指令，整句只有指令（true）还是接在句尾（false）
+fn command_of(output: &Output) -> Option<(VoiceCommand, bool)> {
+    match output {
+        Output::Command(command) => Some((*command, true)),
+        Output::TextThen(_, command) => Some((*command, false)),
+        _ => None,
+    }
+}
+
+/// 要执行一个语音指令了（在真的执行之前调用）：日志记一行，只记是哪个指令、怎么执行的，不记说的话。
+/// 删除类的什么都删不了时（动过键盘鼠标、还没打过字）在面板上说一声，免得以为没听见（主人 2026-11-24：撤回没用）
+fn report_command(
+    command: VoiceCommand,
+    whole_sentence: bool,
+    live: &Live,
+    panel: &PanelHandle,
+    how: &str,
+) {
+    let deletes = matches!(
+        command,
+        VoiceCommand::DeleteLastSentence | VoiceCommand::DeleteAll
+    );
+    let blocked = deletes && live.nothing_to_delete(whole_sentence);
+    println!(
+        "指令：{}（{how}）{}",
+        command.name(),
+        if blocked { "，没有能删的字" } else { "" }
+    );
+    if blocked {
+        panel.listening_notice("没有能删的字：动过键盘鼠标后，雪耳不删之前的字");
+    }
 }
 
 /// 这句是不是翻译指令，是哪一种
