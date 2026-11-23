@@ -1247,6 +1247,7 @@ dependencies = [
  "sha2 0.11.1",
  "tempfile",
  "unicode-segmentation",
+ "windows",
  "windows-sys 0.61.2",
  "xueer-ear-audio",
  "xueer-ear-backend",

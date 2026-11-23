@@ -566,6 +566,22 @@ fn is_punct(c: char) -> bool {
     c.is_whitespace() || "，。！？；：、,.!?;:…—\"'“”‘’（）()".contains(c)
 }
 
+/// 没有输入框时按键不发出去，打在这份文字上（说完复制到剪贴板）：和真打字一样换行、按字形退格
+pub fn apply_keys(doc: &mut String, keys: &[Key]) {
+    use unicode_segmentation::UnicodeSegmentation;
+    for key in keys {
+        match key {
+            Key::Text(text) => doc.push_str(text),
+            Key::Enter | Key::CtrlJ => doc.push('\n'),
+            Key::Backspace(count) => {
+                let keep = doc.graphemes(true).count().saturating_sub(*count);
+                let cut: usize = doc.graphemes(true).take(keep).map(str::len).sum();
+                doc.truncate(cut);
+            }
+        }
+    }
+}
+
 fn clean(text: &str) -> String {
     text.chars()
         .map(|c| if c.is_control() { ' ' } else { c })
@@ -1410,5 +1426,23 @@ mod tests {
         let keys = live.finalize_from("我的邮箱", Output::Snippet("a@b.c".into()));
         type_into(&mut doc, &keys);
         assert_eq!(doc, "我的邮箱");
+    }
+
+    #[test]
+    fn keys_can_be_applied_to_text_kept_off_screen() {
+        let mut doc = String::new();
+        apply_keys(
+            &mut doc,
+            &[
+                Key::Text("第一句👨‍👩‍👧".into()),
+                Key::Backspace(1),
+                Key::Enter,
+                Key::Text("第二句".into()),
+                Key::CtrlJ,
+            ],
+        );
+        assert_eq!(doc, "第一句\n第二句\n");
+        apply_keys(&mut doc, &[Key::Backspace(99)]);
+        assert_eq!(doc, "");
     }
 }

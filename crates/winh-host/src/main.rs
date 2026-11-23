@@ -1,9 +1,13 @@
 #[cfg(windows)]
 mod broker;
 #[cfg(windows)]
+mod clipboard;
+#[cfg(windows)]
 mod control;
 #[cfg(any(windows, test))]
 mod dictation;
+#[cfg(any(windows, test))]
+mod focus;
 #[cfg(windows)]
 mod hotkey;
 #[cfg(any(windows, test))]
@@ -42,6 +46,13 @@ fn main() {
         let pieces = args.next().and_then(|v| v.parse().ok()).unwrap_or(8);
         let delay = args.next().and_then(|v| v.parse().ok()).unwrap_or(1500);
         hotkey::type_probe(&text, pieces, delay);
+        return;
+    }
+    // 排查「没找到输入框」：`--focus-probe [等几毫秒]`，只读前台焦点是什么控件、判断能不能打字（不抢焦点、不发按键）
+    if first.as_deref() == Some("--focus-probe") {
+        let delay = args.next().and_then(|v| v.parse().ok()).unwrap_or(0);
+        std::thread::sleep(std::time::Duration::from_millis(delay));
+        println!("{}", focus::describe());
         return;
     }
     // 排查：`--wave-probe [等几毫秒]`，配合环境变量 XUEER_EAR_TEST_WAVE，用录音跑一整轮快捷键听写
