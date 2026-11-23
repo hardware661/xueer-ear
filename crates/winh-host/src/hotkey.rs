@@ -6,6 +6,7 @@
 //! 键入用 SendInput 的 Unicode 方式，只发我们识别出的文字和语音指令对应的键。
 use crate::{
     dictation::{Dictation, Effect, Input, Panel},
+    focus::{Delivery, Probe, Route},
     panel::{self, Click, Look, PanelHandle},
     recovery,
     reload::KeyWatch,
@@ -317,10 +318,8 @@ fn record(
     let _ducking = (!wave_probe)
         .then(|| crate::broker::duck_others(&settings))
         .flatten();
-    // 前台有没有能打字的地方，后台查着，第一次上屏时再看结果；没有的话这一轮打在 `offscreen` 上，
-    // 说完复制到剪贴板。终端一律当能打字
-    let mut focus = (!wave_probe && !terminal).then(crate::focus::Probe::start);
-    let mut offscreen: Option<String> = None;
+    // 前台有没有能打字的地方（终端一律当能打字）；没有的话这一轮的字攒着、说完复制
+    let mut delivery = Delivery::new((!wave_probe && !terminal).then(Probe::start));
     // 「被新一轮取消」要单独记：引擎收完一轮正常结束时也会把传进去的 stop 置位（Capture 的 Drop），
     // 直接拿 cancel 判断的话，每轮正常结束都像被取消，说「翻译」整段替换就永远不执行（2026-11-19 复现）
     let stopped = cancel.clone();
@@ -410,7 +409,7 @@ fn record(
                         request_translation = translate;
                         pending_command = None;
                         typed_any |= keys.iter().any(|k| matches!(k, Key::Text(_)));
-                        deliver(&keys, &mut focus, &mut offscreen, panel);
+                        deliver(&mut delivery, &keys, panel);
                     }
                 }
                 status.progress(peak, partials, finals);
@@ -452,6 +451,7 @@ fn record(
                 if now_touched != seen_touched {
                     seen_touched = now_touched;
                     live.user_touched();
+                    delivery.touched(Probe::start);
                 }
                 let text = live.unsent(&speech.text);
                 if !text.trim().is_empty()
@@ -496,7 +496,7 @@ fn record(
                     live.partial(&text)
                 };
                 typed_any |= keys.iter().any(|k| matches!(k, Key::Text(_)));
-                deliver(&keys, &mut focus, &mut offscreen, panel);
+                deliver(&mut delivery, &keys, panel);
             }
             _ => {}
         }
@@ -554,14 +554,14 @@ fn record(
             );
             if current {
                 let keys = apply_translation(result, &mut live, panel);
-                deliver(&keys, &mut focus, &mut offscreen, panel);
+                deliver(&mut delivery, &keys, panel);
             }
             translation = None;
         }
         Ok(())
     });
     // 这一轮没有输入框：说的话（出错中断的也算）放进剪贴板
-    if let Some(text) = offscreen.as_ref().filter(|text| !text.trim().is_empty()) {
+    if let Some(text) = delivery.held() {
         match crate::clipboard::copy(panel.hwnd(), text) {
             Ok(()) => panel.notice("没找到输入框，已复制，Ctrl+V 粘贴"),
             Err(reason) => panel.notice(&format!("没找到输入框，{reason}")),
@@ -767,25 +767,15 @@ fn apply_translation(
     }
 }
 
-/// 发按键；这一轮前台没有输入框的话改成打在 `offscreen` 上（第一次知道时在面板上说一声）
-fn deliver(
-    keys: &[Key],
-    focus: &mut Option<crate::focus::Probe>,
-    offscreen: &mut Option<String>,
-    panel: &PanelHandle,
-) {
+/// 发按键，或者（这一轮前台没有输入框时）攒起来；第一次攒时在面板上说一声
+fn deliver(delivery: &mut Delivery, keys: &[Key], panel: &PanelHandle) {
     if keys.is_empty() {
         return;
     }
-    if let Some(mut probe) = focus.take()
-        && probe.focus() == crate::focus::Focus::NoText
-    {
-        *offscreen = Some(String::new());
-        panel.listening_notice("没找到输入框，说完自动复制");
-    }
-    match offscreen {
-        Some(text) => crate::typing::apply_keys(text, keys),
-        None => send_keys(keys),
+    match delivery.route(keys) {
+        Route::Screen => send_keys(keys),
+        Route::Held { started: true } => panel.listening_notice("没找到输入框，说完自动复制"),
+        Route::Held { started: false } => {}
     }
 }
 

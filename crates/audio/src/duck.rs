@@ -5,7 +5,14 @@
 //! - 调之前先把每条原来的音量写进记录文件：雪耳中途崩了、断电了，下次启动按它恢复（`restore_leftover`）；
 //! - 恢复时主人这期间自己改过音量的那条不动。
 #[cfg(windows)]
-use std::path::{Path, PathBuf};
+use std::{
+    path::{Path, PathBuf},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, Ordering},
+    },
+    time::Duration,
+};
 
 /// 调到原来音量的几分之几
 pub const DUCK_TO: f32 = 0.2;
@@ -57,56 +64,63 @@ pub fn parse_saved(file: &str) -> Vec<Saved> {
 #[cfg(windows)]
 pub struct Ducking {
     path: PathBuf,
-    saved: Vec<Saved>,
+    saved: Arc<Mutex<Vec<Saved>>>,
+    stop: Arc<AtomicBool>,
+    watcher: Option<std::thread::JoinHandle<()>>,
 }
+
+/// 听写中途新出声的程序，多久查一次
+#[cfg(windows)]
+const WATCH: Duration = Duration::from_secs(1);
 
 #[cfg(windows)]
 impl Ducking {
     /// 调了几条
     pub fn count(&self) -> usize {
-        self.saved.len()
+        lock(&self.saved).len()
     }
 
-    /// 把正在出声的别的程序调小。先写记录文件再动音量；一条都没有就不写文件。
+    /// 把正在出声的别的程序调小，之后中途新出声的也调小。先写记录文件再动音量。
     pub fn start(path: &Path) -> Result<Self, String> {
         let own = std::process::id();
-        Self::start_where(path, move |session| {
+        Self::start_where(path, WATCH, move |session| {
             session.active && !session.system && session.pid != own
         })
     }
 
     fn start_where(
         path: &Path,
-        wanted: impl Fn(&sessions::Info) -> bool + Send + 'static,
+        every: Duration,
+        wanted: impl Fn(&sessions::Info) -> bool + Send + Sync + 'static,
     ) -> Result<Self, String> {
-        let file = path.to_path_buf();
-        let saved = sessions::on_com_thread(move || {
-            let mut found = Vec::new();
-            sessions::each(|info, volume| {
-                if wanted(&info) && info.volume > 0. {
-                    found.push((
-                        Saved {
-                            id: info.id.clone(),
-                            original: info.volume,
-                            ducked: info.volume * DUCK_TO,
-                        },
-                        volume.clone(),
-                    ));
+        let wanted = Arc::new(wanted);
+        let saved = Arc::new(Mutex::new(Vec::new()));
+        {
+            let (file, saved, wanted) = (path.to_path_buf(), saved.clone(), wanted.clone());
+            sessions::on_com_thread(move || duck_new(&file, &saved, &*wanted))?;
+        }
+        let stop = Arc::new(AtomicBool::new(false));
+        let watcher = {
+            let (file, saved, stop) = (path.to_path_buf(), saved.clone(), stop.clone());
+            std::thread::spawn(move || {
+                let watched = sessions::with_com(|| {
+                    while !stopped_within(&stop, every) {
+                        if let Err(error) = duck_new(&file, &saved, &*wanted) {
+                            eprintln!("调小中途出声的程序失败：{error}");
+                        }
+                    }
+                    Ok(())
+                });
+                if let Err(error) = watched {
+                    eprintln!("看不了中途出声的程序：{error}");
                 }
-            })?;
-            if found.is_empty() {
-                return Ok(Vec::new());
-            }
-            let saved: Vec<Saved> = found.iter().map(|(s, _)| s.clone()).collect();
-            write_atomically(&file, &format_saved(&saved))?;
-            for (s, volume) in &found {
-                sessions::set(volume, s.ducked);
-            }
-            Ok(saved)
-        })?;
+            })
+        };
         Ok(Self {
             path: path.to_path_buf(),
             saved,
+            stop,
+            watcher: Some(watcher),
         })
     }
 }
@@ -114,10 +128,14 @@ impl Ducking {
 #[cfg(windows)]
 impl Drop for Ducking {
     fn drop(&mut self) {
-        if self.saved.is_empty() {
+        self.stop.store(true, Ordering::Release);
+        if let Some(watcher) = self.watcher.take() {
+            let _ = watcher.join();
+        }
+        let saved = std::mem::take(&mut *lock(&self.saved));
+        if saved.is_empty() {
             return;
         }
-        let saved = std::mem::take(&mut self.saved);
         match restore(saved) {
             Ok(()) => {
                 let _ = std::fs::remove_file(&self.path);
@@ -125,6 +143,60 @@ impl Drop for Ducking {
             Err(error) => eprintln!("恢复别的程序的音量失败（下次启动再试）：{error}"),
         }
     }
+}
+
+/// 还没调过、又该调的会话调小：先把它们加进记录文件，再动音量
+#[cfg(windows)]
+fn duck_new(
+    file: &Path,
+    saved: &Mutex<Vec<Saved>>,
+    wanted: &dyn Fn(&sessions::Info) -> bool,
+) -> Result<(), String> {
+    let mut list = lock(saved);
+    let mut found = Vec::new();
+    sessions::each(|info, volume| {
+        if wanted(&info) && info.volume > 0. && !list.iter().any(|s| s.id == info.id) {
+            found.push((
+                Saved {
+                    id: info.id.clone(),
+                    original: info.volume,
+                    ducked: info.volume * DUCK_TO,
+                },
+                volume.clone(),
+            ));
+        }
+    })?;
+    if found.is_empty() {
+        return Ok(());
+    }
+    let mut next = list.clone();
+    next.extend(found.iter().map(|(s, _)| s.clone()));
+    write_atomically(file, &format_saved(&next))?;
+    *list = next;
+    for (s, volume) in &found {
+        sessions::set(volume, s.ducked);
+    }
+    Ok(())
+}
+
+/// 睡 `every`，中途让停就提前醒；返回是不是让停了
+#[cfg(windows)]
+fn stopped_within(stop: &AtomicBool, every: Duration) -> bool {
+    let until = std::time::Instant::now() + every;
+    while std::time::Instant::now() < until {
+        if stop.load(Ordering::Acquire) {
+            return true;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    stop.load(Ordering::Acquire)
+}
+
+#[cfg(windows)]
+fn lock(saved: &Mutex<Vec<Saved>>) -> std::sync::MutexGuard<'_, Vec<Saved>> {
+    saved
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 /// 上次调小后没来得及恢复（崩溃、断电）：按记录文件恢复，然后删掉它
@@ -199,16 +271,19 @@ mod sessions {
     pub fn on_com_thread<T: Send + 'static>(
         work: impl FnOnce() -> Result<T, String> + Send + 'static,
     ) -> Result<T, String> {
-        std::thread::spawn(move || {
-            unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) }
-                .ok()
-                .map_err(|e| e.to_string())?;
-            let result = work();
-            unsafe { CoUninitialize() };
-            result
-        })
-        .join()
-        .map_err(|_| "音量线程出错".to_string())?
+        std::thread::spawn(move || with_com(work))
+            .join()
+            .map_err(|_| "音量线程出错".to_string())?
+    }
+
+    /// 在当前线程进 MTA 做完 `work` 再出来（当前线程不能已经是 STA）
+    pub fn with_com<T>(work: impl FnOnce() -> Result<T, String>) -> Result<T, String> {
+        unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) }
+            .ok()
+            .map_err(|e| e.to_string())?;
+        let result = work();
+        unsafe { CoUninitialize() };
+        result
     }
 
     /// 对每个没过期的会话调用 `f`。某个设备、某个会话读不了就跳过
@@ -324,15 +399,25 @@ mod tests {
         assert_eq!(restore_level(&s, 0.), None);
     }
 
+    /// 两个真机测试都用本进程自己的音频会话，排队跑
+    #[cfg(windows)]
+    static LIVE: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     /// 只调本测试进程自己放的一路声音（静音），不碰别的程序
     #[cfg(windows)]
     #[test]
     fn ducking_lowers_our_own_test_stream_and_puts_it_back() {
+        let _live = LIVE
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let _stream = silent_stream::Stream::start();
         let dir = std::env::temp_dir().join(format!("xueer-duck-{}", std::process::id()));
         let path = dir.join("ducking.txt");
         let own = std::process::id();
-        let ducking = Ducking::start_where(&path, move |s| s.active && s.pid == own).unwrap();
+        let ducking = Ducking::start_where(&path, Duration::from_secs(60), move |s| {
+            s.active && s.pid == own
+        })
+        .unwrap();
         assert_eq!(ducking.count(), 1, "测试进程放的那一路应该被调小");
         assert!(path.exists(), "调之前先写记录文件");
         let level = own_volume().unwrap();
@@ -340,6 +425,32 @@ mod tests {
         drop(ducking);
         assert!((own_volume().unwrap() - 1.).abs() < 0.01, "恢复原音量");
         assert!(!path.exists(), "恢复后删掉记录文件");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_sound_that_starts_during_dictation_is_lowered_too() {
+        let _live = LIVE
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let dir = std::env::temp_dir().join(format!("xueer-duck-late-{}", std::process::id()));
+        let path = dir.join("ducking.txt");
+        let own = std::process::id();
+        let ducking = Ducking::start_where(&path, Duration::from_millis(100), move |s| {
+            s.active && s.pid == own
+        })
+        .unwrap();
+        assert_eq!(ducking.count(), 0, "开始时测试进程还没出声");
+        let _stream = silent_stream::Stream::start();
+        let until = std::time::Instant::now() + Duration::from_secs(3);
+        while ducking.count() == 0 && std::time::Instant::now() < until {
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        assert_eq!(ducking.count(), 1, "中途出声的也要调小");
+        assert!((own_volume().unwrap() - DUCK_TO).abs() < 0.01);
+        drop(ducking);
+        assert!((own_volume().unwrap() - 1.).abs() < 0.01, "恢复原音量");
         let _ = std::fs::remove_dir_all(dir);
     }
 

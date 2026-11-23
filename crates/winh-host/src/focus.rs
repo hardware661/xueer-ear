@@ -53,10 +53,91 @@ pub fn classify(window_class: &str, control: Option<Control>) -> Focus {
 }
 
 /// 一轮开始时在后台查焦点，第一次要上屏时再取结果，不拖慢开麦
-#[cfg(windows)]
 pub struct Probe {
+    #[cfg(windows)]
     pending: Option<(std::sync::mpsc::Receiver<Focus>, std::time::Instant)>,
     result: Option<Focus>,
+}
+
+impl Probe {
+    /// 已经知道结果的（测试用）
+    #[cfg(test)]
+    pub fn ready(focus: Focus) -> Self {
+        Self {
+            #[cfg(windows)]
+            pending: None,
+            result: Some(focus),
+        }
+    }
+
+    /// 结果；还没查完就等到开始后 `PATIENCE` 为止，拿不到当「能打字」
+    pub fn focus(&mut self) -> Focus {
+        #[cfg(windows)]
+        if self.result.is_none()
+            && let Some((receiver, started)) = self.pending.take()
+        {
+            let left = PATIENCE.saturating_sub(started.elapsed());
+            self.result = Some(receiver.recv_timeout(left).unwrap_or(Focus::Text));
+        }
+        self.result.unwrap_or(Focus::Text)
+    }
+}
+
+/// 这一轮的字往哪儿打。第一次上屏时看焦点：没有输入框就不发按键，字攒在 `held` 里（同样的退格、换行），
+/// 说完复制到剪贴板；主人中途点进了能打字的地方，后面的字照常打过去，攒下的照样复制
+/// （动过键盘鼠标的那句已经冻结，只往后接字，不会退格删到新输入框里的东西）
+pub struct Delivery {
+    probe: Option<Probe>,
+    held: Option<String>,
+    holding: bool,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub enum Route {
+    /// 照常发到屏幕上
+    Screen,
+    /// 攒起来了；`started` 是这一轮第一次攒（该在面板上说一声）
+    Held { started: bool },
+}
+
+impl Delivery {
+    /// `probe` 为 None 时一直照常打字（终端、录音文件）
+    pub fn new(probe: Option<Probe>) -> Self {
+        Self {
+            probe,
+            held: None,
+            holding: false,
+        }
+    }
+
+    pub fn route(&mut self, keys: &[crate::typing::Key]) -> Route {
+        let mut started = false;
+        if let Some(mut probe) = self.probe.take()
+            && probe.focus() == Focus::NoText
+        {
+            self.holding = true;
+            started = true;
+        }
+        if !self.holding {
+            return Route::Screen;
+        }
+        crate::typing::apply_keys(self.held.get_or_insert_with(String::new), keys);
+        Route::Held { started }
+    }
+
+    /// 主人动了键盘或鼠标：还没上过屏就重查；正在攒字的话，点进了能打字的地方就改回照常打字
+    pub fn touched(&mut self, probe: impl FnOnce() -> Probe) {
+        if self.probe.is_some() {
+            self.probe = Some(probe());
+        } else if self.holding && probe().focus() == Focus::Text {
+            self.holding = false;
+        }
+    }
+
+    /// 这一轮攒下的字（没攒或者是空的就 None）
+    pub fn held(&self) -> Option<&str> {
+        self.held.as_deref().filter(|text| !text.trim().is_empty())
+    }
 }
 
 /// 查焦点最多等多久（UI 自动化跨进程，对方卡住时会一直等）
@@ -81,17 +162,6 @@ impl Probe {
             pending: Some((receiver, std::time::Instant::now())),
             result: None,
         }
-    }
-
-    /// 结果；还没查完就等到开始后 `PATIENCE` 为止，拿不到当「能打字」
-    pub fn focus(&mut self) -> Focus {
-        if self.result.is_none()
-            && let Some((receiver, started)) = self.pending.take()
-        {
-            let left = PATIENCE.saturating_sub(started.elapsed());
-            self.result = Some(receiver.recv_timeout(left).unwrap_or(Focus::Text));
-        }
-        self.result.unwrap_or(Focus::Text)
     }
 }
 
@@ -213,5 +283,50 @@ mod tests {
         }
         // 读不到焦点（对方卡住、权限不够）
         assert_eq!(classify("Qt51514QWindowIcon", None), Focus::Text);
+    }
+
+    use crate::typing::Key;
+
+    fn text(t: &str) -> Vec<Key> {
+        vec![Key::Text(t.into())]
+    }
+
+    #[test]
+    fn with_an_input_box_or_no_check_everything_goes_to_the_screen() {
+        let mut d = Delivery::new(None);
+        assert_eq!(d.route(&text("a")), Route::Screen);
+        let mut d = Delivery::new(Some(Probe::ready(Focus::Text)));
+        assert_eq!(d.route(&text("a")), Route::Screen);
+        assert_eq!(d.held(), None);
+    }
+
+    #[test]
+    fn without_an_input_box_the_round_is_held_for_copying() {
+        let mut d = Delivery::new(Some(Probe::ready(Focus::NoText)));
+        assert_eq!(d.route(&text("第一句")), Route::Held { started: true });
+        assert_eq!(
+            d.route(&[Key::Backspace(1), Key::Enter]),
+            Route::Held { started: false }
+        );
+        assert_eq!(d.held(), Some("第一\n"));
+    }
+
+    #[test]
+    fn clicking_into_an_input_box_sends_the_rest_to_the_screen() {
+        let mut d = Delivery::new(Some(Probe::ready(Focus::NoText)));
+        d.route(&text("攒着的"));
+        // 点了别处但还是没有输入框
+        d.touched(|| Probe::ready(Focus::NoText));
+        assert_eq!(d.route(&text("还攒")), Route::Held { started: false });
+        d.touched(|| Probe::ready(Focus::Text));
+        assert_eq!(d.route(&text("打出去")), Route::Screen);
+        assert_eq!(d.held(), Some("攒着的还攒"), "攒下的照样复制");
+    }
+
+    #[test]
+    fn a_click_before_anything_was_typed_checks_the_focus_again() {
+        let mut d = Delivery::new(Some(Probe::ready(Focus::NoText)));
+        d.touched(|| Probe::ready(Focus::Text));
+        assert_eq!(d.route(&text("a")), Route::Screen);
     }
 }
