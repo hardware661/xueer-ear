@@ -7,7 +7,7 @@
 **Tap Right Alt, speak, and the words stream into the cursor as you talk.**
 
 Chinese voice typing for Windows 11. It also works in terminal apps such as Claude Code and Codex.<br>
-Recognition runs on Doubao Input Method's cloud service, with WeChat Input Method as an automatic fallback: no model download, no sign-in, and the installer is about 4 MB.
+Recognition runs on Doubao Input Method's cloud service, with WeChat Input Method as an automatic backup: no model download, no sign-in, and the installer is about 4 MB.
 
 [![Release](https://img.shields.io/github/v/release/hardware661/xueer-ear)](https://github.com/hardware661/xueer-ear/releases/latest)
 [![Downloads](https://img.shields.io/github/downloads/hardware661/xueer-ear/total)](https://github.com/hardware661/xueer-ear/releases)
@@ -30,9 +30,9 @@ Recognition runs on Doubao Input Method's cloud service, with WeChat Input Metho
 
 - Streaming dictation: text appears at the cursor while you are still talking. When you pause, the sentence is cleaned up (filler words, numbers, hotwords) and dictation keeps going.
 - Works in terminals: one session can last 30 minutes. Saying "换行" (new line) sends Ctrl+J, so Claude Code gets a line break instead of a submit; "发送" (send) presses Enter.
-- No model download: recognition uses Doubao Input Method's cloud service; if Doubao fails, that sentence is resent to WeChat Input Method automatically. Translation uses WeChat Input Method. Nothing heavy runs on your PC, and you need neither app installed nor an account.
+- No model download: recognition uses Doubao Input Method's cloud service with WeChat Input Method as the backup (or the other way round); a sentence the main service fails on is resent to the other one automatically. Translation uses WeChat Input Method. Nothing heavy runs on your PC, and you need neither app installed nor an account.
 - Works next to a fan: steady background noise (fans, air conditioning) is filtered out before Xueer Ear decides where a sentence ends.
-- Voice commands: delete the last sentence, delete everything, send, and translate the whole round into English or Chinese.
+- Voice commands: delete the last sentence, delete everything, send, and translate the whole input box into English or Chinese. The words for each command and the timings can be changed in the control panel; the rules stay fixed.
 - Hotwords: add a term once and misheard product names get corrected. Fix a misheard word in the history list and Xueer Ear offers to remember the fix. A built-in list covers common AI and programming terms.
 - Snippets: say a trigger phrase such as "我的邮箱" on its own and a saved text (your email address) is typed instead.
 - Less fuss: other apps are turned down while you dictate; if no text field has focus, the round is copied to the clipboard instead of typed.
@@ -65,13 +65,13 @@ You need Windows 11, a network connection and a microphone. Administrator rights
 1. Download `xueer-ear-<version>-windows-x64-setup.exe` from the [releases page](https://github.com/hardware661/xueer-ear/releases/latest). A portable ZIP is also available.
 2. Run the installer. It is not code-signed, so SmartScreen may say "Windows protected your PC"; click "More info", then "Run anyway". You can check the file against `SHA256SUMS.txt`.
 3. On first launch the background service starts automatically.
-4. Click into any text field, tap Right Alt and start talking. Tap it again, click the panel or press Esc to stop. Dictation also stops after 10 seconds without new text.
+4. Click into any text field, tap Right Alt and start talking. Tap it again, click the panel or press Esc to stop. Dictation also stops after 10 seconds without new text (adjustable).
 
 The hotkey can be changed to Right Ctrl, CapsLock, F8 or F9 in the control panel.
 
 ## Voice commands
 
-Say a command on its own, with a short pause before and after:
+Say a command on its own, with a short pause before and after. These are the default words; under 语音指令 in the control panel you can change them (separate several with 、, leave empty to turn a command off) and pick the timings:
 
 | Say | Effect |
 | --- | --- |
@@ -79,11 +79,13 @@ Say a command on its own, with a short pause before and after:
 | 删除 / 删掉上一句 | Delete the last sentence Xueer Ear typed |
 | 全部删除 / 清空 | Delete everything typed in this session |
 | 发送 | Press Enter (off by default) |
-| 翻译成英文 | Translate this round's text into English, leaving English parts as they are |
-| 翻译成中文 | Translate this round's text into Chinese |
-| 翻译 | Chinese text becomes English; all-English text becomes Chinese |
+| 翻译成英文 | Translate the whole input box into English, leaving English parts as they are |
+| 翻译成中文 | Translate the whole input box into Chinese |
+| 翻译 | By default Chinese text becomes English and all-English text becomes Chinese; can be set to always English or always Chinese |
 
-Commands only touch text that Xueer Ear typed in the current session.
+Only "new line", "send", the translate commands and delete commands that say "上一句" (last sentence) may trail a sentence; everything else counts only when said alone. Matching ignores case and punctuation but not pronunciation, and commands win over snippets.
+
+Translation reads the whole input box through Windows UI Automation, including text from earlier rounds and text you typed. Where the box cannot be read (terminals), it translates what Xueer Ear typed in that box, across rounds, until you press Enter, touch the keyboard or mouse, or switch windows. The delete commands reach back the same way and never touch text you typed.
 
 ## Noise, snippets and corrections
 
@@ -93,9 +95,9 @@ Commands only touch text that Xueer Ear typed in the current session.
 
 ## Privacy
 
-- Audio is streamed to Doubao Input Method's cloud for recognition while you dictate; a sentence Doubao fails on is resent to WeChat Input Method. Xueer Ear does not save recordings.
-- When Doubao is used, the words in your hotword list (up to 100) are sent along as recognition hints. The text in your input box and app names are never sent.
-- Text you translate is sent to the translation service in use (WeChat Input Method by default; Microsoft, Google or Zhipu only if you add a key).
+- Audio is streamed to the main recognition service (Doubao Input Method by default) while you dictate; a sentence it fails on is resent to the backup. Xueer Ear does not save recordings.
+- When Doubao is used, the words in your hotword list (up to 100) are sent along as recognition hints. Recognition never sends the text in your input box or app names.
+- When you say "翻译", the text in the input box (or what Xueer Ear typed, where the box cannot be read) is sent to the translation service in use (WeChat Input Method by default; Microsoft, Google or Zhipu only if you add a key).
 - No account: a random anonymous device identity for each service is created on first use and kept on your PC.
 - Settings, hotwords, snippets, history and logs live in `%LOCALAPPDATA%\XueerEar`. Apart from recognition and translation, the app only contacts GitHub anonymously to check for and download updates.
 
