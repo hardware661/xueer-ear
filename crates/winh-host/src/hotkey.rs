@@ -1078,18 +1078,31 @@ fn extended_tap(vk: u16) -> [INPUT; 2] {
     ]
 }
 
-/// 雪耳自己的翻译小窗（xueer-ear.exe 里的系统输入框）
-const TRANSLATE_WINDOW_CLASS: &str = "XueerEar.TranslateWindow";
-
 /// 不走 SendInput、直接发消息给有焦点的输入框的两种窗口：
 /// - Qt 程序（微信 4 是 Qt 5.15）：SendInput 的 Unicode 方式在 Qt 里会把每批第一个字
 ///   认成上一批的最后一个字（Qt 把连续的 VK_PACKET 当成同一个键的自动重复）。
 ///   文字发 WM_CHAR、退格发 VK_BACK 的按下/抬起（Qt 不认 WM_CHAR 里的 \b，
 ///   2026-11-15 退格也走 WM_CHAR 时，微信里每句都重复一次）。
-/// - 雪耳的翻译小窗：中文输入法开着时，SendInput 打进去的英文字母被输入法当拼音接走，
-///   出来一串乱码（主人 2026-11-21）。系统输入框认 WM_CHAR 里的 \b 和 \r，全走 WM_CHAR。
+/// - 系统输入框（Edit、RichEdit：老式记事本、写字板、雪耳的翻译小窗）：中文输入法开着时，
+///   SendInput 打进去的英文字母被输入法当拼音接走，出来一串乱码（主人 2026-11-21 在翻译小窗；
+///   2026-11-24 真机：记事本里「The weather is nice today.」打成「同时vdvzgsvi然后mrxvglwzb.」）。
+///   系统输入框认 WM_CHAR 里的 \b 和 \r，全走 WM_CHAR。
 ///
-/// 其他程序照旧 SendInput。返回 false 表示不是这两种窗口或发不过去，调用方退回 SendInput。
+/// 返回 None 表示照旧 SendInput（浏览器、终端这些自己处理输入法的程序不受影响）；
+/// Some(true) 是系统输入框，Some(false) 是 Qt
+fn message_typing(window_class: &str, focus_class: &str) -> Option<bool> {
+    let focus = focus_class.to_ascii_lowercase();
+    if focus == "edit" || focus.starts_with("richedit") {
+        Some(true)
+    } else if window_class.starts_with("Qt") {
+        Some(false)
+    } else {
+        None
+    }
+}
+
+/// 按 `message_typing` 选的方式把文字、退格直接发给有焦点的输入框。
+/// 返回 false 表示不是这两种窗口或发不过去，调用方退回 SendInput
 fn send_to_qt(key: &Key) -> bool {
     use windows_sys::Win32::UI::WindowsAndMessaging::{
         GUITHREADINFO, GetGUIThreadInfo, GetWindowThreadProcessId, SMTO_ABORTIFHUNG, SMTO_BLOCK,
@@ -1098,23 +1111,23 @@ fn send_to_qt(key: &Key) -> bool {
     if !matches!(key, Key::Text(_) | Key::Backspace(_)) {
         return false;
     }
-    unsafe {
-        let window = GetForegroundWindow();
+    let class_of = |window| unsafe {
         let mut class = [0_u16; 64];
         let count = GetClassNameW(window, class.as_mut_ptr(), class.len() as i32);
-        let class = String::from_utf16_lossy(&class[..count.max(0) as usize]);
-        let edit = class == TRANSLATE_WINDOW_CLASS;
-        if !edit && !class.starts_with("Qt") {
-            return false;
-        }
-        let messages = window_messages(key, edit);
+        String::from_utf16_lossy(&class[..count.max(0) as usize])
+    };
+    unsafe {
+        let window = GetForegroundWindow();
         let thread = GetWindowThreadProcessId(window, std::ptr::null_mut());
         let mut info: GUITHREADINFO = std::mem::zeroed();
         info.cbSize = size_of::<GUITHREADINFO>() as u32;
         if GetGUIThreadInfo(thread, &mut info) == 0 || info.hwndFocus.is_null() {
             return false;
         }
-        for (message, wparam, lparam) in messages {
+        let Some(edit) = message_typing(&class_of(window), &class_of(info.hwndFocus)) else {
+            return false;
+        };
+        for (message, wparam, lparam) in window_messages(key, edit) {
             let mut result = 0;
             if SendMessageTimeoutW(
                 info.hwndFocus,
@@ -1133,8 +1146,8 @@ fn send_to_qt(key: &Key) -> bool {
     }
 }
 
-/// `send_to_qt` 要发的消息。`edit` = 系统输入框（翻译小窗）：退格是 WM_CHAR \b，换行是 WM_CHAR \r；
-/// 否则（Qt）退格发 VK_BACK 的按下/抬起
+/// `send_to_qt` 要发的消息。`edit` = 系统输入框（记事本、翻译小窗）：退格发按下、WM_CHAR \b、抬起，
+/// 换行是 WM_CHAR \r；否则（Qt）退格发 VK_BACK 的按下/抬起（Qt 不认 WM_CHAR 里的 \b）
 fn window_messages(key: &Key, edit: bool) -> Vec<(u32, usize, isize)> {
     use windows_sys::Win32::UI::WindowsAndMessaging::{WM_CHAR, WM_KEYDOWN, WM_KEYUP};
     match key {
@@ -1145,7 +1158,16 @@ fn window_messages(key: &Key, edit: bool) -> Vec<(u32, usize, isize)> {
                 _ => (WM_CHAR, usize::from(u), 1),
             })
             .collect(),
-        Key::Backspace(count) if edit => (0..*count).map(|_| (WM_CHAR, 0x08, 1)).collect(),
+        // 照真键盘那样三条都发：老式记事本在「按下」里删字，系统输入框在「字符」里删，都只删一个
+        Key::Backspace(count) if edit => (0..*count)
+            .flat_map(|_| {
+                [
+                    (WM_KEYDOWN, VK_BACK as usize, 0x000e_0001),
+                    (WM_CHAR, 0x08, 0x000e_0001),
+                    (WM_KEYUP, VK_BACK as usize, 0xc00e_0001_u32 as isize),
+                ]
+            })
+            .collect(),
         Key::Backspace(count) => (0..*count)
             .flat_map(|_| {
                 [
@@ -1375,9 +1397,16 @@ mod tests {
                 (WM_CHAR, '好' as usize, 1)
             ]
         );
+        // 退格照真键盘那样发「按下、字符、抬起」：老式记事本只认按下（2026-11-24 真机：只发 WM_CHAR \b 删不掉），
+        // 系统输入框认字符；真键盘本来就是三条都来，所以哪种都只删一个字
+        let one = [
+            (WM_KEYDOWN, VK_BACK as usize, 0x000e_0001),
+            (WM_CHAR, 0x08, 0x000e_0001),
+            (WM_KEYUP, VK_BACK as usize, 0xc00e_0001_u32 as isize),
+        ];
         assert_eq!(
             window_messages(&Key::Backspace(2), true),
-            [(WM_CHAR, 0x08, 1), (WM_CHAR, 0x08, 1)]
+            [one, one].concat()
         );
         // Qt（微信）不认 WM_CHAR 里的退格，照旧按键
         assert_eq!(
@@ -1388,5 +1417,63 @@ mod tests {
             ]
         );
         assert!(window_messages(&Key::Enter, true).is_empty());
+    }
+
+    // 2026-11-24 真机：老式记事本里中文输入法开着，SendInput 打的「The weather is nice today.」
+    // 变成「同时vdvzgsvi然后mrxvglwzb.」；直接发 WM_CHAR 就对。所有系统输入框都按翻译小窗那样走消息
+    #[test]
+    fn plain_system_edit_boxes_and_qt_get_window_messages_others_get_send_input() {
+        for (window, focus, expected) in [
+            ("Notepad", "Edit", Some(true)),
+            ("XueerEar.TranslateWindow", "Edit", Some(true)),
+            ("WordPadClass", "RICHEDIT50W", Some(true)),
+            ("#32770", "RichEdit20W", Some(true)),
+            ("Qt51514QWindowIcon", "Qt51514QWindowIcon", Some(false)),
+            ("Chrome_WidgetWin_1", "Chrome_RenderWidgetHostHWND", None),
+            ("CASCADIA_HOSTING_WINDOW_CLASS", "Windows.UI.Input.InputSite.WindowClass", None),
+            // Windows 11 新记事本也是 RichEdit（Direct2D 版）
+            ("Notepad", "RichEditD2DPT", Some(true)),
+        ] {
+            assert_eq!(message_typing(window, focus), expected, "{window} / {focus}");
+        }
+    }
+
+    // 拿一个真的系统输入框（EDIT）收这些消息：字打进去，退格只删一个
+    #[test]
+    fn a_real_edit_control_types_and_deletes_one_character_per_backspace() {
+        use windows_sys::Win32::{
+            System::LibraryLoader::GetModuleHandleW,
+            UI::WindowsAndMessaging::{
+                CreateWindowExW, DestroyWindow, GetWindowTextLengthW, GetWindowTextW, SendMessageW,
+                WS_POPUP,
+            },
+        };
+        unsafe {
+            let class: Vec<u16> = "EDIT".encode_utf16().chain(Some(0)).collect();
+            let edit = CreateWindowExW(
+                0,
+                class.as_ptr(),
+                std::ptr::null(),
+                WS_POPUP,
+                -32000,
+                -32000,
+                200,
+                40,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                GetModuleHandleW(std::ptr::null()),
+                std::ptr::null(),
+            );
+            assert!(!edit.is_null());
+            for key in [Key::Text("Hi好啊".into()), Key::Backspace(2), Key::Text("!".into())] {
+                for (message, wparam, lparam) in window_messages(&key, true) {
+                    SendMessageW(edit, message, wparam, lparam);
+                }
+            }
+            let mut text = vec![0_u16; GetWindowTextLengthW(edit) as usize + 1];
+            let count = GetWindowTextW(edit, text.as_mut_ptr(), text.len() as i32);
+            DestroyWindow(edit);
+            assert_eq!(String::from_utf16_lossy(&text[..count as usize]), "Hi!");
+        }
     }
 }

@@ -105,7 +105,16 @@ pub fn paste(text: &str, press: &dyn Fn()) -> Result<(), PasteError> {
         }
     };
     OFFER.set(None);
-    if let Err(reason) = restore(window.0, &saved) {
+    // 前台程序取完字可能还开着剪贴板：放不回去就隔一会儿再试，最多两三秒
+    let mut restored = restore(window.0, &saved);
+    for _ in 0..6 {
+        if restored.is_ok() {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(300));
+        restored = restore(window.0, &saved);
+    }
+    if let Err(reason) = restored {
         eprintln!("粘贴后没能放回原来的剪贴板：{reason}");
     }
     outcome
