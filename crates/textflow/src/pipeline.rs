@@ -2,8 +2,7 @@
 
 use crate::{
     CommandOptions, Hotwords, PunctOptions, Snippets, VoiceCommand, apply_punctuation,
-    drop_false_full_stop, is_unfinished, normalize_numbers, parse_command, parse_trailing_command,
-    strip_fillers,
+    drop_false_full_stop, is_unfinished, normalize_numbers, parse_command, strip_fillers,
 };
 
 #[derive(Debug, Clone)]
@@ -33,9 +32,7 @@ impl Default for Options {
 pub enum Output {
     Text(String),
     Command(VoiceCommand),
-    /// 一句话末尾单独一小句是指令（「这句是错的，删掉上一句」）：先打文字，再执行指令
-    TextThen(String, VoiceCommand),
-    /// 整句是快捷短语的口令：换成它的文字，原样上屏（里面的换行和「换行」指令一样按）
+    /// 整句是快捷短语的口令：换成它的文字（里面的换行上屏时换成空格）
     Snippet(String),
 }
 
@@ -43,8 +40,17 @@ pub enum Output {
 /// 指令放在口癖之后（「嗯，换行」也算指令）、热词之前（热词不会把指令词改掉）；
 /// 快捷短语排在指令后面（口令和指令撞了指令赢），整句是口令就不再整理；
 /// 数字放在热词之后：热词按读音匹配，要先于把汉字改成阿拉伯数字。
-/// 云端文字里的换行等控制字符先换成空格：上屏的换行只来自「换行」指令和快捷短语。
+/// 云端文字里的换行等控制字符先换成空格：雪耳从不往输入框里打换行（主人 2026-11-24 砍掉了「换行」）。
 pub fn process(text: &str, options: &Options) -> Output {
+    process_with(text, options, true)
+}
+
+/// 同 [`process`]，但整句是指令的说法也当普通文字（快捷键听写里，前面没停够的「删除」照样打出来）
+pub fn process_text(text: &str, options: &Options) -> Output {
+    process_with(text, options, false)
+}
+
+fn process_with(text: &str, options: &Options, commands: bool) -> Output {
     let text: String = text
         .chars()
         .map(|c| if c.is_control() { ' ' } else { c })
@@ -54,14 +60,11 @@ pub fn process(text: &str, options: &Options) -> Output {
     } else {
         text
     };
-    if let Some(command) = parse_command(&text, &options.commands) {
+    if commands && let Some(command) = parse_command(&text, &options.commands) {
         return Output::Command(command);
     }
     if let Some(snippet) = options.snippets.lookup(&text) {
         return Output::Snippet(snippet.to_string());
-    }
-    if let Some((head, command)) = split_trailing_command(&text, &options.commands) {
-        return Output::TextThen(tidy(head, options), command);
     }
     Output::Text(tidy(&text, options))
 }
@@ -74,18 +77,6 @@ fn tidy(text: &str, options: &Options) -> String {
         text
     };
     drop_false_full_stop(&apply_punctuation(&text, &options.punct))
-}
-
-/// 最后一个逗号/句号之后那一小句如果整句是指令，就拆成（前面的文字, 指令）。
-fn split_trailing_command<'a>(
-    text: &'a str,
-    options: &CommandOptions,
-) -> Option<(&'a str, VoiceCommand)> {
-    let body = text.trim_end_matches(['。', '！', '？', '!', '?', '.', '，', ',']);
-    let cut = body.rfind(['，', ',', '。', '；', ';', '！', '？'])?;
-    let separator = body[cut..].chars().next()?.len_utf8();
-    let command = parse_trailing_command(&body[cut + separator..], options)?;
-    Some((&text[..cut + separator], command))
 }
 
 /// 终端整段输入：把连续几句拼成一段。句子之间已有句末标点就直接接上，

@@ -1476,59 +1476,12 @@ impl App {
             LABEL_COMMANDS_VALUE,
             &crate::prefs::command_choices(&self.settings),
         );
-        let Some(pick) = crate::prefs::command_pick(picked) else {
-            return;
-        };
-        let candidate = match pick {
-            CommandPick::Words(command) => {
-                let snippets = match read_snippets() {
-                    Ok(file) => file,
-                    Err(error) => {
-                        self.command_error = error;
-                        self.refresh();
-                        return;
-                    }
-                };
-                let (effect, words) = crate::prefs::command_words_initial(&self.settings, command);
-                let settings = self.settings.clone();
-                let check_snippets = snippets.clone();
-                let Some((_, input)) = crate::pair_dialog::ask(
-                    self.hwnd,
-                    self.fonts[3],
-                    self.dpi,
-                    &crate::pair_dialog::COMMAND_WORDS,
-                    [&effect, &words],
-                    Box::new(move |_, input| {
-                        crate::prefs::set_command_words(&settings, command, input, &check_snippets)
-                            .map(drop)
-                    }),
-                ) else {
-                    return;
-                };
-                crate::prefs::set_command_words(&self.settings, command, &input, &snippets).ok()
+        let candidate = match crate::prefs::command_pick(picked) {
+            Some(CommandPick::Switch(command)) => {
+                Some(crate::prefs::switch_command(&self.settings, command))
             }
-            CommandPick::Time(timing) => {
-                let choice = self.popup_under(
-                    LABEL_COMMANDS_VALUE,
-                    &crate::prefs::timing_choices(&self.settings, timing),
-                );
-                crate::prefs::pick_timing(&self.settings, timing, choice)
-            }
-            CommandPick::PlainTranslate => {
-                let choice = self.popup_under(
-                    LABEL_COMMANDS_VALUE,
-                    &crate::prefs::plain_translate_choices(&self.settings),
-                );
-                crate::prefs::pick_plain_translate(&self.settings, choice)
-            }
-            CommandPick::TerminalNewline => {
-                let mut next = self.settings.clone();
-                next.text.terminal_newline = !next.text.terminal_newline;
-                Some(next)
-            }
-            CommandPick::Reset => self
-                .confirm("语音指令的说法、四个时间和翻译方向都恢复默认？")
-                .then(|| crate::prefs::reset_commands(&self.settings)),
+            Some(CommandPick::Time(timing)) => self.pick_time(LABEL_COMMANDS_VALUE, timing),
+            None => None,
         };
         if let Some(candidate) = candidate
             && candidate != self.settings
@@ -1536,6 +1489,19 @@ impl App {
             self.apply(candidate);
             self.say("改好了，下一句开始生效");
         }
+    }
+
+    /// 点了某个时间：在同一个按钮下面再弹一个菜单选几档
+    unsafe fn pick_time(
+        &self,
+        button: usize,
+        timing: crate::prefs::Timing,
+    ) -> Option<xueer_ear_backend::settings::Settings> {
+        let choice = self.popup_under(
+            button,
+            &crate::prefs::timing_choices(&self.settings, timing),
+        );
+        crate::prefs::pick_timing(&self.settings, timing, choice)
     }
 
     /// 在某个按钮下面弹菜单，返回选中的命令号（没选是 0）
@@ -1780,6 +1746,15 @@ impl App {
     /// 更多设置：识别通道、文字整理开关、降噪、调小别的声音、提示音、接管 Win+H、一次最长听多久。
     unsafe fn text_menu(&mut self) {
         let selected = self.popup_under(LABEL_TEXT_VALUE, &crate::prefs::choices(&self.settings));
+        if let Some(timing) = crate::prefs::dictation_timing(selected) {
+            if let Some(candidate) = self.pick_time(LABEL_TEXT_VALUE, timing)
+                && candidate != self.settings
+            {
+                self.apply(candidate);
+                self.say("改好了，下一句开始生效");
+            }
+            return;
+        }
         if selected == crate::prefs::COPY_DIAGNOSTICS {
             let text = self.diagnostics();
             match copy_text(self.hwnd, &text) {
@@ -2630,14 +2605,6 @@ fn snapshot_theme(dir: &std::path::Path, dark: bool) -> Result<(), String> {
                 &crate::pair_dialog::CORRECTION,
                 "correction-dialog.png",
                 ["我在用雪而写代码", "我在用雪耳写代码"],
-            ),
-            (
-                &crate::pair_dialog::COMMAND_WORDS,
-                "command-words-dialog.png",
-                [
-                    "删除上一句：删掉雪耳打的上一句",
-                    "删除、删掉、删了、撤销、撤回、删掉上一句",
-                ],
             ),
         ] {
             let dialog = crate::pair_dialog::offscreen(hwnd, app.fonts[3], app.dpi, form, initial);

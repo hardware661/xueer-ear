@@ -80,15 +80,6 @@ pub const CORRECTION: Form = Form {
 };
 
 /// 「语音指令」菜单里点了一个指令：第一格是它做什么，第二格是说法
-pub const COMMAND_WORDS: Form = Form {
-    title: "语音指令的说法",
-    labels: ["指令", "说法（用顿号隔开；清空就是不用这个指令）"],
-    cues: ["", "例如 撤回、撤销"],
-    limits: [80, 240],
-    submit: "保存",
-    read_only_first: true,
-};
-
 pub fn check_hotword(word: &str, heard: &str) -> Result<(), String> {
     crate::prefs::hotword_line(word, heard)
         .map(drop)

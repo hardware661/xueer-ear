@@ -1,5 +1,6 @@
 use xueer_ear_textflow::{
-    Hotwords, Options, Output, Snippets, VoiceCommand, join_for_terminal, process, terminal_append,
+    Hotwords, Options, Output, Snippets, VoiceCommand, join_for_terminal, process, process_text,
+    terminal_append,
 };
 
 #[test]
@@ -19,9 +20,11 @@ fn full_pipeline_in_order() {
 fn commands_win_over_text() {
     let o = Options::default();
     assert_eq!(
-        process("嗯，换行。", &o),
-        Output::Command(VoiceCommand::NewLine)
+        process("嗯，删除。", &o),
+        Output::Command(VoiceCommand::DeleteLastSentence)
     );
+    // 「换行」不再是指令（主人 2026-11-24 砍掉了）
+    assert_eq!(process("换行", &o), Output::Text("换行".into()));
 }
 
 #[test]
@@ -61,25 +64,20 @@ fn terminal_join_uses_space_between_latin_sentences() {
 }
 
 #[test]
-fn trailing_command_after_text_is_split_out() {
+fn a_command_at_the_end_of_a_sentence_is_just_text() {
+    // 主人 2026-11-24：指令要先停一下、单独说；跟在话后面一口气说出来的一律当普通文字
     let o = Options::default();
-    assert_eq!(
-        process("这句是错的，删掉上一句。", &o),
-        Output::TextThen("这句是错的，".into(), VoiceCommand::DeleteLastSentence)
-    );
-    assert_eq!(
-        process("第一行，换行", &o),
-        Output::TextThen("第一行，".into(), VoiceCommand::NewLine)
-    );
-    // 指令词不在句末单独一小句的，照样是普通文字
-    assert_eq!(
-        process("这里要换行吗", &o),
-        Output::Text("这里要换行吗".into())
-    );
-    assert_eq!(
-        process("撤销这次提交", &o),
-        Output::Text("撤销这次提交".into())
-    );
+    for text in [
+        "这句是错的，删除",
+        "这些临时文件，全部删除",
+        "今天吃什么，翻译成英文。",
+        "删除这个文件",
+    ] {
+        assert!(
+            matches!(process(text, &o), Output::Text(_)),
+            "{text} 不该是指令"
+        );
+    }
 }
 
 #[test]
@@ -108,48 +106,22 @@ fn terminal_append_gives_only_the_new_piece_with_its_separator() {
 }
 
 #[test]
-fn everyday_phrases_ending_in_a_delete_word_are_just_text() {
-    // 审查 R2：「这些临时文件，全部删除」被当成指令，把这次听写打的字全删光
+fn only_the_phrase_on_its_own_is_a_command() {
     let o = Options::default();
-    for text in [
-        "这些临时文件，全部删除",
-        "缓存，清空",
-        "日志太多了，删了",
-        "这一步，撤销",
-        "不要的文件，删除。",
-    ] {
-        assert!(
-            matches!(process(text, &o), Output::Text(_)),
-            "{text} 不该是指令"
-        );
-    }
-    // 单独说照样是指令
     assert_eq!(
         process("全部删除", &o),
         Output::Command(VoiceCommand::DeleteAll)
     );
     assert_eq!(
-        process("撤销。", &o),
-        Output::Command(VoiceCommand::DeleteLastSentence)
+        process("翻译成中文。", &o),
+        Output::Command(VoiceCommand::TranslateToChinese)
     );
-    // 明确说「删掉上一句」接在句尾仍然算（主人 2026-11-15 要的）
-    assert_eq!(
-        process("这句是错的，删除上一句话", &o),
-        Output::TextThen("这句是错的，".into(), VoiceCommand::DeleteLastSentence)
-    );
-}
-
-#[test]
-fn translate_at_the_end_of_a_sentence() {
-    let o = Options::default();
-    assert_eq!(
-        process("今天吃什么，翻译。", &o),
-        Output::TextThen("今天吃什么，".into(), VoiceCommand::Translate)
-    );
-    assert_eq!(
-        process("The tests pass，翻译成中文。", &o),
-        Output::TextThen("The tests pass，".into(), VoiceCommand::TranslateToChinese)
-    );
+    for text in ["撤销", "撤回", "清空", "删掉上一句", "翻译"] {
+        assert!(
+            matches!(process(text, &o), Output::Text(_)),
+            "{text} 已经不是指令了"
+        );
+    }
 }
 
 #[test]
@@ -188,7 +160,7 @@ fn terminal_joins_a_cut_off_sentence_without_a_comma() {
 fn a_whole_sentence_snippet_trigger_becomes_its_text_untouched() {
     let o = Options {
         snippets: Snippets::parse(
-            "我的邮箱=xueer@example.com\n报价=一百块。\\n谢谢\n换行=不会生效\n",
+            "我的邮箱=xueer@example.com\n报价=一百块。\\n谢谢\n删除=不会生效\n",
         ),
         ..Options::default()
     };
@@ -207,15 +179,36 @@ fn a_whole_sentence_snippet_trigger_becomes_its_text_untouched() {
         Output::Text("把我的邮箱发给他".into())
     );
     // 指令优先
-    assert_eq!(process("换行", &o), Output::Command(VoiceCommand::NewLine));
+    assert_eq!(
+        process("删除", &o),
+        Output::Command(VoiceCommand::DeleteLastSentence)
+    );
 }
 
 #[test]
 fn recognized_text_never_carries_line_breaks_into_the_output() {
-    // 换行只能来自「换行」指令或快捷短语；云端文字里的控制字符当空格
+    // 雪耳从不往输入框里打换行：云端文字里的控制字符当空格
     let o = Options::default();
     assert_eq!(
         process("第一行\n第二行", &o),
         Output::Text("第一行 第二行".into())
+    );
+}
+
+#[test]
+fn a_command_phrase_can_be_kept_as_plain_text() {
+    // 快捷键听写里前面没停够的「删除」：照样整理、照样打出来
+    let o = Options::default();
+    assert_eq!(
+        process_text("嗯，删除。", &o),
+        Output::Text("删除。".into())
+    );
+    let o = Options {
+        snippets: Snippets::parse("我的邮箱=xueer@example.com\n"),
+        ..Options::default()
+    };
+    assert_eq!(
+        process_text("我的邮箱", &o),
+        Output::Snippet("xueer@example.com".into())
     );
 }

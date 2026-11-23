@@ -1,202 +1,68 @@
-//! 快捷键模式的上屏计划（纯逻辑，可在 WSL 测）：把定稿文字和语音指令变成按键序列。
+//! 快捷键模式的上屏计划（纯逻辑，可在 WSL 测）：把识别出的文字变成按键序列。
+//! 语音指令不在这里：指令管的是整个输入框（`inputbox`），由 `hotkey.rs` 读框、算好按键再发。
 //! 真正发送键盘事件在 `hotkey.rs`（只在 Windows 编）。
 use crate::revision::Revision;
-use xueer_ear_textflow::{Output, VoiceCommand};
+use xueer_ear_textflow::Output;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Key {
     /// 一段文字，用 Unicode 键入
     Text(String),
+    /// 回车（只有「发送」指令按）
     Enter,
-    /// 终端里换行不发送（Claude Code 文档：Ctrl+J 在所有终端都是换行；模拟的 Shift+Enter 在 Windows Terminal 里被当成回车发出去了）
-    CtrlJ,
     /// 退格若干次
     Backspace(usize),
-    /// Ctrl+A 全选（整框换成译文前）
+    /// Ctrl+A 全选
     SelectAll,
+    /// Ctrl+C 复制（读不到输入框的程序，全选复制来读；终端里从不按）
+    Copy,
+    /// Ctrl+End：光标挪到输入框最后（普通程序；终端里不按）
+    End,
+    /// 往右挪光标若干个字（终端的输入框里挪到最后）
+    Right(usize),
 }
 
-/// 雪耳在这个输入框里已经上屏、还留在框里的东西，一条一条记着，用来往回删、整段翻译和在终端里补句间分隔。
-/// 跨轮记着（见 [`Carried`]），主人按回车发走、动了键盘鼠标就忘掉。
+/// 记着刚打出去的上一句：终端里下一句要按它补分隔（「，」或空格）
+#[derive(Default)]
 pub struct Typist {
-    typed: Vec<Typed>,
-    /// 终端里「换行」发不发 Ctrl+J（设置 text.terminal_newline）
-    terminal_newline: bool,
-}
-
-impl Default for Typist {
-    fn default() -> Self {
-        Self {
-            typed: Vec::new(),
-            terminal_newline: true,
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-enum Typed {
-    Sentence(String),
-    /// 语音「换行」打出来的那个换行
-    NewLine,
-}
-
-/// 一轮结束时雪耳在输入框里留下的字，交给下一轮接着用（同一个输入框、中间没按回车没动键鼠时）：
-/// 下一轮说「删除」「全部删除」够得着，读不到输入框时「翻译」也翻得到
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct Carried(Vec<Typed>);
-
-impl Carried {
-    pub fn is_empty(&self) -> bool {
-        self.0.is_empty()
-    }
-}
-
-impl Typed {
-    /// 删掉它要退格几次：按字形数（和中间结果改字的算法一致，审查 R11）。
-    /// 编辑框里一次退格删一个字形，组合表情（👨‍👩‍👧）按 char 数会多删前面的字。
-    fn width(&self) -> usize {
-        use unicode_segmentation::UnicodeSegmentation;
-        match self {
-            Self::Sentence(text) => text.graphemes(true).count(),
-            Self::NewLine => 1,
-        }
-    }
+    previous: String,
 }
 
 impl Typist {
-    /// 当前这一行里的上一句（换行之后是空的）
-    fn previous(&self) -> &str {
-        match self.typed.last() {
-            Some(Typed::Sentence(text)) => text,
-            _ => "",
-        }
-    }
-
-    /// 主人自己按 Enter 把内容发走了：之前打的都不在输入框里了
+    /// 主人自己按 Enter 把内容发走了，或者输入框被指令改过：上一句不再算数
     pub fn forget(&mut self) {
-        self.typed.clear();
+        self.previous.clear();
     }
 
-    /// 上屏一句定稿文字。终端里：换行换成空格，和上一句之间用 `join_for_terminal` 的规则补分隔。
+    /// 上屏一句定稿文字。终端里：换行换成空格，和上一句之间用 `terminal_append` 的规则补分隔。
     pub fn text(&mut self, text: &str, terminal: bool) -> Vec<Key> {
         let typed = if terminal {
-            xueer_ear_textflow::terminal_append(self.previous(), text)
+            xueer_ear_textflow::terminal_append(&self.previous, text)
         } else {
             text.to_string()
         };
         if typed.is_empty() {
             return vec![];
         }
-        self.typed.push(Typed::Sentence(typed.clone()));
+        self.previous = typed.clone();
         vec![Key::Text(typed)]
     }
 
-    /// 上屏一段快捷短语：文字原样打，里面的换行和说「换行」按同一个键（终端里关了换行就换成空格）。
-    /// 整段记成一句，紧接着说「删除」会整段删掉。
+    /// 上屏一段快捷短语：文字原样打，里面的换行换成空格。雪耳从不按回车换行，
+    /// 微信这类聊天框里回车就是发送（主人 2026-11-24 砍掉了「换行」）
     pub fn snippet(&mut self, text: &str, terminal: bool) -> Vec<Key> {
-        let newline = match (terminal, self.terminal_newline) {
-            (false, _) => Some(Key::Enter),
-            (true, true) => Some(Key::CtrlJ),
-            (true, false) => None,
-        };
-        let mut keys = Vec::new();
-        let mut typed = String::new();
-        for (i, line) in text.split('\n').enumerate() {
-            let line = clean(line);
-            let piece = match (i, &newline) {
-                (0, _) if terminal => xueer_ear_textflow::terminal_append(self.previous(), &line),
-                (0, _) | (_, Some(_)) => line,
-                (_, None) => format!(" {line}"),
-            };
-            if i > 0
-                && let Some(key) = &newline
-            {
-                keys.push(key.clone());
-                typed.push('\n');
-            }
-            if !piece.is_empty() {
-                typed.push_str(&piece);
-                keys.push(Key::Text(piece));
-            }
-        }
-        if !typed.is_empty() {
-            self.typed.push(Typed::Sentence(typed));
-        }
-        keys
-    }
-
-    pub fn command(&mut self, command: VoiceCommand, terminal: bool) -> Vec<Key> {
-        match command {
-            VoiceCommand::NewLine if terminal && !self.terminal_newline => vec![],
-            VoiceCommand::NewLine => {
-                self.typed.push(Typed::NewLine);
-                // 终端里 Enter 就是发送，用 Ctrl+J 换行（2026-11-15 主人真机：Shift+Enter 被发送出去了）
-                vec![if terminal { Key::CtrlJ } else { Key::Enter }]
-            }
-            // 删掉上一句；它前面紧挨着的换行也一起删，这样能一路删回上一行
-            // （主人 2026-11-15：换行之后只能删第二行）。不发 Ctrl+Z：终端里那是挂起前台程序。
-            VoiceCommand::DeleteLastSentence => {
-                let mut count = 0;
-                while matches!(self.typed.last(), Some(Typed::NewLine)) {
-                    count += self.typed.pop().map_or(0, |t| t.width());
-                }
-                count += self.typed.pop().map_or(0, |t| t.width());
-                backspaces(count)
-            }
-            VoiceCommand::DeleteAll => {
-                let count = self.typed.drain(..).map(|t| t.width()).sum();
-                backspaces(count)
-            }
-            VoiceCommand::Send => {
-                self.typed.clear();
-                vec![Key::Enter]
-            }
-            // 翻译要联网，按键在译文回来后由 `replace_all` 给出；这里什么都不按
-            VoiceCommand::Translate
-            | VoiceCommand::TranslateToEnglish
-            | VoiceCommand::TranslateToChinese => vec![],
-        }
-    }
-
-    /// 雪耳打出去、还留在输入框里的全部文字（换行按 \n）
-    pub fn typed_text(&self) -> String {
-        self.typed
-            .iter()
-            .map(|t| match t {
-                Typed::Sentence(text) => text.as_str(),
-                Typed::NewLine => "\n",
-            })
-            .collect()
-    }
-
-    /// 把雪耳打出去的全部文字换成 `text`（翻译结果）：退格删掉，再整段打上。
-    /// 之后再说「撤回」删的就是这整段。
-    pub fn replace_all(&mut self, text: &str, terminal: bool) -> Vec<Key> {
-        let count: usize = self.typed.drain(..).map(|t| t.width()).sum();
-        let text = if terminal {
-            text.replace(['\r', '\n'], " ")
-        } else {
-            text.to_string()
-        };
-        let mut keys = backspaces(count);
-        if !text.is_empty() {
-            self.typed.push(Typed::Sentence(text.clone()));
-            keys.push(Key::Text(text));
-        }
-        keys
-    }
-}
-
-fn backspaces(count: usize) -> Vec<Key> {
-    if count == 0 {
-        vec![]
-    } else {
-        vec![Key::Backspace(count)]
+        let flat = text
+            .split('\n')
+            .map(|line| clean(line).trim().to_string())
+            .filter(|line| !line.is_empty())
+            .collect::<Vec<_>>()
+            .join(" ");
+        self.text(&flat, terminal)
     }
 }
 
 /// 面板听写：边说边出字。中间结果直接打到光标处，后来的结果只改还没说定的那一截；
-/// 定稿时换成整理过的文字（或执行语音指令）。
+/// 定稿时换成整理过的文字。
 pub struct Live {
     revision: Revision,
     typist: Typist,
@@ -206,22 +72,8 @@ pub struct Live {
     /// 主人在这句说到一半时动了键盘或鼠标：光标可能已经不在原处，这句剩下的时间只往后接字。
     /// 值是冻结时这句已经上屏的字数。
     frozen: Option<usize>,
-    /// 这句里的语音指令已经提前执行了：后续结果里去掉指令词和它前面的部分再上屏
-    early: Option<Early>,
-    /// 这一轮里主人动过键盘或鼠标
-    touched_round: bool,
     /// 上次说话中途退格改字的时间
     last_fix: Option<std::time::Instant>,
-}
-
-/// 这句里提前执行过的语音指令
-struct Early {
-    /// 指令词（中间结果最后那一小句）
-    word: String,
-    /// 指令前面已经上屏的原话（整句只有指令时是空的）
-    head: String,
-    /// 是不是翻译指令
-    translate: bool,
 }
 
 /// 说话中途一次最多退格改这么多字；更多的留到定稿
@@ -237,75 +89,8 @@ impl Live {
             terminal,
             sent: None,
             frozen: None,
-            early: None,
-            touched_round: false,
             last_fix: None,
         }
-    }
-
-    /// 终端里「换行」发不发 Ctrl+J（审查 R4）
-    pub fn set_terminal_newline(&mut self, on: bool) {
-        self.typist.terminal_newline = on;
-    }
-
-    /// 这句到目前为止只说了一个指令词（调用方用 Postprocess::command_only 判断过），马上执行，
-    /// 不等静音收句：先擦掉屏幕上的指令词，再按指令按键。之后这句的结果会去掉开头的指令词。
-    /// 主人动过键盘鼠标（冻结）时，删除类指令不执行，交给定稿时照常处理。
-    pub fn early_command(&mut self, command: VoiceCommand) -> Vec<Key> {
-        if self.early.is_some() {
-            return vec![];
-        }
-        if self.frozen.is_some()
-            && matches!(
-                command,
-                VoiceCommand::DeleteLastSentence | VoiceCommand::DeleteAll
-            )
-        {
-            return vec![];
-        }
-        let spoken = last_clause(self.revision.pending());
-        let erase = if self.frozen.is_some() {
-            0
-        } else {
-            self.revision.pending_graphemes()
-        };
-        self.revision.clear();
-        self.frozen = self.frozen.map(|_| 0);
-        self.early = Some(Early {
-            word: spoken,
-            head: String::new(),
-            translate: command.is_translate(),
-        });
-        let mut keys = edit(erase, "");
-        keys.extend(self.typist.command(command, self.terminal));
-        keys
-    }
-
-    /// 句尾带指令（「今天吃什么，发送」）、停了一下没再说：不等静音收句，现在就把前面的话定稿上屏，
-    /// 再执行指令。`spoken` 是此刻的中间结果，用来记住指令词，之后这句的结果去掉指令词及以前的部分。
-    pub fn early_finish(&mut self, output: Output, spoken: &str) -> Vec<Key> {
-        let Output::TextThen(head, command) = output else {
-            return vec![];
-        };
-        if self.early.is_some() {
-            return vec![];
-        }
-        let deletes = matches!(
-            command,
-            VoiceCommand::DeleteLastSentence | VoiceCommand::DeleteAll
-        );
-        if self.frozen.is_some() && deletes {
-            return vec![];
-        }
-        let mut keys = self.finalize(Output::Text(head));
-        keys.extend(self.typist.command(command, self.terminal));
-        let (said_before, word) = split_last_clause(spoken);
-        self.early = Some(Early {
-            word,
-            head: said_before.to_string(),
-            translate: command.is_translate(),
-        });
-        keys
     }
 
     /// 主人自己按了 Enter：屏幕上没说定的那截已经跟着发走了，输入框是空的。
@@ -319,59 +104,20 @@ impl Live {
         }
     }
 
+    /// 语音指令改过输入框（删了、清空了、换成译文、发出去了）：之后的字接在 `now` 后面
+    pub fn box_changed(&mut self, now: &str) {
+        self.revision.clear();
+        self.typist.previous = now.to_string();
+    }
+
     /// 屏幕上还没说定的那一截。听写出错时这截字留在屏幕上，调用方把它存进历史。
     pub fn leftover(&self) -> &str {
         self.revision.pending()
     }
 
-    /// 接着上一轮在同一个输入框里打的字（只在一轮刚开始、还没打字时调用）
-    pub fn resume(&mut self, carried: Carried) {
-        self.typist.typed = carried.0;
-    }
-
-    /// 这一轮结束时留在输入框里的、雪耳打的字（主人这轮动过键鼠就是空的）
-    pub fn carried(&self) -> Carried {
-        if self.touched_round {
-            Carried::default()
-        } else {
-            Carried(self.typist.typed.clone())
-        }
-    }
-
-    /// 现在说删除类指令会不会什么都删不了：主人动过键盘鼠标（雪耳已经不碰之前的字），
-    /// 或者整句只有指令、雪耳在这个输入框里还没打过字。句尾带指令的（「这句不对，删掉上一句」）删的是这句自己
-    pub fn nothing_to_delete(&self, whole_sentence: bool) -> bool {
-        self.frozen.is_some() || (whole_sentence && self.typist.typed.is_empty())
-    }
-
-    /// 雪耳打出去、还留在输入框里的全部文字，含前几轮接着的（读不到输入框时说「翻译」整段拿去翻）。
-    /// 主人这轮动过键鼠时是 None：光标可能已经不在原处，不能按退格整段替换。
-    pub fn typed_text(&self) -> Option<String> {
-        (!self.touched_round).then(|| self.typist.typed_text())
-    }
-
-    /// 把雪耳打出去的字整段换成译文（退格删掉再打）
-    pub fn replace_typed(&mut self, text: &str) -> Vec<Key> {
-        self.typist.replace_all(text, self.terminal)
-    }
-
-    /// 整个输入框换成译文（读得到输入框时）：全选再打。之后这整框都算雪耳打的，
-    /// 「撤回」删的就是它；光标在最后，主人之前动过键鼠也不要紧了
-    pub fn replace_box(&mut self, text: &str) -> Vec<Key> {
-        // 空的译文不动输入框，免得把整框清掉
-        if text.trim().is_empty() {
-            return vec![];
-        }
-        self.typist.typed = vec![Typed::Sentence(text.to_string())];
-        self.touched_round = false;
-        self.frozen = None;
-        vec![Key::SelectAll, Key::Text(text.to_string())]
-    }
-
     /// 主人自己动了键盘或鼠标（点了别处、打了字、选了文字）。雪耳改字靠「退格再重打」，
-    /// 不知道光标在哪时再退格就会删错地方，所以这句剩下的时间只往后接字，之前打的也不再往回删。
+    /// 不知道光标在哪时再退格就会删错地方，所以这句剩下的时间只往后接字。
     pub fn user_touched(&mut self) {
-        self.touched_round = true;
         if self.frozen.is_none() {
             self.frozen = Some(self.revision.pending_graphemes());
         }
@@ -395,7 +141,6 @@ impl Live {
     /// 云端定稿常在发走的文字后面补标点、改一两个字（「天器」→「天气」），所以按「去掉标点后的字数」跳过，
     /// 不要求逐字相同（审查 R6）：按前缀对齐时，前面改了一个字就会把后半句甚至整句重打一遍。
     pub fn unsent(&self, text: &str) -> String {
-        let text = &self.without_early(text);
         let Some(sent) = self.sent.as_deref() else {
             return text.to_string();
         };
@@ -413,24 +158,6 @@ impl Live {
         }
         // 发走部分后面紧跟的标点也算发走了的那句的，别单独留在新输入框开头
         text[cut..].trim_start_matches(is_punct).to_string()
-    }
-
-    /// 提前执行过指令的这句：去掉指令词和它前面的部分（前面的已经上屏或发走了），只留后面接着说的。
-    /// 按「去掉标点后」找指令词最后一次出现的位置：云端常改前面几个字、换标点，
-    /// 也会把后面的话直接粘在指令词后面（「换行接着说」）。
-    /// 找不到指令词时：
-    /// - 翻译指令：微信云端会把「翻译成英文」那句自己翻成英文再定稿（主人 2026-11-23），这句不再上屏，译文由雪耳整段出；
-    /// - 别的指令：豆包会把指令词吞掉（2026-11-24），定稿开头就是已经上屏的那半句，只打它后面多出来的；
-    ///   连前面也对不上（云端改写了整句）才整句照打，宁可多打也不丢字（审查 R3）。
-    fn without_early(&self, text: &str) -> String {
-        let Some(early) = self.early.as_ref().filter(|e| !e.word.is_empty()) else {
-            return text.to_string();
-        };
-        match find_last(text, &early.word) {
-            Some(end) => text[end..].trim_start_matches(is_punct).to_string(),
-            None if early.translate => String::new(),
-            None => after_said(text, &early.head).unwrap_or(text).to_string(),
-        }
     }
 
     /// 中间结果：退掉上次没说定的部分里变了的字，再补上新的。
@@ -473,10 +200,11 @@ impl Live {
         vec![Key::Text(extra)]
     }
 
-    /// 定稿：把屏幕上没说定的那一截整个换成整理后的文字，或者擦掉后执行指令。
+    /// 定稿：把屏幕上没说定的那一截整个换成整理后的文字。
+    /// 指令不经过这里（`hotkey.rs` 先认出来，屏幕上也没打过它），万一来了就只擦掉没说定的那截
     pub fn finalize(&mut self, output: Output) -> Vec<Key> {
         let raw = match &output {
-            Output::Text(text) | Output::TextThen(text, _) | Output::Snippet(text) => text.clone(),
+            Output::Text(text) | Output::Snippet(text) => text.clone(),
             Output::Command(_) => String::new(),
         };
         self.finalize_from(&raw, output)
@@ -489,30 +217,20 @@ impl Live {
             return self.finalize_frozen(raw, output);
         }
         let erase = self.revision.pending_graphemes();
-        self.revision.clear();
-        // 这句结束了，发走的前缀、提前执行的指令都只对这句有效
-        self.sent = None;
-        let early = self.early.take().is_some();
-        // 指令已经提前执行过、这句没剩别的字：什么都不打
-        if early && matches!(&output, Output::Text(t) if t.trim().is_empty()) {
-            return edit(erase, "");
-        }
         let shown = self.revision.pending().to_string();
+        self.revision.clear();
+        // 这句结束了，发走的前缀只对这句有效
+        self.sent = None;
         let mut keys = edit(erase, "");
         keys.extend(match output {
             Output::Text(text) => self.typist.text(&clean(&text), self.terminal),
-            Output::Command(command) => self.typist.command(command, self.terminal),
-            Output::TextThen(text, command) => {
-                let mut keys = self.typist.text(&clean(&text), self.terminal);
-                keys.extend(self.typist.command(command, self.terminal));
-                keys
-            }
             Output::Snippet(text) => self.typist.snippet(&text, self.terminal),
+            Output::Command(_) => vec![],
         });
         keep_common_prefix(&shown, keys)
     }
 
-    /// 冻结状态下的定稿：不退格、不替换，按原话补上还没上屏的尾巴；会删东西的指令不执行。
+    /// 冻结状态下的定稿：不退格、不替换，按原话补上还没上屏的尾巴。
     /// 快捷短语也不换：口令已经在屏幕上了，换不掉。
     fn finalize_frozen(&mut self, raw: &str, output: Output) -> Vec<Key> {
         let keys = match output {
@@ -520,28 +238,11 @@ impl Live {
                 let text = self.separated(&clean(raw));
                 self.append_only(&text)
             }
-            Output::TextThen(_, command) => {
-                // 原话去掉句尾那一小句指令
-                let body = raw.trim_end_matches(is_punct);
-                let cut = body.rfind(is_punct).map_or(0, |i| {
-                    i + body[i..].chars().next().map_or(0, char::len_utf8)
-                });
-                let text = self.separated(&clean(&raw[..cut]));
-                let mut keys = self.append_only(&text);
-                if matches!(command, VoiceCommand::NewLine | VoiceCommand::Send) {
-                    keys.extend(self.typist.command(command, self.terminal));
-                }
-                keys
-            }
-            Output::Command(command @ (VoiceCommand::NewLine | VoiceCommand::Send)) => {
-                self.typist.command(command, self.terminal)
-            }
             Output::Command(_) => vec![],
         };
         self.revision.clear();
         self.sent = None;
         self.frozen = None;
-        self.early = None;
         keys
     }
 
@@ -550,7 +251,7 @@ impl Live {
         if !self.terminal || text.is_empty() {
             return text.to_string();
         }
-        xueer_ear_textflow::terminal_append(self.typist.previous(), text)
+        xueer_ear_textflow::terminal_append(&self.typist.previous, text)
     }
 }
 
@@ -575,90 +276,17 @@ fn keep_common_prefix(shown: &str, mut keys: Vec<Key>) -> Vec<Key> {
     keys
 }
 
-/// 最后一小句（去掉标点和空格），用来记住说出来的指令词
-/// 定稿里还找得到中间结果最后那一小句（指令词）吗？找不到就是云端把这句改写了：
-/// 微信会把单独说的「翻译成英文」自己翻成英文再定稿（主人 2026-11-23）。
-pub fn keeps_last_clause(spoken: &str, final_text: &str) -> bool {
-    let word = last_clause(spoken);
-    word.is_empty() || find_last(final_text, &word).is_some()
-}
-
-/// 按「去掉标点后」找 `word` 在 `text` 里最后一次出现，返回它在原文里结束的字节位置。
-fn find_last(text: &str, word: &str) -> Option<usize> {
-    let word: Vec<char> = word.chars().filter(|c| !is_punct(*c)).collect();
-    if word.is_empty() {
-        return None;
-    }
-    // 去掉标点后的字，以及每个字在原文里结束的字节位置
-    let letters: Vec<(char, usize)> = text
-        .char_indices()
-        .filter(|(_, c)| !is_punct(*c))
-        .map(|(i, c)| (c, i + c.len_utf8()))
-        .collect();
-    if letters.len() < word.len() {
-        return None;
-    }
-    (0..=letters.len() - word.len())
-        .rev()
-        .find(|&start| {
-            letters[start..start + word.len()]
-                .iter()
-                .map(|(c, _)| *c)
-                .eq(word.iter().copied())
-        })
-        .map(|start| letters[start + word.len() - 1].1)
-}
-
-fn last_clause(text: &str) -> String {
-    split_last_clause(text).1
-}
-
-/// （最后那一小句前面的原话, 最后那一小句去掉标点）
-fn split_last_clause(text: &str) -> (&str, String) {
-    let body = text.trim_end_matches(is_punct);
-    let start = body.rfind(is_punct).map_or(0, |i| {
-        i + body[i..].chars().next().map_or(0, char::len_utf8)
-    });
-    (
-        &body[..start],
-        body[start..].chars().filter(|c| !is_punct(*c)).collect(),
-    )
-}
-
-/// `text` 开头是不是 `said`（去掉标点后逐字一样）：是就返回后面多出来的部分（去掉开头的标点），否则 None。
-/// `said` 没有字时返回整个 `text`
-fn after_said<'a>(text: &'a str, said: &str) -> Option<&'a str> {
-    let mut wanted = said.chars().filter(|c| !is_punct(*c)).peekable();
-    let mut cut = 0;
-    for (i, c) in text.char_indices() {
-        if wanted.peek().is_none() {
-            break;
-        }
-        if is_punct(c) {
-            continue;
-        }
-        if wanted.next() != Some(c) {
-            return None;
-        }
-        cut = i + c.len_utf8();
-    }
-    if wanted.peek().is_some() {
-        return None;
-    }
-    Some(text[cut..].trim_start_matches(is_punct))
-}
-
 fn is_punct(c: char) -> bool {
     c.is_whitespace() || "，。！？；：、,.!?;:…—\"'“”‘’（）()".contains(c)
 }
 
-/// 没有输入框时按键不发出去，打在这份文字上（说完复制到剪贴板）：和真打字一样换行、按字形退格
+/// 没有输入框时按键不发出去，打在这份文字上（说完复制到剪贴板）：和真打字一样按字形退格
 pub fn apply_keys(doc: &mut String, keys: &[Key]) {
     use unicode_segmentation::UnicodeSegmentation;
     for key in keys {
         match key {
             Key::Text(text) => doc.push_str(text),
-            Key::Enter | Key::CtrlJ => doc.push('\n'),
+            Key::Enter => doc.push('\n'),
             Key::Backspace(count) => {
                 let keep = doc.graphemes(true).count().saturating_sub(*count);
                 let cut: usize = doc.graphemes(true).take(keep).map(str::len).sum();
@@ -666,6 +294,8 @@ pub fn apply_keys(doc: &mut String, keys: &[Key]) {
             }
             // 攒着的字只有这一份，全选后接着打的字就是替换它
             Key::SelectAll => doc.clear(),
+            // 光标一直在最后；复制不改文字
+            Key::End | Key::Right(_) | Key::Copy => {}
         }
     }
 }
@@ -691,8 +321,12 @@ fn edit(erase: usize, insert: &str) -> Vec<Key> {
 mod tests {
     use super::*;
 
+    fn type_into(doc: &mut String, keys: &[Key]) {
+        apply_keys(doc, keys);
+    }
+
     #[test]
-    fn text_is_typed_and_remembered() {
+    fn text_is_typed() {
         let mut t = Typist::default();
         assert_eq!(t.text("你好", false), [Key::Text("你好".into())]);
         assert_eq!(t.text("", false), []);
@@ -722,9 +356,6 @@ mod tests {
             type_into(&mut doc, &t.text(sentence, true));
         }
         assert_eq!(doc, "Run tests. ok done");
-        // 删上一句只删这一句自己打出去的字（含它前面补的分隔）
-        type_into(&mut doc, &t.command(VoiceCommand::DeleteLastSentence, true));
-        assert_eq!(doc, "Run tests. ok");
     }
 
     #[test]
@@ -733,268 +364,18 @@ mod tests {
         assert_eq!(t.text("一行\n两行", true), [Key::Text("一行 两行".into())]);
     }
 
+    // 主人 2026-11-24 砍掉了「换行」：快捷短语里的换行也换成空格，任何程序里都不按回车
     #[test]
-    fn delete_last_sentence_backspaces_by_chars() {
-        let mut t = Typist::default();
-        t.text("第一句。", false);
-        t.text("第二句🙂", false);
-        assert_eq!(
-            t.command(VoiceCommand::DeleteLastSentence, false),
-            [Key::Backspace(4)]
-        );
-        assert_eq!(
-            t.command(VoiceCommand::DeleteLastSentence, false),
-            [Key::Backspace(4)]
-        );
-        assert_eq!(t.command(VoiceCommand::DeleteLastSentence, false), []);
-    }
-
-    #[test]
-    fn translate_replaces_everything_typed_this_round() {
-        let mut t = Typist::default();
-        let mut doc = String::from("原来就有的");
-        type_into(&mut doc, &t.text("今天吃什么。", false));
-        type_into(&mut doc, &t.command(VoiceCommand::NewLine, false));
-        type_into(&mut doc, &t.text("明天呢？", false));
-        assert_eq!(t.command(VoiceCommand::Translate, false), []);
-        assert_eq!(t.typed_text(), "今天吃什么。\n明天呢？");
-        type_into(
-            &mut doc,
-            &t.replace_all("What to eat today?\nAnd tomorrow?", false),
-        );
-        assert_eq!(doc, "原来就有的What to eat today?\nAnd tomorrow?");
-        // 再撤回，删的是整段译文，不碰原来就有的字
-        type_into(
-            &mut doc,
-            &t.command(VoiceCommand::DeleteLastSentence, false),
-        );
-        assert_eq!(doc, "原来就有的");
-    }
-
-    #[test]
-    fn saying_translate_at_the_end_gives_the_whole_round_for_translation() {
-        let mut live = Live::new(false);
-        let mut doc = String::from("原有");
-        type_into(&mut doc, &live.partial("今天吃什么"));
-        type_into(
-            &mut doc,
-            &live.finalize(Output::Text("今天吃什么？".into())),
-        );
-        type_into(&mut doc, &live.partial("明天呢翻译"));
-        type_into(
-            &mut doc,
-            &live.finalize(Output::TextThen("明天呢，".into(), VoiceCommand::Translate)),
-        );
-        assert_eq!(live.typed_text().as_deref(), Some("今天吃什么？明天呢，"));
-        type_into(
-            &mut doc,
-            &live.replace_typed("What to eat today? And tomorrow?"),
-        );
-        assert_eq!(doc, "原有What to eat today? And tomorrow?");
-    }
-
-    // 主人 2026-11-23：单独说「翻译成英文」，翻译已经提前执行；微信云端的定稿却把这句自己翻成了
-    // "Translate into English."。雪耳找不到指令词就整句照打，结果又跟着正文被翻了一遍。
-    #[test]
-    fn a_command_sentence_the_cloud_rewrote_into_english_is_not_typed() {
-        let mut live = Live::new(false);
-        let mut doc = String::new();
-        type_into(&mut doc, &live.partial("今天天气很好"));
-        type_into(
-            &mut doc,
-            &live.finalize(Output::Text("今天天气很好。".into())),
-        );
-        type_into(&mut doc, &live.partial("翻译成英文"));
-        type_into(
-            &mut doc,
-            &live.early_command(VoiceCommand::TranslateToEnglish),
-        );
-        assert_eq!(doc, "今天天气很好。");
-        let late = live.unsent("Translate into English.");
-        type_into(
-            &mut doc,
-            &live.finalize_from(&late, Output::Text(late.clone())),
-        );
-        assert_eq!(doc, "今天天气很好。");
-        assert_eq!(live.typed_text().as_deref(), Some("今天天气很好。"));
-    }
-
-    // 同一口气说「今天天气很好，翻译成英文」：前半句已提前定稿上屏，云端定稿整句变成了英文
-    #[test]
-    fn a_trailing_translate_sentence_the_cloud_rewrote_is_not_typed_again() {
-        let mut live = Live::new(false);
-        let mut doc = String::new();
-        let spoken = "今天天气很好，翻译成英文";
-        type_into(&mut doc, &live.partial(spoken));
-        type_into(
-            &mut doc,
-            &live.early_finish(
-                Output::TextThen("今天天气很好，".into(), VoiceCommand::TranslateToEnglish),
-                spoken,
-            ),
-        );
-        assert_eq!(doc, "今天天气很好，");
-        let late = live.unsent("The weather is very good today. Translate into English.");
-        type_into(
-            &mut doc,
-            &live.finalize_from(&late, Output::Text(late.clone())),
-        );
-        assert_eq!(doc, "今天天气很好，");
-    }
-
-    // 中间结果已经是「翻译成英文」、还没停够 600 毫秒定稿就到了：定稿里还有没有指令词，决定要不要按中间结果执行
-    #[test]
-    fn a_final_that_lost_the_spoken_command_is_noticed() {
-        assert!(keeps_last_clause("翻译成英文", "翻译成英文。"));
-        assert!(keeps_last_clause(
-            "今天天气很好，翻译成英文",
-            "今天天气很好。翻译成英文。"
-        ));
-        assert!(!keeps_last_clause("翻译成英文", "Translate into English."));
-        assert!(!keeps_last_clause(
-            "今天天气很好，翻译成英文",
-            "The weather is very good today. Translate into English."
-        ));
-    }
-
-    #[test]
-    fn no_replacement_after_the_owner_touched_the_keyboard() {
-        let mut live = Live::new(false);
-        live.finalize(Output::Text("第一句。".into()));
-        live.user_touched();
-        assert_eq!(live.typed_text(), None);
-    }
-
-    #[test]
-    fn translation_never_puts_a_newline_into_a_terminal() {
-        let mut t = Typist::default();
-        t.text("第一句", true);
-        assert_eq!(
-            t.replace_all("one\ntwo", true),
-            [Key::Backspace(3), Key::Text("one two".into())]
-        );
-    }
-
-    #[test]
-    fn newline_in_terminal_is_shift_enter_not_enter() {
-        let mut t = Typist::default();
-        assert_eq!(t.command(VoiceCommand::NewLine, false), [Key::Enter]);
-        assert_eq!(t.command(VoiceCommand::NewLine, true), [Key::CtrlJ]);
-    }
-
-    /// 把按键序列应用到一段文字上，模拟编辑器
-    fn type_into(doc: &mut String, keys: &[Key]) {
-        for k in keys {
-            match k {
-                Key::Text(t) => doc.push_str(t),
-                Key::Backspace(n) => {
-                    for _ in 0..*n {
-                        doc.pop();
-                    }
-                }
-                Key::Enter | Key::CtrlJ => doc.push('\n'),
-                Key::SelectAll => doc.clear(),
-            }
+    fn snippet_line_breaks_become_spaces_everywhere() {
+        for terminal in [false, true] {
+            let mut live = Live::new(terminal);
+            let mut doc = String::new();
+            type_into(&mut doc, &live.partial("我的签名"));
+            let keys = live.finalize(Output::Snippet("雪儿\n敬上\n".into()));
+            assert!(!keys.contains(&Key::Enter), "{keys:?}");
+            type_into(&mut doc, &keys);
+            assert_eq!(doc, "雪儿 敬上");
         }
-    }
-
-    #[test]
-    fn the_next_round_in_the_same_box_can_still_delete_what_was_typed() {
-        let mut first = Live::new(false);
-        let mut doc = String::from("原有");
-        type_into(&mut doc, &first.partial("第一句"));
-        type_into(&mut doc, &first.finalize(Output::Text("第一句。".into())));
-        let carried = first.carried();
-        assert!(!carried.is_empty());
-        let mut second = Live::new(false);
-        second.resume(carried);
-        type_into(&mut doc, &second.partial("第二句"));
-        type_into(&mut doc, &second.finalize(Output::Text("第二句。".into())));
-        assert_eq!(second.typed_text().as_deref(), Some("第一句。第二句。"));
-        // 删上一句删的是这一轮的；再删就删到上一轮的，不碰原有的字
-        let delete = Output::Command(VoiceCommand::DeleteLastSentence);
-        type_into(&mut doc, &second.finalize(delete.clone()));
-        assert_eq!(doc, "原有第一句。");
-        type_into(&mut doc, &second.finalize(delete));
-        assert_eq!(doc, "原有");
-    }
-
-    #[test]
-    fn translating_without_a_readable_box_covers_earlier_rounds_too() {
-        let mut first = Live::new(true);
-        let mut doc = String::new();
-        type_into(&mut doc, &first.finalize(Output::Text("先读文档".into())));
-        let mut second = Live::new(true);
-        second.resume(first.carried());
-        type_into(
-            &mut doc,
-            &second.finalize(Output::TextThen(
-                "再跑测试".into(),
-                VoiceCommand::TranslateToEnglish,
-            )),
-        );
-        assert_eq!(doc, "先读文档，再跑测试");
-        assert_eq!(second.typed_text().as_deref(), Some("先读文档，再跑测试"));
-        type_into(
-            &mut doc,
-            &second.replace_typed("Read the docs first, then run the tests"),
-        );
-        assert_eq!(doc, "Read the docs first, then run the tests");
-    }
-
-    #[test]
-    fn deleting_reports_when_there_is_nothing_it_may_delete() {
-        let mut live = Live::new(false);
-        assert!(live.nothing_to_delete(true), "还没打过字");
-        live.finalize(Output::Text("第一句。".into()));
-        assert!(!live.nothing_to_delete(true));
-        // 主人动了键盘鼠标：之前的字不碰了；句尾带的删除这句也不执行
-        live.user_touched();
-        assert!(live.nothing_to_delete(true));
-        assert!(live.nothing_to_delete(false));
-        // 动过之后又打了一句，这句冻结着，定稿后雪耳也不记它：还是删不了
-        live.finalize(Output::Text("第二句。".into()));
-        assert!(live.nothing_to_delete(true));
-    }
-
-    #[test]
-    fn a_round_where_the_owner_touched_the_keyboard_carries_nothing() {
-        let mut live = Live::new(false);
-        live.finalize(Output::Text("第一句。".into()));
-        live.user_touched();
-        assert!(live.carried().is_empty());
-    }
-
-    #[test]
-    fn the_whole_box_is_replaced_by_select_all_then_typing() {
-        let mut live = Live::new(false);
-        let mut doc = String::from("手打的，");
-        type_into(&mut doc, &live.finalize(Output::Text("说的话。".into())));
-        // 主人中途点了一下也不要紧：整框换
-        live.user_touched();
-        let keys = live.replace_box("Typed by hand, spoken words.");
-        assert_eq!(
-            keys,
-            [
-                Key::SelectAll,
-                Key::Text("Typed by hand, spoken words.".into())
-            ]
-        );
-        type_into(&mut doc, &keys);
-        assert_eq!(doc, "Typed by hand, spoken words.");
-        // 之后整框都算雪耳打的：撤回删掉整段，下一轮也接得上
-        assert_eq!(
-            live.typed_text().as_deref(),
-            Some("Typed by hand, spoken words.")
-        );
-        assert!(!live.carried().is_empty());
-        type_into(
-            &mut doc,
-            &live.finalize(Output::Command(VoiceCommand::DeleteLastSentence)),
-        );
-        assert_eq!(doc, "");
-        // 译文是空的不动输入框
-        assert_eq!(live.replace_box("  "), []);
     }
 
     #[test]
@@ -1035,24 +416,6 @@ mod tests {
     }
 
     #[test]
-    fn commands_after_touching_do_not_backspace() {
-        // 动过键鼠后「删除」也不能退格：不知道光标在哪
-        let mut live = Live::new(false);
-        let mut doc = String::new();
-        type_into(&mut doc, &live.finalize(Output::Text("上一句。".into())));
-        type_into(&mut doc, &live.partial("删除"));
-        live.user_touched();
-        let keys = live.finalize(Output::Command(VoiceCommand::DeleteLastSentence));
-        assert!(keys.is_empty(), "{keys:?}");
-        // 「换行」这种不删东西的指令照常执行
-        live.user_touched();
-        assert_eq!(
-            live.finalize(Output::Command(VoiceCommand::NewLine)),
-            [Key::Enter]
-        );
-    }
-
-    #[test]
     fn enter_mid_sentence_does_not_retype_what_was_sent() {
         let t0 = std::time::Instant::now();
         let ms = |n| t0 + std::time::Duration::from_millis(n);
@@ -1063,8 +426,7 @@ mod tests {
         // 主人按 Enter 发走了：输入框清空
         live.user_sent();
         doc.clear();
-        // 云端随后送来同一句的定稿：不该再打一遍
-        // 剩下的只有标点：不打，免得发完的输入框里留一个「。」
+        // 云端随后送来同一句的定稿：不该再打一遍；剩下的只有标点也不打
         let raw = live.unsent("这句话非常好。");
         assert_eq!(raw, "");
         type_into(&mut doc, &live.finalize(Output::Text(raw)));
@@ -1091,9 +453,18 @@ mod tests {
     }
 
     #[test]
-    fn unsent_with_nothing_sent_is_identity() {
-        let live = Live::new(false);
-        assert_eq!(live.unsent("原样"), "原样");
+    fn enter_mid_sentence_skips_the_sent_part_even_if_the_cloud_respelled_it() {
+        // 审查 R6：屏幕上「今天天器很好」被 Enter 发走；定稿「今天天气很好。」→ 新输入框里出现「气很好。」
+        for shown in ["今天天器很好", "金天天气很好"] {
+            let mut live = Live::new(false);
+            let mut doc = String::new();
+            type_into(&mut doc, &live.partial(shown));
+            live.user_sent();
+            doc.clear();
+            let rest = live.unsent("今天天气很好。");
+            type_into(&mut doc, &live.finalize(Output::Text(rest)));
+            assert_eq!(doc, "", "{shown}：发走的那句不该再打出来");
+        }
     }
 
     #[test]
@@ -1113,52 +484,12 @@ mod tests {
                 .iter()
                 .all(|k| matches!(k, Key::Text(_)))
         );
-        let long_before: String = "一".repeat(20);
         let mut live = Live::new(false);
         let mut doc = String::new();
-        type_into(&mut doc, &live.partial_at(&long_before, ms(0)));
+        type_into(&mut doc, &live.partial_at(&"一".repeat(20), ms(0)));
         // 前面 20 个字全变：说话中不改，定稿时一次改
         let keys = live.partial_at(&"二".repeat(21), ms(800));
         assert!(keys.iter().all(|k| matches!(k, Key::Text(_))), "{keys:?}");
-    }
-
-    #[test]
-    fn rapid_revisions_only_append_and_fix_once_at_the_end() {
-        // 2026-11-19 主人：漏字发生在说话中途反复「退格再重打」时（「功能」只剩「功」），终端、微信、网页都有。
-        // 云端连着改（间隔很短）时只往后接字，前面的错字等这句定稿时一次改好。
-        let t0 = std::time::Instant::now();
-        let ms = |n| t0 + std::time::Duration::from_millis(n);
-        let mut live = Live::new(false);
-        let mut doc = String::from("原有");
-        let mut all = Vec::new();
-        for (text, at) in [
-            ("今天", 0),
-            ("今天天器", 300),
-            ("今天天气很", 600),
-            ("今天田气很好", 900),
-        ] {
-            let keys = live.partial_at(text, ms(at));
-            all.extend(keys.clone());
-            type_into(&mut doc, &keys);
-        }
-        // 300 ms 里云端改了两次：只当场改第一次，第二次留到定稿
-        assert_eq!(
-            all.iter()
-                .filter(|k| matches!(k, Key::Backspace(_)))
-                .count(),
-            1,
-            "{all:?}"
-        );
-        assert_eq!(doc, "原有今天天气很好");
-        let keys = live.finalize(Output::Text("今天天气很好。".into()));
-        assert_eq!(
-            keys.iter()
-                .filter(|k| matches!(k, Key::Backspace(_)))
-                .count(),
-            1
-        );
-        type_into(&mut doc, &keys);
-        assert_eq!(doc, "原有今天天气很好。");
     }
 
     #[test]
@@ -1191,31 +522,6 @@ mod tests {
     }
 
     #[test]
-    fn live_command_erases_spoken_words_then_acts() {
-        let mut live = Live::new(false);
-        let mut doc = String::from("第一句。");
-        live.finalize(Output::Text(String::new()));
-        type_into(&mut doc, &live.partial("换行"));
-        let keys = live.finalize(Output::Command(VoiceCommand::NewLine));
-        type_into(&mut doc, &keys);
-        assert_eq!(doc, "第一句。\n");
-    }
-
-    #[test]
-    fn delete_last_sentence_said_at_the_end_removes_the_text_before_it() {
-        let mut live = Live::new(false);
-        let mut doc = String::from("上一句。");
-        live.finalize(Output::Text(String::new()));
-        type_into(&mut doc, &live.partial("这句是错的删掉上一句"));
-        let keys = live.finalize(Output::TextThen(
-            "这句是错的，".into(),
-            VoiceCommand::DeleteLastSentence,
-        ));
-        type_into(&mut doc, &keys);
-        assert_eq!(doc, "上一句。");
-    }
-
-    #[test]
     fn live_terminal_joins_sentences_and_never_enters() {
         let mut live = Live::new(true);
         let mut doc = String::new();
@@ -1225,6 +531,22 @@ mod tests {
         type_into(&mut doc, &live.partial("再跑测试"));
         type_into(&mut doc, &live.finalize(Output::Text("再跑测试".into())));
         assert_eq!(doc, "先读文档，再跑测试");
+    }
+
+    // 指令改过输入框后（比如删掉了最后一句），终端里下一句按新的结尾补分隔
+    #[test]
+    fn after_a_command_changed_the_box_the_next_sentence_joins_its_new_end() {
+        let mut live = Live::new(true);
+        let mut doc = String::from("先读文档。");
+        live.box_changed("先读文档。");
+        type_into(&mut doc, &live.finalize(Output::Text("再跑测试".into())));
+        assert_eq!(doc, "先读文档。再跑测试");
+        let mut live = Live::new(true);
+        live.box_changed("");
+        assert_eq!(
+            live.finalize(Output::Text("开头".into())),
+            [Key::Text("开头".into())]
+        );
     }
 
     #[test]
@@ -1245,68 +567,6 @@ mod tests {
     }
 
     #[test]
-    fn send_and_undo() {
-        let mut t = Typist::default();
-        t.text("提交", true);
-        assert_eq!(t.command(VoiceCommand::Send, true), [Key::Enter]);
-        // 发出去以后不能再删
-        assert_eq!(t.command(VoiceCommand::DeleteLastSentence, true), []);
-        // 撤销就是删掉上一句（主人 2026-11-15：两个应该是同一个功能），不发 Ctrl+Z
-        let mut t = Typist::default();
-        t.text("写错了", false);
-        assert_eq!(
-            t.command(VoiceCommand::DeleteLastSentence, false),
-            [Key::Backspace(3)]
-        );
-    }
-
-    #[test]
-    fn delete_reaches_back_across_a_spoken_newline() {
-        // 主人：「发了 12345，然后换行之后，就只能删除第二行的东西了」
-        for terminal in [true, false] {
-            let mut t = Typist::default();
-            let mut doc = String::new();
-            type_into(&mut doc, &t.text("12345。", terminal));
-            type_into(&mut doc, &t.command(VoiceCommand::NewLine, terminal));
-            type_into(&mut doc, &t.text("好。", terminal));
-            assert_eq!(doc, "12345。\n好。");
-            type_into(
-                &mut doc,
-                &t.command(VoiceCommand::DeleteLastSentence, terminal),
-            );
-            assert_eq!(doc, "12345。\n");
-            // 再删一次：换行和上一行那句一起删掉
-            type_into(
-                &mut doc,
-                &t.command(VoiceCommand::DeleteLastSentence, terminal),
-            );
-            assert_eq!(doc, "");
-            assert_eq!(t.command(VoiceCommand::DeleteLastSentence, terminal), []);
-        }
-    }
-
-    #[test]
-    fn terminal_text_after_a_newline_starts_clean() {
-        // 换行后的第一句前面不该补「，」
-        let mut t = Typist::default();
-        t.text("第一行", true);
-        t.command(VoiceCommand::NewLine, true);
-        assert_eq!(t.text("第二行", true), [Key::Text("第二行".into())]);
-    }
-
-    #[test]
-    fn delete_all_removes_everything_typed_this_session() {
-        let mut t = Typist::default();
-        let mut doc = String::from("手打的");
-        type_into(&mut doc, &t.text("第一句。", false));
-        type_into(&mut doc, &t.command(VoiceCommand::NewLine, false));
-        type_into(&mut doc, &t.text("第二句🙂", false));
-        type_into(&mut doc, &t.command(VoiceCommand::DeleteAll, false));
-        assert_eq!(doc, "手打的");
-        assert_eq!(t.command(VoiceCommand::DeleteAll, false), []);
-    }
-
-    #[test]
     fn leftover_is_what_is_on_screen_but_not_yet_final() {
         // 出错时：屏幕上没说定的那截留着，交给调用方存进历史
         let mut live = Live::new(false);
@@ -1317,211 +577,6 @@ mod tests {
         // 说定了就没有剩下的
         live.finalize(Output::Text("第二句说到一半。".into()));
         assert_eq!(live.leftover(), "");
-    }
-
-    #[test]
-    fn a_spoken_command_runs_before_the_sentence_is_final() {
-        // 主人 2026-11-16：「撤回和删除的速度…不是特别快，还有发送的速度」。
-        // 说完「删除」停一下就执行，不等 3 秒静音收句；之后的定稿不再打出「删除」两个字
-        let mut live = Live::new(false);
-        let mut doc = String::new();
-        type_into(&mut doc, &live.finalize(Output::Text("第一句。".into())));
-        type_into(&mut doc, &live.partial("删除"));
-        assert_eq!(doc, "第一句。删除");
-        type_into(
-            &mut doc,
-            &live.early_command(VoiceCommand::DeleteLastSentence),
-        );
-        assert_eq!(doc, "");
-        type_into(&mut doc, &live.partial(&live.unsent("删除。")));
-        type_into(
-            &mut doc,
-            &live.finalize(Output::Text(live.unsent("删除。"))),
-        );
-        assert_eq!(doc, "");
-        // 下一句照常
-        type_into(&mut doc, &live.partial("新的一句"));
-        type_into(&mut doc, &live.finalize(Output::Text("新的一句。".into())));
-        assert_eq!(doc, "新的一句。");
-    }
-
-    #[test]
-    fn words_after_an_early_command_are_still_typed() {
-        let mut live = Live::new(false);
-        let mut doc = String::new();
-        type_into(&mut doc, &live.partial("换行"));
-        type_into(&mut doc, &live.early_command(VoiceCommand::NewLine));
-        assert_eq!(doc, "\n");
-        let rest = live.unsent("换行，接着说");
-        type_into(&mut doc, &live.partial(&rest));
-        type_into(
-            &mut doc,
-            &live.finalize(Output::Text(live.unsent("换行，接着说。"))),
-        );
-        assert_eq!(doc, "\n接着说。");
-    }
-
-    #[test]
-    fn early_delete_is_skipped_after_the_owner_touched_the_keyboard() {
-        let mut live = Live::new(false);
-        let mut doc = String::new();
-        type_into(&mut doc, &live.finalize(Output::Text("第一句。".into())));
-        type_into(&mut doc, &live.partial("删除"));
-        live.user_touched();
-        assert_eq!(live.early_command(VoiceCommand::DeleteLastSentence), []);
-    }
-
-    #[test]
-    fn a_command_at_the_end_of_a_sentence_runs_early_too() {
-        // 主人 2026-11-16：「发送的速度还是特别慢」——说完一句接着说「发送」，云端把它并进同一句，
-        // 原来要等 3 秒静音收句才执行
-        let mut live = Live::new(true);
-        let mut doc = String::new();
-        type_into(&mut doc, &live.partial("今天吃什么，发送"));
-        type_into(
-            &mut doc,
-            &live.early_finish(
-                Output::TextThen("今天吃什么，".into(), VoiceCommand::Send),
-                "今天吃什么，发送",
-            ),
-        );
-        assert_eq!(doc, "今天吃什么，\n");
-        // 定稿到了，云端顺手改了前面几个字、加了标点：已经发走了，什么都不再打
-        for text in ["今天吃点什么，发送", "今天吃点什么？发送。"] {
-            let rest = live.unsent(text);
-            type_into(&mut doc, &live.partial(&rest));
-        }
-        let rest = live.unsent("今天吃点什么？发送。");
-        type_into(&mut doc, &live.finalize(Output::Text(rest)));
-        assert_eq!(doc, "今天吃什么，\n", "不能再打一遍或再按一次回车");
-        // 下一句照常
-        type_into(&mut doc, &live.partial("下一句"));
-        type_into(&mut doc, &live.finalize(Output::Text("下一句。".into())));
-        assert_eq!(doc, "今天吃什么，\n下一句。");
-    }
-
-    #[test]
-    fn words_after_an_early_trailing_command_are_kept() {
-        let mut live = Live::new(false);
-        let mut doc = String::new();
-        type_into(&mut doc, &live.partial("第一行，换行"));
-        type_into(
-            &mut doc,
-            &live.early_finish(
-                Output::TextThen("第一行，".into(), VoiceCommand::NewLine),
-                "第一行，换行",
-            ),
-        );
-        let rest = live.unsent("第一行，换行，第二行");
-        type_into(&mut doc, &live.partial(&rest));
-        let rest = live.unsent("第一行。换行。第二行。");
-        type_into(&mut doc, &live.finalize(Output::Text(rest)));
-        assert_eq!(doc, "第一行，\n第二行。");
-    }
-
-    // 2026-11-24：豆包会把指令词吞掉，定稿只剩前面已经上屏的那半句，不能再打一遍
-    #[test]
-    fn a_final_that_lost_a_trailing_command_word_is_not_typed_twice() {
-        let mut live = Live::new(false);
-        let mut doc = String::new();
-        let spoken = "今天吃什么，发送";
-        type_into(&mut doc, &live.partial(spoken));
-        type_into(
-            &mut doc,
-            &live.early_finish(
-                Output::TextThen("今天吃什么，".into(), VoiceCommand::Send),
-                spoken,
-            ),
-        );
-        assert_eq!(doc, "今天吃什么，\n");
-        let late = live.unsent("今天吃什么？");
-        type_into(
-            &mut doc,
-            &live.finalize_from(&late, Output::Text(late.clone())),
-        );
-        assert_eq!(doc, "今天吃什么，\n");
-    }
-
-    #[test]
-    fn words_after_a_swallowed_trailing_command_are_still_typed() {
-        let mut live = Live::new(false);
-        let mut doc = String::new();
-        let spoken = "今天吃什么，发送";
-        type_into(&mut doc, &live.partial(spoken));
-        type_into(
-            &mut doc,
-            &live.early_finish(
-                Output::TextThen("今天吃什么，".into(), VoiceCommand::Send),
-                spoken,
-            ),
-        );
-        let late = live.unsent("今天吃什么？好的");
-        type_into(
-            &mut doc,
-            &live.finalize_from(&late, Output::Text(late.clone())),
-        );
-        assert_eq!(doc, "今天吃什么，\n好的");
-    }
-
-    #[test]
-    fn a_swallowed_undo_deletes_the_last_sentence_and_types_nothing() {
-        let mut live = Live::new(false);
-        let mut doc = String::new();
-        type_into(
-            &mut doc,
-            &live.finalize(Output::Text("今天先跑测试。".into())),
-        );
-        type_into(&mut doc, &live.partial("然后我准备"));
-        type_into(&mut doc, &live.finalize(Output::Text("然后我准备".into())));
-        type_into(&mut doc, &live.partial("撤回"));
-        // 豆包随后给了空的中间结果和空的定稿：按中间结果执行
-        type_into(&mut doc, &live.partial(""));
-        type_into(
-            &mut doc,
-            &live.early_command(VoiceCommand::DeleteLastSentence),
-        );
-        let late = live.unsent("");
-        type_into(
-            &mut doc,
-            &live.finalize_from(&late, Output::Text(late.clone())),
-        );
-        assert_eq!(doc, "今天先跑测试。");
-    }
-
-    #[test]
-    fn speech_glued_to_an_early_command_without_punctuation_is_kept() {
-        // 审查 R3：说「换行」停一下已经执行，再说「接着说」，云端合成「换行接着说」（没逗号），后半句全丢
-        let mut live = Live::new(false);
-        let mut doc = String::new();
-        type_into(&mut doc, &live.partial("换行"));
-        type_into(&mut doc, &live.early_command(VoiceCommand::NewLine));
-        for text in ["换行接", "换行接着说"] {
-            let rest = live.unsent(text);
-            type_into(&mut doc, &live.partial(&rest));
-        }
-        let rest = live.unsent("换行接着说。");
-        type_into(&mut doc, &live.finalize(Output::Text(rest)));
-        assert_eq!(doc, "\n接着说。");
-    }
-
-    #[test]
-    fn speech_glued_to_an_early_trailing_command_is_kept() {
-        let mut live = Live::new(true);
-        let mut doc = String::new();
-        type_into(&mut doc, &live.partial("先跑测试，发送"));
-        type_into(
-            &mut doc,
-            &live.early_finish(
-                Output::TextThen("先跑测试，".into(), VoiceCommand::Send),
-                "先跑测试，发送",
-            ),
-        );
-        assert_eq!(doc, "先跑测试，\n");
-        let rest = live.unsent("先跑测试发送以后再提交");
-        type_into(&mut doc, &live.partial(&rest));
-        let rest = live.unsent("先跑测试，发送以后再提交。");
-        type_into(&mut doc, &live.finalize(Output::Text(rest)));
-        assert_eq!(doc, "先跑测试，\n以后再提交。");
     }
 
     #[test]
@@ -1540,137 +595,6 @@ mod tests {
             ),
         );
         assert_eq!(doc, "我有百分之五十的把握。");
-    }
-
-    #[test]
-    fn frozen_sentence_still_runs_a_trailing_newline() {
-        let mut live = Live::new(false);
-        let mut doc = String::new();
-        type_into(&mut doc, &live.partial("第一行"));
-        live.user_touched();
-        type_into(
-            &mut doc,
-            &live.finalize_from(
-                "第一行，换行",
-                Output::TextThen("第一行，".into(), VoiceCommand::NewLine),
-            ),
-        );
-        assert_eq!(doc, "第一行，\n");
-    }
-
-    #[test]
-    fn enter_mid_sentence_skips_the_sent_part_even_if_the_cloud_respelled_it() {
-        // 审查 R6：屏幕上「今天天器很好」被 Enter 发走；定稿「今天天气很好。」→ 新输入框里出现「气很好。」
-        for shown in ["今天天器很好", "金天天气很好"] {
-            let mut live = Live::new(false);
-            let mut doc = String::new();
-            type_into(&mut doc, &live.partial(shown));
-            live.user_sent();
-            doc.clear(); // 输入框被 Enter 清空
-            let rest = live.unsent("今天天气很好。");
-            type_into(&mut doc, &live.finalize(Output::Text(rest)));
-            assert_eq!(doc, "", "{shown}：发走的那句不该再打出来");
-        }
-        // 发走后接着说的照常打
-        let mut live = Live::new(false);
-        let mut doc = String::new();
-        type_into(&mut doc, &live.partial("今天天器很好"));
-        live.user_sent();
-        doc.clear();
-        let rest = live.unsent("今天天气很好，明天下雨");
-        type_into(&mut doc, &live.partial(&rest));
-        let rest = live.unsent("今天天气很好，明天下雨。");
-        type_into(&mut doc, &live.finalize(Output::Text(rest)));
-        assert_eq!(doc, "明天下雨。");
-    }
-
-    #[test]
-    fn spoken_newline_can_be_switched_off_in_terminals() {
-        // 审查 R4：终端里「换行」发 Ctrl+J；Claude Code 里是换行，普通 bash 里就是回车，会执行命令
-        let mut live = Live::new(true);
-        live.set_terminal_newline(false);
-        let mut doc = String::new();
-        type_into(&mut doc, &live.partial("ls"));
-        type_into(&mut doc, &live.finalize(Output::Text("ls".into())));
-        type_into(
-            &mut doc,
-            &live.finalize(Output::Command(VoiceCommand::NewLine)),
-        );
-        assert_eq!(doc, "ls", "关掉后终端里不发 Ctrl+J");
-        // 不是终端照常换行
-        let mut live = Live::new(false);
-        live.set_terminal_newline(false);
-        assert_eq!(
-            live.finalize(Output::Command(VoiceCommand::NewLine)),
-            [Key::Enter]
-        );
-        // 默认开着
-        let mut live = Live::new(true);
-        assert_eq!(
-            live.finalize(Output::Command(VoiceCommand::NewLine)),
-            [Key::CtrlJ]
-        );
-    }
-
-    #[test]
-    fn deleting_a_sentence_counts_emoji_as_one_character_like_revisions_do() {
-        // 审查 R11：Typist 按 char 计退格（👨‍👩‍👧 算 5 个），中间结果的改字按字形计（算 1 个），两边不一致
-        let mut t = Typist::default();
-        t.text("👨‍👩‍👧好", false);
-        assert_eq!(
-            t.command(VoiceCommand::DeleteLastSentence, false),
-            [Key::Backspace(2)]
-        );
-    }
-
-    #[test]
-    fn a_snippet_replaces_the_spoken_trigger_and_keeps_its_line_breaks() {
-        let mut live = Live::new(false);
-        let mut doc = String::from("开头。");
-        live.finalize(Output::Text(String::new()));
-        type_into(&mut doc, &live.partial("我的签名"));
-        let keys = live.finalize(Output::Snippet("雪儿\n敬上".into()));
-        assert!(keys.contains(&Key::Enter), "换行和说「换行」按同一个键");
-        type_into(&mut doc, &keys);
-        assert_eq!(doc, "开头。雪儿\n敬上");
-    }
-
-    #[test]
-    fn snippet_line_breaks_in_a_terminal_follow_the_newline_setting() {
-        let mut live = Live::new(true);
-        let mut doc = String::new();
-        type_into(&mut doc, &live.partial("签名"));
-        let keys = live.finalize(Output::Snippet("雪儿\n敬上".into()));
-        assert!(keys.contains(&Key::CtrlJ) && !keys.contains(&Key::Enter));
-        type_into(&mut doc, &keys);
-        assert_eq!(doc, "雪儿\n敬上");
-        // 终端里关了换行：换成空格，绝不按回车
-        let mut live = Live::new(true);
-        live.set_terminal_newline(false);
-        let mut doc = String::new();
-        type_into(&mut doc, &live.partial("签名"));
-        type_into(
-            &mut doc,
-            &live.finalize(Output::Snippet("雪儿\n敬上".into())),
-        );
-        assert_eq!(doc, "雪儿 敬上");
-    }
-
-    #[test]
-    fn deleting_right_after_a_snippet_removes_all_of_it() {
-        let mut live = Live::new(false);
-        let mut doc = String::from("开头。");
-        live.finalize(Output::Text(String::new()));
-        type_into(&mut doc, &live.partial("地址"));
-        type_into(
-            &mut doc,
-            &live.finalize(Output::Snippet("某某路\n张三收".into())),
-        );
-        type_into(
-            &mut doc,
-            &live.finalize(Output::Command(VoiceCommand::DeleteLastSentence)),
-        );
-        assert_eq!(doc, "开头。");
     }
 
     #[test]
@@ -1693,12 +617,12 @@ mod tests {
             &[
                 Key::Text("第一句👨‍👩‍👧".into()),
                 Key::Backspace(1),
-                Key::Enter,
+                Key::End,
                 Key::Text("第二句".into()),
-                Key::CtrlJ,
+                Key::Right(3),
             ],
         );
-        assert_eq!(doc, "第一句\n第二句\n");
+        assert_eq!(doc, "第一句第二句");
         apply_keys(&mut doc, &[Key::Backspace(99)]);
         assert_eq!(doc, "");
     }

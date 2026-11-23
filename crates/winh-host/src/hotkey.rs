@@ -1,24 +1,25 @@
 //! 快捷键听写（默认右 Alt）：雪耳自己的面板 + 边说边出字，不经过微软的 Win+H。
 //!
-//! 交互见 `dictation.rs`：点一下打开面板开始听，停顿收句后麦克风变灰，再点接着听；
-//! 按住说、松开收句也行；Esc 或灰着一会儿就收起。
+//! 交互见 `dictation.rs`：点一下打开面板开始听，再点一下、点面板或按 Esc 结束。
 //! 只轮询自己关心的几个键（GetAsyncKeyState），不装全局键盘钩子、不记录按键。
 //! 键入用 SendInput 的 Unicode 方式，只发我们识别出的文字和语音指令对应的键。
+//! 语音指令管整个输入框（`inputbox`）；什么时候算单独说的指令见 `command_gate`。
 use crate::{
-    command_wait::CommandWait,
+    command_gate::{CommandGate, Finish, Partial},
     dictation::{Dictation, Effect, Input, Panel},
     focus::{Delivery, Probe, Route},
+    inputbox::{self, BoxText, Kind},
     panel::{self, Click, Look, PanelHandle},
     recovery,
     reload::KeyWatch,
     status::Status,
-    typing::{Carried, Key, Live},
+    typing::{Key, Live},
 };
 use std::{
     mem::size_of,
     sync::{
-        Arc, Mutex,
-        atomic::{AtomicBool, AtomicU32, Ordering},
+        Arc,
+        atomic::{AtomicBool, AtomicI32, AtomicU32, Ordering},
         mpsc,
     },
     thread::{self, JoinHandle},
@@ -26,66 +27,25 @@ use std::{
 };
 use windows_sys::Win32::UI::{
     Input::KeyboardAndMouse::{
-        GetAsyncKeyState, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYEVENTF_KEYUP,
-        KEYEVENTF_UNICODE, SendInput, VK_BACK, VK_CAPITAL, VK_CONTROL, VK_ESCAPE, VK_LCONTROL,
-        VK_LMENU, VK_LSHIFT, VK_LWIN, VK_MENU, VK_RCONTROL, VK_RETURN, VK_RMENU, VK_RSHIFT,
-        VK_RWIN, VK_SHIFT,
+        GetAsyncKeyState, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYEVENTF_EXTENDEDKEY,
+        KEYEVENTF_KEYUP, KEYEVENTF_UNICODE, SendInput, VK_BACK, VK_CAPITAL, VK_CONTROL, VK_END,
+        VK_ESCAPE, VK_LCONTROL, VK_LMENU, VK_LSHIFT, VK_LWIN, VK_MENU, VK_RCONTROL, VK_RETURN,
+        VK_RIGHT, VK_RMENU, VK_RSHIFT, VK_RWIN, VK_SHIFT,
     },
     WindowsAndMessaging::{GetClassNameW, GetForegroundWindow},
 };
 use xueer_ear_backend::{
     engine::{self, Event, Source},
     postprocess::Postprocess,
-    settings::{PlainTranslate, Settings},
+    settings::{Engine, Settings},
 };
 use xueer_ear_textflow::{Output, VoiceCommand};
 
 /// 正在往前台发我们自己的按键（里面可能有 Enter），轮询线程这时不把 Enter 算作主人按的
 static INJECTING: AtomicBool = AtomicBool::new(false);
+/// 现在的快捷键（虚拟键码）：发键前等它松开，免得 Alt 和要打的字凑成组合键
+static HOTKEY: AtomicI32 = AtomicI32::new(0);
 
-/// 上一轮雪耳在输入框里留下的字：下一轮在同一个输入框里接着用（删除、整段翻译都够得着），
-/// 主人中间按了回车、动了键盘鼠标或换了窗口就作废
-struct Remembered {
-    target: Option<(usize, usize)>,
-    /// 留下时 `OWNER_INPUTS` 是几
-    inputs: u32,
-    carried: Carried,
-}
-static REMEMBERED: Mutex<Option<Remembered>> = Mutex::new(None);
-/// 主人动键盘鼠标、按回车的次数。正在听写、或者记着上一轮的字（`WATCHING`）时轮询线程才数
-static OWNER_INPUTS: AtomicU32 = AtomicU32::new(0);
-static WATCHING: AtomicBool = AtomicBool::new(false);
-
-/// 一轮开始：上一轮在同一个输入框里留下的字（换了框、中间按过回车或动过键鼠就是空的）
-fn take_remembered(target: Option<(usize, usize)>) -> Carried {
-    let remembered = REMEMBERED.lock().ok().and_then(|mut slot| slot.take());
-    match remembered {
-        Some(r)
-            if target.is_some()
-                && r.target == target
-                && r.inputs == OWNER_INPUTS.load(Ordering::Acquire) =>
-        {
-            r.carried
-        }
-        _ => Carried::default(),
-    }
-}
-
-/// 一轮结束：记下雪耳留在这个输入框里的字，轮询线程开始留意主人有没有动键鼠、按回车
-fn remember(target: Option<(usize, usize)>, carried: Carried) {
-    let keep = target.is_some() && !carried.is_empty();
-    if let Ok(mut slot) = REMEMBERED.lock() {
-        *slot = keep.then(|| Remembered {
-            target,
-            inputs: OWNER_INPUTS.load(Ordering::Acquire),
-            carried,
-        });
-    }
-    WATCHING.store(keep, Ordering::Release);
-}
-
-/// 按住超过这么久再松开，算「按住说话」，松开就收句；更短的算「点一下」
-const HOLD_THRESHOLD: Duration = Duration::from_millis(400);
 /// 停了马上又开时，等上一轮把最后一句收完的最长时间（收句最多等 4 秒定稿）
 const FINISH_GRACE: Duration = Duration::from_millis(4500);
 /// 识别出新字后，波浪保持这么久再变回麦克风
@@ -128,9 +88,9 @@ struct Session {
     cancel: Arc<AtomicBool>,
     superseded: Arc<AtomicBool>,
     /// 主人自己按 Enter 的次数（轮询线程加，听写线程读），用来去掉已发走的文字
-    sent: Arc<std::sync::atomic::AtomicU32>,
+    sent: Arc<AtomicU32>,
     /// 主人动了键盘或鼠标的次数（点别处、打字）：听写线程看到变化就不再往回改字
-    touched: Arc<std::sync::atomic::AtomicU32>,
+    touched: Arc<AtomicU32>,
     worker: JoinHandle<()>,
 }
 
@@ -146,9 +106,10 @@ fn poll_loop(vk: u32, stop: &AtomicBool, status: &Status) {
     let mut watch = KeyWatch::new(vk, Settings::modified_default());
     let mut checked = Instant::now();
     let mut vk = vk as i32;
+    HOTKEY.store(vk, Ordering::Release);
     let (clicks_tx, clicks) = mpsc::channel();
     let panel = panel::spawn(clicks_tx);
-    let mut state = Dictation::new(HOLD_THRESHOLD);
+    let mut state = Dictation::new();
     let mut session: Option<Session> = None;
     let mut was_held = false;
     let mut escape_key = EscapeKey::default();
@@ -173,6 +134,7 @@ fn poll_loop(vk: u32, stop: &AtomicBool, status: &Status) {
             if let Some(new) = changed {
                 println!("快捷键改成 {new:#x}");
                 vk = new as i32;
+                HOTKEY.store(vk, Ordering::Release);
             }
         }
         let held = pressed(vk);
@@ -193,22 +155,20 @@ fn poll_loop(vk: u32, stop: &AtomicBool, status: &Status) {
             }
         }
         was_held = held;
-        // 主人自己动了键盘或鼠标（不是热键、Esc，也不是点雪耳面板）：通知这轮听写别再往回改字；
-        // 两轮之间也数，记着的上一轮的字就作废
-        let watching = session.is_some() || WATCHING.load(Ordering::Acquire);
-        if watching && owner_input(vk, panel.hwnd()) {
-            OWNER_INPUTS.fetch_add(1, Ordering::AcqRel);
-            if let Some(s) = &session {
-                s.touched.fetch_add(1, Ordering::AcqRel);
-            }
+        // 主人自己动了键盘或鼠标（不是热键、Esc，也不是点雪耳面板）：通知这轮听写别再往回改字
+        if let Some(s) = &session
+            && owner_input(vk, panel.hwnd())
+        {
+            s.touched.fetch_add(1, Ordering::AcqRel);
         }
         // 主人自己按 Enter（我们注入 Enter 时会先置 INJECTING，不算）
         let enter = pressed(i32::from(VK_RETURN));
-        if enter && !was_enter && !INJECTING.load(Ordering::Acquire) && watching {
-            OWNER_INPUTS.fetch_add(1, Ordering::AcqRel);
-            if let Some(s) = &session {
-                s.sent.fetch_add(1, Ordering::AcqRel);
-            }
+        if enter
+            && !was_enter
+            && !INJECTING.load(Ordering::Acquire)
+            && let Some(s) = &session
+        {
+            s.sent.fetch_add(1, Ordering::AcqRel);
         }
         was_enter = enter;
         // 面板开着时把 Esc 登记成雪耳自己的热键：这一下 Esc 只给雪耳，不会再发给前台程序
@@ -268,8 +228,8 @@ fn begin(panel: PanelHandle, status: Status, previous: Option<Session>) -> Sessi
     let release = Arc::new(AtomicBool::new(false));
     let cancel = Arc::new(AtomicBool::new(false));
     let superseded = Arc::new(AtomicBool::new(false));
-    let sent = Arc::new(std::sync::atomic::AtomicU32::new(0));
-    let touched = Arc::new(std::sync::atomic::AtomicU32::new(0));
+    let sent = Arc::new(AtomicU32::new(0));
+    let touched = Arc::new(AtomicU32::new(0));
     let worker_touched = touched.clone();
     let worker_superseded = superseded.clone();
     let (worker_release, worker_cancel, worker_sent) =
@@ -326,14 +286,26 @@ fn begin(panel: PanelHandle, status: Status, previous: Option<Session>) -> Sessi
     }
 }
 
+/// 这一轮哪家为主：上一轮屋里吵（开着风扇这类）、又选了豆包为主时，这轮微信为主、豆包备用
+/// （主人 2026-11-24 真实风扇录音：豆包错字 14～17%，微信 7%）。安静了就回到选的那家
+fn channel_for_round(chosen: Engine) -> Engine {
+    match (chosen, xueer_ear_audio::room::last_round_noisy()) {
+        (Engine::Doubao, Some(true)) => {
+            println!("上一轮屋里吵，这轮微信为主、豆包备用");
+            Engine::Wetype
+        }
+        _ => chosen,
+    }
+}
+
 /// 录一轮音：中间结果边说边打到光标处，每句定稿换成整理后的文字或执行指令。
-/// 停顿只收句不结束；主人再点一下 / 点麦克风 / Esc，或到「最长听写时间」才结束（面板变灰）。
+/// 停顿只收句不结束；主人再点一下 / 点面板 / Esc，或到「最长听写时间」才结束（面板变灰）。
 fn record(
     release: Arc<AtomicBool>,
     cancel: Arc<AtomicBool>,
     superseded: Arc<AtomicBool>,
-    sent: Arc<std::sync::atomic::AtomicU32>,
-    touched: Arc<std::sync::atomic::AtomicU32>,
+    sent: Arc<AtomicU32>,
+    touched: Arc<AtomicU32>,
     panel: &PanelHandle,
     status: &Status,
 ) -> crate::install::Result<()> {
@@ -348,10 +320,6 @@ fn record(
     let terminal = foreground_is_terminal();
     let mut live = Live::new(terminal);
     let target = foreground_text_target();
-    live.set_terminal_newline(settings.text.terminal_newline);
-    // 同一个输入框里上一轮打的字接着记着（中间没按回车、没动键鼠）
-    live.resume(take_remembered(target));
-    let plain_translate = settings.commands.plain_translate;
     // 排查用：XUEER_EAR_TEST_WAVE=文件.wav 时用录好的音代替麦克风，走完全一样的上屏和指令流程
     let source = match std::env::var_os("XUEER_EAR_TEST_WAVE") {
         Some(path) => Source::Wave(path.into()),
@@ -382,6 +350,8 @@ fn record(
         });
     }
     let mut typed_any = false;
+    // 雪耳往屏幕上发过几次会改字的键：译文回来时这个数变了，说明框里又多了字，译文就过时了
+    let mut typed = 0_u32;
     let started = Instant::now();
     // 最近一次识别出新字的时间；开头留出说第一句的时间
     let mut last_text = Instant::now();
@@ -389,8 +359,8 @@ fn record(
     let max_listen = Duration::from_secs(u64::from(settings.max_listen_minutes) * 60);
     // 这一句里说话的最大音量和最后的增益，一句说完写一行日志（只记数字，不记内容）
     let (mut loudest, mut last_gain) = (0_u32, 1_f32);
-    // 中间结果里说了指令：停够了就执行；云端把指令词吞了也照样执行
-    let mut command_wait = CommandWait::default();
+    // 语音指令：前面停够、单独说、说完停一下才算（主人 2026-11-24）
+    let mut gate = CommandGate::new(settings.commands.pause(), settings.commands.settle());
     let mut translated_requested = false;
     let mut translation: Option<VoiceTranslation> = None;
     let still_current = |(sent_at_command, touched_at_command)| {
@@ -401,12 +371,13 @@ fn record(
             && target.is_some()
             && foreground_text_target() == target
     };
-    let result = engine::run_cloud(source, settings.engine, engine_stop.clone(), |event| {
+    let engine = channel_for_round(settings.engine);
+    let result = engine::run_cloud(source, engine, engine_stop.clone(), |event| {
         if stopped.load(Ordering::Acquire) {
             return Ok(());
         }
-        let mut request_translation = None;
-        let mut sentence_finished = false;
+        let mut command: Option<(String, &str)> = None;
+        let mut keys = Vec::new();
         match event {
             Event::Input { name, .. } => status.microphone(name),
             Event::Started => opening.microphone = Some(round_began.elapsed()),
@@ -426,7 +397,8 @@ fn record(
                 }
                 opening.connected(name, waited_ms);
             }
-            // 停顿只是一句说完（定稿上屏），不结束：一直听到主人再点一下、点麦克风、Esc，
+            Event::Voice { pause_ms } => gate.voice(pause_ms),
+            // 停顿只是一句说完（定稿上屏），不结束：一直听到主人再点一下、点面板、Esc，
             // 或者超过「最长听写时间」（主人 2026-11-15：说着说着停顿一下就断了，要能一直说）
             // 蓝麦克风=在听；识别出新字的那一阵子显示波浪（只认真的出字，咳嗽、敲桌子不算）
             Event::Activity(phase) => {
@@ -434,7 +406,6 @@ fn record(
                 status.phase(if phase == "paused" { "armed" } else { phase });
                 if phase == "paused" {
                     last_heard.clear();
-                    sentence_finished = true;
                     println!("一句说完：原始峰值 {loudest}，自动放大 {last_gain:.1} 倍");
                     loudest = 0;
                 }
@@ -457,14 +428,9 @@ fn record(
             } => {
                 loudest = loudest.max(peak);
                 last_gain = gain;
-                // 单独说完指令停一小会儿（设置「说完指令后等」，默认 0.6 秒）没再出新字就执行，不等静音收句。
-                // 主人 2026-11-16：「撤回和删除的速度…不是特别快，还有发送的速度」——原来要等 3 秒静音
-                if let Some(spoken) = command_wait.due(settings.commands.settle(), Instant::now()) {
-                    let (keys, translate) =
-                        settle_command(&post, &mut live, &spoken, panel, "停够了执行");
-                    request_translation = translate;
-                    typed_any |= keys.iter().any(|k| matches!(k, Key::Text(_)));
-                    deliver(&mut delivery, &keys, panel);
+                // 单独说完指令停一小会儿（设置「指令后等」，默认 0.6 秒）没再出新字就执行，不等云端定稿
+                if let Some(spoken) = gate.due(Instant::now()) {
+                    command = Some((spoken, "停够了执行"));
                 }
                 status.progress(peak, partials, finals);
                 panel.level(peak);
@@ -475,9 +441,7 @@ fn record(
                     panel.set_if_changed(Look::Listening);
                 }
                 // 到「最长听写时间」，或者好一阵（设置「没有新字自动结束」，默认 10 秒）没识别出新字，就自己结束
-                if started.elapsed() >= max_listen
-                    || last_text.elapsed() >= settings.commands.quiet_stop()
-                {
+                if started.elapsed() >= max_listen || last_text.elapsed() >= settings.quiet_stop() {
                     release.store(true, Ordering::Release);
                 }
             }
@@ -513,126 +477,72 @@ fn record(
                     delivery.touched(Probe::start);
                 }
                 let text = live.unsent(&speech.text);
-                if !text.trim().is_empty()
-                    && translation
-                        .as_ref()
-                        .is_some_and(|job| !job.in_command_sentence)
-                {
-                    // 开始说下一句了。不能拿上一版译文覆盖新输入。
-                    translation = None;
-                }
-                let keys = if speech.final_result {
-                    sentence_finished = true;
-                    // 中间结果已经是指令、还没停够定稿就到了，定稿里却没有指令词：豆包会把单独说的「撤回」
-                    // 吞掉、定稿是空的（2026-11-24）；微信会把「翻译成英文」那句自己翻成英文（2026-11-23）。
-                    // 按中间结果执行，这句定稿只打多出来的字
-                    let mut keys = Vec::new();
-                    let mut text = text;
-                    if let Some(spoken) = command_wait.finished(&speech.text) {
-                        let (settled, translate) = settle_command(
-                            &post,
-                            &mut live,
-                            &spoken,
-                            panel,
-                            "定稿里没有指令词，按中间结果执行",
-                        );
-                        keys = settled;
-                        request_translation = translate;
-                        text = live.unsent(&speech.text);
+                let is_command = post.command_only(&text).is_some();
+                if speech.final_result {
+                    match gate.finished(&text, is_command) {
+                        Finish::Text(text) => {
+                            let output = post.finalize_text(&text, crate::broker::now_ms());
+                            keys = live.finalize_from(&text, output);
+                        }
+                        Finish::Command(spoken) => {
+                            keys = live.finalize(Output::Text(String::new()));
+                            command = Some((spoken, "定稿时执行"));
+                        }
                     }
-                    let output = post.finalize(&text, crate::broker::now_ms());
-                    if let Some(command) = translation_of(&output) {
-                        request_translation = Some((command, false));
-                    }
-                    if let Some((command, whole)) = command_of(&output) {
-                        report_command(command, whole, &live, panel, "定稿时执行");
-                    }
-                    keys.extend(live.finalize_from(&text, output));
-                    keys
                 } else {
-                    // 整句只有指令词，或者句尾单独一小句是指令（「今天吃什么，发送」）：
-                    // 记下来，停一小会儿没再说别的就提前执行
-                    let is_command = post.command_only(&text).is_some()
-                        || post.trailing_command(&text).is_some();
-                    command_wait.partial(&text, is_command, Instant::now());
-                    live.partial(&text)
-                };
-                typed_any |= keys.iter().any(|k| matches!(k, Key::Text(_)));
-                deliver(&mut delivery, &keys, panel);
+                    match gate.partial(
+                        &text,
+                        post.starts_command(&text),
+                        is_command,
+                        Instant::now(),
+                    ) {
+                        Partial::Hold => {}
+                        Partial::Type(text) => keys = live.partial(&text),
+                    }
+                }
             }
         }
-        translated_requested |= request_translation.is_some();
-        if release.load(Ordering::Acquire) && !wave_probe {
-            // 这轮结束了译文还没回来：不再往屏幕上补字，但要说一声，别让主人干等（2026-11-21 主人：说了两次翻译完全没反应）
-            if let Some(job) = translation.take() {
-                println!("翻译没赶上：等了 {} ms", job.started.elapsed().as_millis());
-                panel.notice("翻译还没回来，这轮已结束，没替换");
+        typed_any |= keys.iter().any(|k| matches!(k, Key::Text(_)));
+        if deliver(&mut delivery, &keys, panel) {
+            typed += 1;
+        }
+        if let Some((spoken, how)) = command
+            && let Some(command) = post.command_only(&spoken)
+        {
+            println!("指令：{}（{how}）", command.name());
+            let input = (seen_sent, seen_touched);
+            match run_command(command, terminal, &mut live, &mut delivery, panel) {
+                Ran::Done => typed += 1,
+                Ran::Nothing => {}
+                Ran::Translate(source, target) => {
+                    translated_requested = true;
+                    translation = VoiceTranslation::start(source, target, input, typed)
+                        .map_err(|reason| panel.listening_notice(&format!("翻译失败：{reason}")))
+                        .ok();
+                    if translation.is_some() {
+                        panel.set(Look::Connecting);
+                    }
+                }
             }
-            return Ok(());
         }
         if translation
             .as_ref()
-            .is_some_and(|job| !still_current(job.input))
+            .is_some_and(|job| !still_current(job.input) || job.typed != typed)
         {
+            println!("翻译作废：输入框在等译文时变了");
             translation = None;
-        }
-        if let Some((command, in_command_sentence)) = request_translation {
-            let input = (seen_sent, seen_touched);
-            // 和「发送」一样，指令确认时正文已上屏。不必等听写连接收完才发翻译请求。
-            if still_current(input) {
-                translation = start_translation(
-                    &live,
-                    panel,
-                    input,
-                    (command, plain_translate),
-                    in_command_sentence,
-                    terminal,
-                );
-            }
-        } else if sentence_finished
-            && let Some(job) = translation.as_mut()
-            && job.in_command_sentence
-        {
-            job.in_command_sentence = false;
-            // 指令那句定稿时若真的又补了正文，只翻最终稿。
-            if !job.matches(&live) {
-                let (input, command) = (job.input, job.command);
-                translation = start_translation(
-                    &live,
-                    panel,
-                    input,
-                    (command, plain_translate),
-                    false,
-                    terminal,
-                );
-            }
+            panel.set(Look::Listening);
         }
         if let Some(job) = translation.as_ref()
-            && live.leftover().is_empty()
             && let Some(result) = job.try_result()
         {
-            let current = still_current(job.input)
-                && job.matches(&live)
-                && !release.load(Ordering::Acquire)
-                && box_unchanged(&result);
-            println!(
-                "翻译回来：{}，{} ms，{}",
-                match &result {
-                    Ok((scope, _)) => scope.describe(),
-                    Err(_) => String::new(),
-                },
-                job.started.elapsed().as_millis(),
-                match (&result, current) {
-                    (Err(_), _) => "失败",
-                    (Ok(_), true) => "已替换",
-                    (Ok(_), false) => "输入框已经变了，没替换",
-                }
-            );
-            if current {
-                let keys = apply_translation(result, &mut live, panel);
-                deliver(&mut delivery, &keys, panel);
+            let job = translation.take().expect("checked above");
+            if apply_translation(job, result, &mut live, panel) {
+                typed += 1;
             }
-            translation = None;
+        }
+        if release.load(Ordering::Acquire) && !wave_probe {
+            return Ok(());
         }
         Ok(())
     });
@@ -644,14 +554,7 @@ fn record(
         }
         println!("没找到输入框，这轮 {} 字放进剪贴板", text.chars().count());
     }
-    // 下一轮在同一个输入框里接着记雪耳打的字；这轮的字攒去复制了的，框里没有，不记
-    let carried = if delivery.held().is_some() {
-        Carried::default()
-    } else {
-        live.carried()
-    };
     if let Err(error) = result {
-        remember(target, carried);
         // 屏幕上已经出的字不动；还没说定的那截原样存进历史，免得白说
         if !stopped.load(Ordering::Acquire) {
             post.keep_unfinished(live.leftover(), crate::broker::now_ms());
@@ -662,20 +565,17 @@ fn record(
         "这轮结束：说了翻译={translated_requested} 取消={} 已出字={typed_any}",
         stopped.load(Ordering::Acquire)
     );
-    // 文件探针没有持续监听。保留它在音频 EOF 后等候译文的行为。
-    if wave_probe
-        && let Some(job) = translation
-        && job.matches(&live)
-    {
-        if let Some(result) = job.wait(|| still_current(job.input))
-            && still_current(job.input)
-            && box_unchanged(&result)
-        {
-            send_keys(&apply_translation(result, &mut live, panel));
+    // 「翻译成英文」说完马上收起了：译文回来时框里没变就照样换上
+    if let Some(job) = translation {
+        match job.wait(|| still_current(job.input)) {
+            Some(result) if still_current(job.input) => {
+                apply_translation(job, result, &mut live, panel);
+            }
+            _ => {
+                println!("翻译作废：这轮已结束，输入框变了");
+                panel.notice("翻译回来时输入框已经变了，没替换");
+            }
         }
-        remember(target, live.carried());
-    } else {
-        remember(target, carried);
     }
     if !typed_any && !translated_requested && !stopped.load(Ordering::Acquire) {
         crate::sound::play(crate::sound::Cue::Missed, settings.sounds_enabled);
@@ -744,193 +644,110 @@ fn open_control_panel(args: &[&str]) {
     }
 }
 
-/// 中间结果里的指令现在就执行（停够了，或定稿把指令那句改写了）：整句只有指令词就擦掉它再按指令；
-/// 句尾带指令就先把前面的话定稿上屏（会记进历史），再按指令。返回要按的键，以及要不要整段翻译。
-fn settle_command(
-    post: &Postprocess,
+/// 执行了指令之后
+enum Ran {
+    /// 按了键，输入框变了
+    Done,
+    /// 什么都没按（没找到输入框、框是空的……面板上已经说了原因）
+    Nothing,
+    /// 读到了要翻的整个输入框，去翻译
+    Translate(BoxText, xueer_ear_backend::translate::Target),
+}
+
+/// 执行一个语音指令（主人 2026-11-24：指令管焦点所在输入框的全部文字）
+fn run_command(
+    command: VoiceCommand,
+    terminal: bool,
     live: &mut Live,
-    spoken: &str,
+    delivery: &mut Delivery,
     panel: &PanelHandle,
-    how: &str,
-) -> (Vec<Key>, Option<(VoiceCommand, bool)>) {
-    match post.command_only(spoken) {
-        Some(command) => {
-            report_command(command, true, live, panel, how);
-            (
-                live.early_command(command),
-                command.is_translate().then_some((command, true)),
-            )
+) -> Ran {
+    if delivery.holding() {
+        panel.listening_notice("没找到输入框");
+        return Ran::Nothing;
+    }
+    if command == VoiceCommand::Send {
+        send_keys(&[Key::Enter]);
+        live.box_changed("");
+        return Ran::Done;
+    }
+    let read = inputbox::read(terminal, &|keys| send_keys(keys), panel.hwnd());
+    let box_text = match read {
+        Ok(box_text) => box_text,
+        Err(reason) => {
+            println!("指令没执行：{reason}");
+            panel.listening_notice(&reason);
+            return Ran::Nothing;
         }
-        None => {
-            let output = post.finalize(spoken, crate::broker::now_ms());
-            let translate = translation_of(&output).map(|c| (c, true));
-            if let Some((command, whole)) = command_of(&output) {
-                report_command(command, whole, live, panel, how);
-            }
-            (live.early_finish(output, spoken), translate)
+    };
+    if command.is_translate() {
+        let target = if command == VoiceCommand::TranslateToEnglish {
+            xueer_ear_backend::translate::Target::English
+        } else {
+            xueer_ear_backend::translate::Target::Chinese
+        };
+        let count = box_text.text.chars().count();
+        if box_text.text.trim().is_empty() {
+            panel.listening_notice("输入框是空的");
+            return Ran::Nothing;
         }
-    }
-}
-
-/// 这句是哪个指令，整句只有指令（true）还是接在句尾（false）
-fn command_of(output: &Output) -> Option<(VoiceCommand, bool)> {
-    match output {
-        Output::Command(command) => Some((*command, true)),
-        Output::TextThen(_, command) => Some((*command, false)),
-        _ => None,
-    }
-}
-
-/// 要执行一个语音指令了（在真的执行之前调用）：日志记一行，只记是哪个指令、怎么执行的，不记说的话。
-/// 删除类的什么都删不了时（动过键盘鼠标、还没打过字）在面板上说一声，免得以为没听见（主人 2026-11-24：撤回没用）
-fn report_command(
-    command: VoiceCommand,
-    whole_sentence: bool,
-    live: &Live,
-    panel: &PanelHandle,
-    how: &str,
-) {
-    let deletes = matches!(
-        command,
-        VoiceCommand::DeleteLastSentence | VoiceCommand::DeleteAll
-    );
-    let blocked = deletes && live.nothing_to_delete(whole_sentence);
-    println!(
-        "指令：{}（{how}）{}",
-        command.name(),
-        if blocked { "，没有能删的字" } else { "" }
-    );
-    if blocked {
-        panel.listening_notice("没有能删的字：动过键盘鼠标后，雪耳不删之前的字");
-    }
-}
-
-/// 这句是不是翻译指令，是哪一种
-fn translation_of(output: &Output) -> Option<VoiceCommand> {
-    match output {
-        Output::Command(command) | Output::TextThen(_, command) if command.is_translate() => {
-            Some(*command)
+        if count > inputbox::MAX_CHARS {
+            panel.listening_notice(&format!(
+                "输入框里超过 {} 字，没翻；可以用翻译小窗",
+                inputbox::MAX_CHARS
+            ));
+            return Ran::Nothing;
         }
-        _ => None,
+        return Ran::Translate(box_text, target);
     }
-}
-
-/// 译成哪种语言（主人 2026-11-21）：「翻译成英文 / 中文」照说的来；单说「翻译」看设置，
-/// 默认按内容定：有中文就翻成英文，全是英文才翻成中文
-fn translation_target(
-    command: VoiceCommand,
-    plain: PlainTranslate,
-    text: &str,
-) -> xueer_ear_backend::translate::Target {
-    use xueer_ear_backend::translate::Target;
-    match (command, plain) {
-        (VoiceCommand::TranslateToEnglish, _) => Target::English,
-        (VoiceCommand::TranslateToChinese, _) => Target::Chinese,
-        (_, PlainTranslate::English) => Target::English,
-        (_, PlainTranslate::Chinese) => Target::Chinese,
-        (_, PlainTranslate::Auto) => Target::for_text(text),
-    }
-}
-
-/// 翻的是哪些字
-#[derive(Debug, Clone)]
-enum Scope {
-    /// 整个输入框（UI 自动化读到的原文）：译文回来后再读一次，没变才全选换掉
-    Box(String),
-    /// 雪耳打过、还留在框里的字（读不到输入框时，含前几轮接着的）：退格删掉再打
-    Typed(String),
-}
-
-impl Scope {
-    fn text(&self) -> &str {
-        match self {
-            Self::Box(text) | Self::Typed(text) => text,
+    match box_text.delete(command) {
+        Ok(change) => {
+            send_keys(&change.keys);
+            live.box_changed(&change.after);
+            Ran::Done
         }
-    }
-
-    /// 日志里写的：翻了哪种、多少字（不记内容）
-    fn describe(&self) -> String {
-        let count = self.text().chars().count();
-        match self {
-            Self::Box(_) => format!("整框 {count} 字"),
-            Self::Typed(_) => format!("雪耳打的 {count} 字"),
+        Err(reason) => {
+            panel.listening_notice(&reason);
+            Ran::Nothing
         }
     }
 }
 
-/// 翻哪些字：不是终端就先读整个输入框（读得到、对得上就整框翻），否则翻雪耳打过的字
-fn choose_scope(terminal: bool, typed: Option<&str>) -> Result<Scope, String> {
-    let typed_now = typed.filter(|text| !text.trim().is_empty());
-    if !terminal {
-        // 等擦掉指令词的退格落地再读
-        thread::sleep(Duration::from_millis(80));
-        if let Some(read) = crate::inputbox::read()
-            && let Some(text) = crate::inputbox::usable(&read, typed_now)?
-        {
-            return Ok(Scope::Box(text));
-        }
-    }
-    match typed {
-        Some(text) if !text.trim().is_empty() => Ok(Scope::Typed(text.to_owned())),
-        Some(_) => Err("还没有要翻译的话".into()),
-        None => Err("这轮动过键盘鼠标，又读不到输入框，没法整段替换；可以用翻译小窗".into()),
-    }
-}
-
-/// 整框翻的：现在框里还是当时读到的原文吗（主人这期间手打了字就不换）
-fn box_unchanged(result: &Result<(Scope, String), String>) -> bool {
-    match result {
-        Ok((Scope::Box(source), _)) => crate::inputbox::read().as_deref() == Some(source.as_str()),
-        _ => true,
-    }
-}
-
+/// 后台在翻的整个输入框
 struct VoiceTranslation {
-    /// 开始时雪耳打过、留在框里的字：之后雪耳又打了字，这份译文就过时了
-    typed: Option<String>,
-    result: mpsc::Receiver<Result<(Scope, String), String>>,
+    source: BoxText,
+    result: mpsc::Receiver<Result<String, String>>,
+    /// 说指令时主人按回车、动键鼠的次数：变了就说明框可能变了
     input: (u32, u32),
-    command: VoiceCommand,
-    in_command_sentence: bool,
+    /// 说指令时雪耳发过几次改字的键：之后又打了字，译文就过时了
+    typed: u32,
     started: Instant,
 }
 
 impl VoiceTranslation {
-    /// 在后台线程里定翻哪些字（要读输入框）、再翻译
     fn start(
-        typed: Option<String>,
+        source: BoxText,
+        target: xueer_ear_backend::translate::Target,
         input: (u32, u32),
-        (command, plain): (VoiceCommand, PlainTranslate),
-        in_command_sentence: bool,
-        terminal: bool,
+        typed: u32,
     ) -> Result<Self, String> {
-        let seen = typed.clone();
+        let text = source.text.clone();
         let (sender, result) = mpsc::channel();
         thread::Builder::new()
             .spawn(move || {
-                let translated = choose_scope(terminal, seen.as_deref()).and_then(|scope| {
-                    let target = translation_target(command, plain, scope.text());
-                    xueer_ear_backend::translate::translate_into(scope.text(), target)
-                        .map(|text| (scope, text))
-                });
-                let _ = sender.send(translated);
+                let _ = sender.send(xueer_ear_backend::translate::translate_into(&text, target));
             })
             .map_err(|error| error.to_string())?;
         Ok(Self {
-            typed,
+            source,
             result,
             input,
-            command,
-            in_command_sentence,
+            typed,
             started: Instant::now(),
         })
     }
 
-    fn matches(&self, live: &Live) -> bool {
-        live.typed_text() == self.typed
-    }
-
-    fn try_result(&self) -> Option<Result<(Scope, String), String>> {
+    fn try_result(&self) -> Option<Result<String, String>> {
         match self.result.try_recv() {
             Ok(result) => Some(result),
             Err(mpsc::TryRecvError::Empty) => None,
@@ -938,8 +755,9 @@ impl VoiceTranslation {
         }
     }
 
-    fn wait(&self, still_current: impl Fn() -> bool) -> Option<Result<(Scope, String), String>> {
-        while still_current() {
+    fn wait(&self, still_current: impl Fn() -> bool) -> Option<Result<String, String>> {
+        let deadline = Instant::now() + Duration::from_secs(60);
+        while still_current() && Instant::now() < deadline {
             match self.result.recv_timeout(Duration::from_millis(25)) {
                 Ok(result) => return Some(result),
                 Err(mpsc::RecvTimeoutError::Timeout) => {}
@@ -952,73 +770,62 @@ impl VoiceTranslation {
     }
 }
 
-/// 「翻译」是这一轮里的动作，不结束听写。保留原文，等有效译文才替换。
-/// 终端读不到输入框，雪耳在里面又没打过字（或者这轮动过键鼠）时直接说一声；别的情况到后台去读输入框
-fn start_translation(
-    live: &Live,
-    panel: &PanelHandle,
-    input: (u32, u32),
-    command: (VoiceCommand, PlainTranslate),
-    in_command_sentence: bool,
-    terminal: bool,
-) -> Option<VoiceTranslation> {
-    let typed = live.typed_text();
-    if terminal {
-        match typed.as_deref() {
-            None => {
-                panel.listening_notice("这轮动过键盘鼠标，没法整段替换，请用翻译小窗");
-                return None;
-            }
-            Some(text) if text.trim().is_empty() => {
-                panel.listening_notice("还没有要翻译的话");
-                return None;
-            }
-            Some(_) => {}
-        }
-    }
-    match VoiceTranslation::start(typed, input, command, in_command_sentence, terminal) {
-        Ok(job) => {
-            panel.set(Look::Connecting);
-            Some(job)
-        }
-        Err(reason) => {
-            panel.listening_notice(&format!("翻译失败：{reason}"));
-            None
-        }
-    }
-}
-
-/// 译文回来了：返回换成译文要按的键（整框的全选再打，雪耳打的退格再打）；失败就在面板上说一声，不按键
+/// 译文回来了：框里还是当时那些字就整框换掉（读得到的框再读一遍核对；全选复制读的，
+/// 靠主人没动键鼠、雪耳没再打字来保证）。失败就在面板上说一声。返回按了键没有
 fn apply_translation(
-    result: Result<(Scope, String), String>,
+    job: VoiceTranslation,
+    result: Result<String, String>,
     live: &mut Live,
     panel: &PanelHandle,
-) -> Vec<Key> {
-    match result {
-        Ok((scope, translated)) => {
-            panel.set(Look::Listening);
-            match scope {
-                Scope::Box(_) => live.replace_box(&translated),
-                Scope::Typed(_) => live.replace_typed(&translated),
-            }
-        }
+) -> bool {
+    let waited = job.started.elapsed().as_millis();
+    panel.set(Look::Listening);
+    let translated = match result {
+        Ok(text) => text,
         Err(reason) => {
+            println!(
+                "翻译失败：{} 字，{waited} ms",
+                job.source.text.chars().count()
+            );
             eprintln!("翻译失败：{reason}");
             panel.listening_notice(&format!("翻译失败：{reason}"));
-            Vec::new()
+            return false;
+        }
+    };
+    if job.source.kind != Kind::Copied {
+        let now = inputbox::read(job.source.kind == Kind::Terminal, &|_| {}, panel.hwnd());
+        if now.as_ref().map(|b| b.text.as_str()) != Ok(job.source.text.as_str()) {
+            println!("翻译回来：输入框已经变了，没替换（{waited} ms）");
+            panel.listening_notice("翻译回来时输入框已经变了，没替换");
+            return false;
         }
     }
+    let change = job.source.replace(&translated);
+    send_keys(&change.keys);
+    live.box_changed(&change.after);
+    println!(
+        "翻译回来：整框 {} 字 → {} 字，{waited} ms，已替换",
+        job.source.text.chars().count(),
+        translated.chars().count()
+    );
+    true
 }
 
-/// 发按键，或者（这一轮前台没有输入框时）攒起来；第一次攒时在面板上说一声
-fn deliver(delivery: &mut Delivery, keys: &[Key], panel: &PanelHandle) {
+/// 发按键，或者（这一轮前台没有输入框时）攒起来；第一次攒时在面板上说一声。返回真的发到屏幕上了没有
+fn deliver(delivery: &mut Delivery, keys: &[Key], panel: &PanelHandle) -> bool {
     if keys.is_empty() {
-        return;
+        return false;
     }
     match delivery.route(keys) {
-        Route::Screen => send_keys(keys),
-        Route::Held { started: true } => panel.listening_notice("没找到输入框，说完自动复制"),
-        Route::Held { started: false } => {}
+        Route::Screen => {
+            send_keys(keys);
+            true
+        }
+        Route::Held { started: true } => {
+            panel.listening_notice("没找到输入框，说完自动复制");
+            false
+        }
+        Route::Held { started: false } => false,
     }
 }
 
@@ -1219,6 +1026,16 @@ fn other_modifier(vk: i32) -> bool {
     .any(pressed)
 }
 
+/// 终端的窗口类名：Windows Terminal、老式控制台、mintty（Git Bash）、ConEmu、PuTTY。
+/// 终端里回车就是发送、Ctrl+C 是中断：句子之间补分隔，读输入框只看屏幕，从不全选复制
+const TERMINALS: [&str; 5] = [
+    "CASCADIA_HOSTING_WINDOW_CLASS",
+    "ConsoleWindowClass",
+    "mintty",
+    "VirtualConsoleClass",
+    "PuTTY",
+];
+
 fn foreground_is_terminal() -> bool {
     let mut class = [0_u16; 64];
     let count = unsafe {
@@ -1228,8 +1045,7 @@ fn foreground_is_terminal() -> bool {
             class.len() as i32,
         )
     };
-    count > 0
-        && String::from_utf16_lossy(&class[..count as usize]) == "CASCADIA_HOSTING_WINDOW_CLASS"
+    count > 0 && TERMINALS.contains(&String::from_utf16_lossy(&class[..count as usize]).as_str())
 }
 
 fn key(vk: u16, scan: u16, flags: u32) -> INPUT {
@@ -1249,6 +1065,14 @@ fn key(vk: u16, scan: u16, flags: u32) -> INPUT {
 
 fn tap(vk: u16) -> [INPUT; 2] {
     [key(vk, 0, 0), key(vk, 0, KEYEVENTF_KEYUP)]
+}
+
+/// 方向键、End 这类在扩展区的键要带扩展标志，不然会被当成小键盘上的
+fn extended_tap(vk: u16) -> [INPUT; 2] {
+    [
+        key(vk, 0, KEYEVENTF_EXTENDEDKEY),
+        key(vk, 0, KEYEVENTF_EXTENDEDKEY | KEYEVENTF_KEYUP),
+    ]
 }
 
 /// 雪耳自己的翻译小窗（xueer-ear.exe 里的系统输入框）
@@ -1373,6 +1197,7 @@ fn is_mark(unit: u16) -> bool {
 const BATCH_UNITS: usize = 12;
 
 fn send_keys(keys: &[Key]) {
+    wait_for_hotkey_release();
     let mut inputs: Vec<INPUT> = Vec::new();
     // 热键可能是 Alt/Ctrl/Shift：先把它们抬起，免得和要键入的字凑成组合键
     for modifier in [VK_MENU, VK_CONTROL, VK_SHIFT] {
@@ -1408,18 +1233,32 @@ fn send_keys(keys: &[Key]) {
                 }
             }
             Key::Enter => inputs.extend(tap(VK_RETURN)),
-            Key::SelectAll => {
+            // 全选、复制、挪光标走 SendInput；微信这类 Qt 窗口的字和退格走窗口消息，会插到还没处理的按键前面，
+            // 所以这几个发完都等目标程序处理好再往下（全选后再打字、Ctrl+End 后再退格）
+            Key::SelectAll | Key::Copy | Key::End => {
+                let letter = match k {
+                    Key::SelectAll => Some(b'A'),
+                    Key::Copy => Some(b'C'),
+                    _ => None,
+                };
                 inputs.push(key(VK_CONTROL, 0, 0));
-                inputs.extend(tap(u16::from(b'A')));
+                match letter {
+                    Some(letter) => inputs.extend(tap(u16::from(letter))),
+                    None => inputs.extend(extended_tap(VK_END)),
+                }
                 inputs.push(key(VK_CONTROL, 0, KEYEVENTF_KEYUP));
                 flush(&mut inputs);
-                // 等目标程序选好再打字：微信这类 Qt 窗口的字走窗口消息，会插到还没处理的按键前面
                 thread::sleep(Duration::from_millis(60));
             }
-            Key::CtrlJ => {
-                inputs.push(key(VK_CONTROL, 0, 0));
-                inputs.extend(tap(u16::from(b'J')));
-                inputs.push(key(VK_CONTROL, 0, KEYEVENTF_KEYUP));
+            Key::Right(count) => {
+                for i in 0..*count {
+                    if i > 0 && i % BATCH_UNITS == 0 {
+                        flush(&mut inputs);
+                    }
+                    inputs.extend(extended_tap(VK_RIGHT));
+                }
+                flush(&mut inputs);
+                thread::sleep(Duration::from_millis(30));
             }
             Key::Backspace(count) => {
                 for i in 0..*count {
@@ -1432,6 +1271,19 @@ fn send_keys(keys: &[Key]) {
         }
     }
     flush(&mut inputs);
+}
+
+/// 热键是 Alt/Ctrl/Shift 这类修饰键、还按着时，先等它松开再发键（最多 3 秒）：
+/// 按着 Alt 打进去的字会变成菜单快捷键（主人 2026-11-24：按住右 Alt 不出字、编辑器的菜单栏来回切）
+fn wait_for_hotkey_release() {
+    let hotkey = HOTKEY.load(Ordering::Acquire);
+    if !matches!(hotkey, 0x10..=0x12 | 0xA0..=0xA5) {
+        return;
+    }
+    let deadline = Instant::now() + Duration::from_secs(3);
+    while pressed(hotkey) && Instant::now() < deadline {
+        thread::sleep(Duration::from_millis(10));
+    }
 }
 
 /// 把攒着的 SendInput 按键一次发出去并清空。里面有 Enter 时先立 INJECTING，免得当成主人按的。
@@ -1503,38 +1355,5 @@ mod tests {
             ]
         );
         assert!(window_messages(&Key::Enter, true).is_empty());
-    }
-
-    // 说了「翻译成英文 / 中文」就照说的来；只说「翻译」才看设置（主人 2026-11-24）
-    #[test]
-    fn a_named_direction_beats_the_plain_translate_setting() {
-        use xueer_ear_backend::translate::Target;
-        let to_english = VoiceCommand::TranslateToEnglish;
-        let to_chinese = VoiceCommand::TranslateToChinese;
-        let plain = VoiceCommand::Translate;
-        assert_eq!(
-            translation_target(to_chinese, PlainTranslate::English, "hello"),
-            Target::Chinese
-        );
-        assert_eq!(
-            translation_target(to_english, PlainTranslate::Chinese, "你好"),
-            Target::English
-        );
-        assert_eq!(
-            translation_target(plain, PlainTranslate::Auto, "hello"),
-            Target::Chinese
-        );
-        assert_eq!(
-            translation_target(plain, PlainTranslate::Auto, "你好 hello"),
-            Target::English
-        );
-        assert_eq!(
-            translation_target(plain, PlainTranslate::Chinese, "你好"),
-            Target::Chinese
-        );
-        assert_eq!(
-            translation_target(plain, PlainTranslate::English, "hello"),
-            Target::English
-        );
     }
 }

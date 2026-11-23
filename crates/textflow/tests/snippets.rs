@@ -83,11 +83,13 @@ fn adding_a_snippet_appends_or_replaces_and_keeps_other_lines() {
 
 #[test]
 fn triggers_that_clash_with_voice_commands_are_refused() {
-    assert!(set_snippet_line("", "换行", "x").is_err());
+    assert!(set_snippet_line("", "删除", "x").is_err());
     assert!(set_snippet_line("", "发送。", "x").is_err());
     assert!(set_snippet_line("", "翻译成英文", "x").is_err());
-    // 读音一样也不行（撤回 / 车回）
-    assert!(set_snippet_line("", "车回", "x").is_err());
+    // 读音一样也不行（全部删除 / 全不删除）
+    assert!(set_snippet_line("", "全不删除", "x").is_err());
+    // 不再是指令的词可以当口令了
+    assert!(set_snippet_line("", "换行", "x").is_ok());
     assert!(set_snippet_line("", "", "x").is_err());
     assert!(set_snippet_line("", "。", "x").is_err());
     assert!(set_snippet_line("", "a=b", "x").is_err());
@@ -106,12 +108,11 @@ fn removing_a_snippet_drops_only_its_line() {
 }
 
 #[test]
-fn changed_command_words_are_also_kept_off_triggers() {
-    let commands = CommandOptions::with_words(|command| {
-        (command == VoiceCommand::NewLine).then(|| vec!["下一行".to_string()])
+fn switched_off_commands_are_still_kept_off_triggers() {
+    // 关着的指令随时可能打开，它的说法也不能当口令
+    let commands = CommandOptions::with_switches(|command| {
+        (command == VoiceCommand::DeleteAll).then_some(false)
     });
-    assert!(xueer_ear_textflow::set_snippet_line("", "下一行", "x", &commands).is_err());
-    // 自带的「换行」不用了也不能当口令：随时可能恢复默认
-    assert!(xueer_ear_textflow::set_snippet_line("", "换行", "x", &commands).is_err());
+    assert!(xueer_ear_textflow::set_snippet_line("", "全部删除", "x", &commands).is_err());
     assert!(xueer_ear_textflow::set_snippet_line("", "签名", "x", &commands).is_ok());
 }

@@ -9,10 +9,7 @@ pub use numbers::normalize_numbers;
 mod punct;
 pub use punct::{PunctOptions, apply_punctuation};
 mod commands;
-pub use commands::{
-    CommandOptions, MAX_WORDS, VoiceCommand, check_words, parse_command, parse_trailing_command,
-    split_words,
-};
+pub use commands::{CommandOptions, VoiceCommand, parse_command};
 mod hotwords;
 pub use hotwords::{Hotwords, add_hotword_line};
 mod corrections;
@@ -25,4 +22,4 @@ pub const BUILTIN_HOTWORDS: &str = include_str!("builtin_hotwords.txt");
 mod unfinished;
 pub use unfinished::{drop_false_full_stop, is_unfinished};
 mod pipeline;
-pub use pipeline::{Options, Output, join_for_terminal, process, terminal_append};
+pub use pipeline::{Options, Output, join_for_terminal, process, process_text, terminal_append};

@@ -2,6 +2,7 @@
 use crate::{
     denoise::Denoiser,
     encoder::{FRAME_SAMPLES, SAMPLE_RATE},
+    room::Room,
 };
 use std::{borrow::Cow, collections::VecDeque};
 use webrtc_vad::{SampleRate, Vad, VadMode};
@@ -10,9 +11,14 @@ pub const SILENCE_SAMPLES: usize = SAMPLE_RATE as usize * 3;
 /// 开口前多留一点（原 360 ms；主人历史里句首常丢一两个字，2026-11-19 加到 600 ms）
 pub const PREROLL_SAMPLES: usize = SAMPLE_RATE as usize * 600 / 1000;
 const ATTACK_FRAMES: usize = 3; // 60 ms; one click must not open a connection.
+/// 停了至少这么久再开口才算「又开始说」（字与字之间的小停顿不算），见 [`ActivityEvent::Voice`]
+const VOICE_GAP_SAMPLES: usize = SAMPLE_RATE as usize * 200 / 1000;
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum ActivityEvent {
+    /// 停了一会儿（至少 200 ms）后又开口了：前面停了多少毫秒；这一轮还没听到过说话时是 `u32::MAX`。
+    /// 快捷键听写拿它判断语音指令前有没有停够（主人 2026-11-24：先停 1 秒，再单独说指令）
+    Voice(u32),
     /// Includes the onset and up to 600 ms of preceding audio.
     Started(Vec<i16>),
     Audio(Vec<i16>),
@@ -32,6 +38,12 @@ pub struct Activity {
     silence_samples: usize,
     active: bool,
     noise: f64,
+    /// 上次听到说话以后连着多少个样本没说话；还没听到过说话是 None
+    quiet: Option<usize>,
+    /// 连着几帧是说话（不到 `ATTACK_FRAMES` 帧的算杂音，不算开口）
+    run: usize,
+    /// 这一轮说话比底噪响多少倍（看原声，不看降噪后的）
+    room: Room,
 }
 
 /// 断句看降噪后的声音，发出去的是原声：原声按降噪的延迟排队，和降噪后的声音逐个样本对齐
@@ -70,6 +82,9 @@ impl Activity {
             silence_samples: SAMPLE_RATE as usize * seconds as usize,
             active: false,
             noise: 10.0,
+            quiet: None,
+            run: 0,
+            room: Room::default(),
         })
     }
 
@@ -82,6 +97,11 @@ impl Activity {
 
     pub fn silence_samples(&self) -> usize {
         self.silence_samples
+    }
+
+    /// 这一轮到目前为止屋里吵不吵
+    pub fn room(&self) -> &Room {
+        &self.room
     }
 
     /// WASAPI packet boundaries do not affect the silence deadline.
@@ -121,10 +141,41 @@ impl Activity {
                     // Follow slowly changing background, without learning speech as noise.
                     self.noise = self.noise * 0.98 + rms.min(3000.0) * 0.02;
                 }
+                self.room.frame(frame_rms(&frame), voice);
+                self.pause(voice, &mut events);
                 self.frame(frame, voice, &mut events);
             }
         }
         events
+    }
+
+    /// 停了一会儿后又开口时报一次停了多久。连着 `ATTACK_FRAMES` 帧都是说话才算开口，
+    /// 一下咔哒声、短促的杂音照样算没说话
+    fn pause(&mut self, voice: bool, events: &mut Vec<ActivityEvent>) {
+        if !voice {
+            let blip = if self.run < ATTACK_FRAMES {
+                self.run
+            } else {
+                0
+            };
+            self.quiet = self.quiet.map(|quiet| quiet + (blip + 1) * FRAME_SAMPLES);
+            self.run = 0;
+            return;
+        }
+        self.run += 1;
+        if self.run < ATTACK_FRAMES {
+            return;
+        }
+        if self.run == ATTACK_FRAMES {
+            match self.quiet {
+                None => events.push(ActivityEvent::Voice(u32::MAX)),
+                Some(quiet) if quiet >= VOICE_GAP_SAMPLES => events.push(ActivityEvent::Voice(
+                    u32::try_from(quiet * 1000 / SAMPLE_RATE as usize).unwrap_or(u32::MAX),
+                )),
+                Some(_) => {}
+            }
+        }
+        self.quiet = Some(0);
     }
 
     fn frame(&mut self, frame: Vec<i16>, voice: bool, events: &mut Vec<ActivityEvent>) {
@@ -179,6 +230,17 @@ impl Activity {
     }
 }
 
+/// 一帧原声的音量：去掉直流后的均方根
+fn frame_rms(frame: &[i16]) -> f64 {
+    let mean = frame.iter().map(|&s| f64::from(s)).sum::<f64>() / frame.len().max(1) as f64;
+    (frame
+        .iter()
+        .map(|&s| (f64::from(s) - mean).powi(2))
+        .sum::<f64>()
+        / frame.len().max(1) as f64)
+        .sqrt()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -194,6 +256,37 @@ mod tests {
                     * (2400.0 + 900.0 * (i as f64 / 530.0).sin())) as i16
             })
             .collect()
+    }
+
+    fn pauses(events: &[ActivityEvent]) -> Vec<u32> {
+        events
+            .iter()
+            .filter_map(|e| match e {
+                ActivityEvent::Voice(ms) => Some(*ms),
+                _ => None,
+            })
+            .collect()
+    }
+
+    // 主人 2026-11-24：语音指令前要停够 1 秒。开口时报前面停了多久，字之间的小停顿不报
+    #[test]
+    fn each_new_start_of_speech_reports_how_long_the_pause_before_it_was() {
+        let mut gate = Activity::with_silence_seconds(3).unwrap();
+        gate.push(&vec![0; 8_000]);
+        // 这一轮第一次开口：前面没有话
+        assert_eq!(pauses(&gate.push(&voice(8_000))), [u32::MAX]);
+        // 停 100 ms 接着说：不算
+        gate.push(&vec![0; 1_600]);
+        assert_eq!(pauses(&gate.push(&voice(8_000))), [] as [u32; 0]);
+        // 停 1.2 秒再说（还在同一句里）
+        gate.push(&vec![0; 19_200]);
+        let resumed = pauses(&gate.push(&voice(8_000)));
+        assert_eq!(resumed.len(), 1);
+        assert!((1_150..=1_250).contains(&resumed[0]), "{resumed:?}");
+        // 停 4 秒（一句已经说完）再开口
+        gate.push(&vec![0; 64_000]);
+        let next = pauses(&gate.push(&voice(8_000)));
+        assert!((3_950..=4_050).contains(&next[0]), "{next:?}");
     }
 
     #[test]
@@ -329,6 +422,7 @@ mod tests {
                     }
                     ActivityEvent::Audio(pcm) => sent.extend(pcm),
                     ActivityEvent::Ended => log.push(format!("end@{}", i * 100)),
+                    ActivityEvent::Voice(_) => {}
                 }
             }
         }

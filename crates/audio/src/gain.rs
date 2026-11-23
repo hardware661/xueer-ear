@@ -59,6 +59,12 @@ impl Gain {
         self.gain
     }
 
+    /// 说话比底噪响多少倍（按 20 ms 帧峰值估的）；还没听到说话时 None。
+    /// 风扇开着时这个数小，豆包认字明显变差（主人 2026-11-24 真实录音：错字 6% → 14～17%，微信 5% → 7%）
+    pub fn speech_over_noise(&self) -> Option<f32> {
+        self.speech.map(|speech| speech / self.noise.max(1.))
+    }
+
     /// 处理一段 PCM，返回放大后的同样长度的 PCM。凑不满一帧的尾巴留到下次（所以输出可能比输入短一点）。
     pub fn process(&mut self, pcm: &[i16]) -> Vec<i16> {
         let mut out = Vec::with_capacity(pcm.len() + FRAME_SAMPLES);

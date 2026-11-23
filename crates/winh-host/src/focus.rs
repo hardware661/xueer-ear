@@ -140,6 +140,11 @@ impl Delivery {
         }
     }
 
+    /// 这一轮正在攒字（前台没有输入框）
+    pub fn holding(&self) -> bool {
+        self.holding
+    }
+
     /// 这一轮攒下的字（没攒或者是空的就 None）
     pub fn held(&self) -> Option<&str> {
         self.held.as_deref().filter(|text| !text.trim().is_empty())

@@ -1,7 +1,7 @@
 //! 控制面板各行的菜单：选项列表、点选后的设置变化、行上显示的摘要（纯逻辑，可在 WSL 测）。
 //! 菜单项是（命令号, 文字, 是否打勾）；命令号 0 且文字为空表示分隔线。
 use xueer_ear_backend::settings::{
-    Engine, MAX_LISTEN_OPTIONS, PlainTranslate, QUIET_STOP_OPTIONS, SETTLE_MS_OPTIONS,
+    Engine, MAX_LISTEN_OPTIONS, PAUSE_MS_OPTIONS, QUIET_STOP_OPTIONS, SETTLE_MS_OPTIONS,
     SILENCE_SECONDS_OPTIONS, Settings,
 };
 use xueer_ear_textflow::{Hotwords, Snippets, VoiceCommand};
@@ -27,9 +27,8 @@ const HISTORY_DAYS: usize = 1501;
 /// 「语音指令」菜单：每个指令（按 VoiceCommand::ALL 的顺序）、四个时间、翻译方向、终端换行、恢复默认
 const COMMAND_BASE: usize = 1600;
 const TIME_BASE: usize = 1610;
-const PLAIN_TRANSLATE: usize = 1620;
-const TERMINAL_NEWLINE: usize = 1621;
-const RESET_COMMANDS: usize = 1622;
+/// 「更多设置」里的三个听写时间
+const DICTATION_TIME_BASE: usize = 1630;
 /// 点了某个时间、翻译方向以后，第二个菜单里的选项
 const OPTION_BASE: usize = 1700;
 /// 快捷短语菜单里最多列几条（多了去表里改）
@@ -92,6 +91,13 @@ pub fn choices(s: &Settings) -> Vec<Choice> {
         .map(|(i, (engine, text))| (ENGINE_BASE + i, (*text).to_owned(), s.engine == *engine))
         .collect();
     out.push(separator());
+    out.extend(
+        DICTATION_TIMINGS
+            .iter()
+            .enumerate()
+            .map(|(i, timing)| (DICTATION_TIME_BASE + i, timing.label(s), false)),
+    );
+    out.push(separator());
     for (i, (text, field)) in SWITCHES.iter().enumerate() {
         if GROUPS.contains(&i) {
             out.push(separator());
@@ -119,10 +125,10 @@ pub fn diagnostics(
     let options = s.command_options();
     let enabled = VoiceCommand::ALL
         .into_iter()
-        .filter(|c| !options.words(*c).is_empty())
+        .filter(|c| options.is_on(*c))
         .count();
     let mut out = format!(
-        "雪耳 {version}\nWindows {windows}\n识别 {}；降噪 {}；调小别的声音 {}\n快捷键 {}；接管 Win+H {}；管理员身份 {}\n语音指令开着 {enabled} 个（改过说法 {} 个）；指令后等 {} 秒；停 {} 秒收句；{} 秒没新字结束；一次最长听 {} 分钟\n后台：{status}\n\n--- service.log 最后 {} 行 ---\n{tail}\n",
+        "雪耳 {version}\nWindows {windows}\n识别 {}；降噪 {}；调小别的声音 {}\n快捷键 {}；接管 Win+H {}；管理员身份 {}\n语音指令开着 {enabled} 个；指令前停 {} 秒；指令后等 {} 秒；停 {} 秒收句；{} 秒没新字结束；一次最长听 {} 分钟\n后台：{status}\n\n--- service.log 最后 {} 行 ---\n{tail}\n",
         match s.engine {
             Engine::Doubao => "豆包为主（微信备用）",
             Engine::Wetype => "微信为主（豆包备用）",
@@ -132,10 +138,10 @@ pub fn diagnostics(
         key_name(s.hotkey_vk),
         on(s.winh_enabled),
         on(s.run_as_admin),
-        s.commands.words.len(),
+        seconds(s.commands.pause_ms),
         seconds(s.commands.settle_ms),
         s.silence_seconds,
-        s.commands.quiet_stop_seconds,
+        s.quiet_stop_seconds,
         s.max_listen_minutes,
         DIAGNOSTIC_LINES,
     );
@@ -490,24 +496,20 @@ pub fn tray_choices(
 /// 「语音指令」菜单里点了什么
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CommandPick {
-    /// 改这个指令的说法（弹小框）
-    Words(VoiceCommand),
+    /// 开关这个指令
+    Switch(VoiceCommand),
     /// 改某个时间（再弹一个菜单选几档）
     Time(Timing),
-    /// 只说「翻译」翻成什么（再弹一个菜单）
-    PlainTranslate,
-    /// 终端里「换行」发不发 Ctrl+J（直接开关）
-    TerminalNewline,
-    /// 全部恢复默认（先问一句）
-    Reset,
 }
 
-/// 「语音指令」菜单里的四个时间，顺序就是菜单顺序
+/// 能改的几个时间：前两个在「语音指令」里，后三个在「更多设置」里
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Timing {
+    /// 指令前要停多久才算单独说
+    Pause,
     /// 说完指令后等多久执行
     Settle,
-    /// 停多久算一句说完（原来的「静音收句」）
+    /// 停多久算一句说完
     Silence,
     /// 多久没有新字自动结束
     QuietStop,
@@ -515,22 +517,10 @@ pub enum Timing {
     Listen,
 }
 
-const TIMINGS: [Timing; 4] = [
-    Timing::Settle,
-    Timing::Silence,
-    Timing::QuietStop,
-    Timing::Listen,
-];
-
-/// 翻译方向的三档，顺序就是菜单顺序
-const PLAIN_TRANSLATES: [(PlainTranslate, &str); 3] = [
-    (
-        PlainTranslate::Auto,
-        "看内容：有中文翻成英文，全是英文翻成中文",
-    ),
-    (PlainTranslate::English, "总是翻成英文"),
-    (PlainTranslate::Chinese, "总是翻成中文"),
-];
+/// 「语音指令」菜单里的两个时间
+const COMMAND_TIMINGS: [Timing; 2] = [Timing::Pause, Timing::Settle];
+/// 「更多设置」菜单里的三个听写时间（主人 2026-11-24 从「语音指令」挪过来）
+const DICTATION_TIMINGS: [Timing; 3] = [Timing::Silence, Timing::QuietStop, Timing::Listen];
 
 /// 毫秒写成「0.6」「1」这样的秒数
 fn seconds(ms: u32) -> String {
@@ -545,9 +535,10 @@ impl Timing {
     /// 菜单里那一行：带上现在的值
     fn label(self, s: &Settings) -> String {
         match self {
+            Self::Pause => format!("指令前停 {} 秒…", seconds(s.commands.pause_ms)),
             Self::Settle => format!("说完指令后等 {} 秒执行…", seconds(s.commands.settle_ms)),
             Self::Silence => format!("停 {} 秒算一句说完…", s.silence_seconds),
-            Self::QuietStop => format!("{} 秒没有新字自动结束…", s.commands.quiet_stop_seconds),
+            Self::QuietStop => format!("{} 秒没有新字自动结束…", s.quiet_stop_seconds),
             Self::Listen => format!("一次最长听 {} 分钟…", s.max_listen_minutes),
         }
     }
@@ -556,6 +547,11 @@ impl Timing {
     fn options(self, s: &Settings) -> (&'static [u32], u32, u32) {
         let default = Settings::default();
         match self {
+            Self::Pause => (
+                PAUSE_MS_OPTIONS,
+                default.commands.pause_ms,
+                s.commands.pause_ms,
+            ),
             Self::Settle => (
                 SETTLE_MS_OPTIONS,
                 default.commands.settle_ms,
@@ -568,8 +564,8 @@ impl Timing {
             ),
             Self::QuietStop => (
                 QUIET_STOP_OPTIONS,
-                default.commands.quiet_stop_seconds,
-                s.commands.quiet_stop_seconds,
+                default.quiet_stop_seconds,
+                s.quiet_stop_seconds,
             ),
             Self::Listen => (
                 MAX_LISTEN_OPTIONS,
@@ -581,7 +577,7 @@ impl Timing {
 
     fn value_label(self, value: u32) -> String {
         match self {
-            Self::Settle => format!("{} 秒", seconds(value)),
+            Self::Pause | Self::Settle => format!("{} 秒", seconds(value)),
             Self::Silence | Self::QuietStop => format!("{value} 秒"),
             Self::Listen => format!("{value} 分钟"),
         }
@@ -589,27 +585,13 @@ impl Timing {
 
     fn set(self, s: &mut Settings, value: u32) {
         match self {
+            Self::Pause => s.commands.pause_ms = value,
             Self::Settle => s.commands.settle_ms = value,
             Self::Silence => s.silence_seconds = value,
-            Self::QuietStop => s.commands.quiet_stop_seconds = value,
+            Self::QuietStop => s.quiet_stop_seconds = value,
             Self::Listen => s.max_listen_minutes = value,
         }
     }
-}
-
-/// 一个指令在菜单里的那一行：名字和现在的说法（太多就说一共几个），关着的写「没开」
-fn command_label(command: VoiceCommand, words: &[String]) -> String {
-    let name = match command {
-        VoiceCommand::Send => "发送（按回车）",
-        other => other.name(),
-    };
-    let said = match words {
-        [] => "没开".to_owned(),
-        [one] => format!("「{one}」"),
-        [first, second] if words.len() == 2 => format!("「{first}」「{second}」"),
-        [first, second, ..] => format!("「{first}」「{second}」等 {} 个", words.len()),
-    };
-    format!("{name}　{said}")
 }
 
 /// 「语音指令」那一行显示：开着几个
@@ -617,18 +599,18 @@ pub fn command_summary(s: &Settings) -> String {
     let options = s.command_options();
     let on = VoiceCommand::ALL
         .into_iter()
-        .filter(|c| !options.words(*c).is_empty())
+        .filter(|c| options.is_on(*c))
         .count();
     format!("开着 {on} 个")
 }
 
-/// 「语音指令」菜单：上面是指令（打勾是开着，点一个改说法），中间是时间，下面是翻译方向、
-/// 终端换行和恢复默认。固定的规则写在灰字里
+/// 「语音指令」菜单（主人 2026-11-24：说法就是指令，要规范）：最上面一行灰字写规矩，
+/// 下面 5 个指令打勾是开着、点一下开关，再下面是两个时间
 pub fn command_choices(s: &Settings) -> Vec<Choice> {
     let options = s.command_options();
     let mut out = vec![(
         NOTHING,
-        "单独说一句才算指令；点一个改说法".to_owned(),
+        "先停够、单独说指令，再停一下才执行".to_owned(),
         false,
     )];
     out.extend(
@@ -636,46 +618,20 @@ pub fn command_choices(s: &Settings) -> Vec<Choice> {
             .into_iter()
             .enumerate()
             .map(|(i, command)| {
-                let words = options.words(command);
                 (
                     COMMAND_BASE + i,
-                    command_label(command, words),
-                    !words.is_empty(),
+                    format!("{}　{}", command.name(), command.effect()),
+                    options.is_on(command),
                 )
             }),
     );
-    out.push((
-        NOTHING,
-        "能接在句尾说：换行、发送、翻译、删掉上一句".to_owned(),
-        false,
-    ));
     out.push(separator());
     out.extend(
-        TIMINGS
+        COMMAND_TIMINGS
             .iter()
             .enumerate()
             .map(|(i, timing)| (TIME_BASE + i, timing.label(s), false)),
     );
-    out.push(separator());
-    let plain = PLAIN_TRANSLATES
-        .iter()
-        .find(|(value, _)| *value == s.commands.plain_translate)
-        .map_or("", |(_, text)| text);
-    out.push((
-        PLAIN_TRANSLATE,
-        format!(
-            "只说「翻译」：{}…",
-            plain.split('：').next().unwrap_or(plain)
-        ),
-        false,
-    ));
-    out.push((
-        TERMINAL_NEWLINE,
-        "终端里「换行」发 Ctrl+J".to_owned(),
-        s.text.terminal_newline,
-    ));
-    out.push(separator());
-    out.push((RESET_COMMANDS, "全部恢复默认".to_owned(), false));
     out
 }
 
@@ -685,17 +641,30 @@ pub fn command_pick(id: usize) -> Option<CommandPick> {
         .checked_sub(COMMAND_BASE)
         .and_then(|i| VoiceCommand::ALL.get(i))
     {
-        return Some(CommandPick::Words(*command));
+        return Some(CommandPick::Switch(*command));
     }
-    if let Some(timing) = id.checked_sub(TIME_BASE).and_then(|i| TIMINGS.get(i)) {
-        return Some(CommandPick::Time(*timing));
+    id.checked_sub(TIME_BASE)
+        .and_then(|i| COMMAND_TIMINGS.get(i))
+        .map(|timing| CommandPick::Time(*timing))
+}
+
+/// 开关一个指令（和默认一样就不单独记）
+pub fn switch_command(s: &Settings, command: VoiceCommand) -> Settings {
+    let mut next = s.clone();
+    let on = !s.command_options().is_on(command);
+    if on == command.on_by_default() {
+        next.commands.switches.remove(command.id());
+    } else {
+        next.commands.switches.insert(command.id().to_owned(), on);
     }
-    match id {
-        PLAIN_TRANSLATE => Some(CommandPick::PlainTranslate),
-        TERMINAL_NEWLINE => Some(CommandPick::TerminalNewline),
-        RESET_COMMANDS => Some(CommandPick::Reset),
-        _ => None,
-    }
+    next
+}
+
+/// 「更多设置」里点的是不是听写时间
+pub fn dictation_timing(id: usize) -> Option<Timing> {
+    id.checked_sub(DICTATION_TIME_BASE)
+        .and_then(|i| DICTATION_TIMINGS.get(i))
+        .copied()
 }
 
 /// 点了某个时间以后的第二个菜单：几档，默认那档后面写「默认」；设置文件里手写了别的值也列出来并打勾
@@ -725,86 +694,6 @@ pub fn pick_timing(s: &Settings, timing: Timing, id: usize) -> Option<Settings> 
     let mut next = s.clone();
     timing.set(&mut next, value);
     Some(next)
-}
-
-/// 只说「翻译」翻成什么的第二个菜单
-pub fn plain_translate_choices(s: &Settings) -> Vec<Choice> {
-    PLAIN_TRANSLATES
-        .iter()
-        .enumerate()
-        .map(|(i, (value, text))| {
-            let mut text = (*text).to_owned();
-            if *value == PlainTranslate::default() {
-                text.push_str("（默认）");
-            }
-            (OPTION_BASE + i, text, s.commands.plain_translate == *value)
-        })
-        .collect()
-}
-
-pub fn pick_plain_translate(s: &Settings, id: usize) -> Option<Settings> {
-    let (value, _) = PLAIN_TRANSLATES.get(id.checked_sub(OPTION_BASE)?)?;
-    let mut next = s.clone();
-    next.commands.plain_translate = *value;
-    Some(next)
-}
-
-/// 改说法小框里一开始的两格：做什么（只给看）、现在的说法（关着的填上自带说法，保存就打开）
-pub fn command_words_initial(s: &Settings, command: VoiceCommand) -> (String, String) {
-    let options = s.command_options();
-    let words: Vec<String> = match options.words(command) {
-        [] => command
-            .builtin_words()
-            .iter()
-            .map(|w| w.to_string())
-            .collect(),
-        words => words.to_vec(),
-    };
-    (
-        format!("{}：{}", command.name(), command.effect()),
-        words.join("、"),
-    )
-}
-
-/// 小框里填好的说法存进设置（和默认一样就不单独记）；不合规矩返回原因。
-/// `snippets` 是快捷短语表全文：说法不能和口令读音一样
-pub fn set_command_words(
-    s: &Settings,
-    command: VoiceCommand,
-    input: &str,
-    snippets: &str,
-) -> Result<Settings, String> {
-    let words = xueer_ear_textflow::split_words(input);
-    let parsed = Snippets::parse(snippets);
-    let triggers: Vec<&str> = parsed.entries().iter().map(|(t, _)| t.as_str()).collect();
-    xueer_ear_textflow::check_words(command, &words, &s.command_options(), &triggers)?;
-    let default: Vec<String> = if command.on_by_default() {
-        command
-            .builtin_words()
-            .iter()
-            .map(|w| w.to_string())
-            .collect()
-    } else {
-        Vec::new()
-    };
-    let mut next = s.clone();
-    if words == default {
-        next.commands.words.remove(command.id());
-    } else {
-        next.commands.words.insert(command.id().to_owned(), words);
-    }
-    Ok(next)
-}
-
-/// 「全部恢复默认」：说法、时间、翻译方向、终端换行都回到默认
-pub fn reset_commands(s: &Settings) -> Settings {
-    let default = Settings::default();
-    let mut next = s.clone();
-    next.commands = default.commands;
-    next.silence_seconds = default.silence_seconds;
-    next.max_listen_minutes = default.max_listen_minutes;
-    next.text.terminal_newline = default.text.terminal_newline;
-    next
 }
 
 #[cfg(test)]
@@ -869,8 +758,9 @@ mod tests {
         assert!(find(&c, "提示音").1);
         assert!(find(&c, "豆包为主，微信备用").1);
         assert!(!find(&c, "微信为主，豆包备用").1);
-        // 快捷键、热词、历史、语音指令（发送、终端换行、各种时间）各有自己的一行，不在「更多设置」里
-        for moved in ["快捷键", "热词", "发送", "换行", "最长听", "秒"] {
+        // 快捷键、热词、历史、语音指令各有自己的一行，不在「更多设置」里；三个听写时间在这里
+        assert!(find(&c, "一次最长听 30 分钟…").0 != 0);
+        for moved in ["快捷键", "热词", "发送", "换行", "指令"] {
             assert!(!c.iter().any(|(_, t, _)| t.contains(moved)), "{moved}");
         }
     }
@@ -879,7 +769,11 @@ mod tests {
     fn each_switch_flips_only_itself() {
         let s = Settings::default();
         for (id, text, on) in choices(&s) {
-            if text.is_empty() || text.contains("为主") || id == COPY_DIAGNOSTICS {
+            if text.is_empty()
+                || text.contains("为主")
+                || id == COPY_DIAGNOSTICS
+                || dictation_timing(id).is_some()
+            {
                 continue;
             }
             let next = toggle(&s, id).unwrap_or_else(|| panic!("{text}"));
@@ -895,7 +789,7 @@ mod tests {
         let s = Settings::default();
         let c = choices(&s);
         let separators = c.iter().filter(|(_, t, _)| t.is_empty()).count();
-        assert_eq!(separators, 4);
+        assert_eq!(separators, 5);
         // 150% 缩放时 1080p 屏幕要放得下：不能比 1.2 版（20 项、4 条分隔线）更高
         assert!(c.len() - separators <= 20 && c.len() <= 24, "{}", c.len());
         assert!(c.iter().all(|(id, t, _)| t.is_empty() == (*id == 0)));
@@ -957,18 +851,16 @@ mod tests {
             entry(" 我的地址 ", "某某路 1 号\\n张三收"),
             Ok(("我的地址".to_owned(), "某某路 1 号\n张三收".to_owned()))
         );
-        assert!(entry("换行", "x").unwrap_err().contains("换行"));
+        assert!(entry("删除", "x").unwrap_err().contains("删除"));
+        // 「换行」已经不是指令了，可以当口令
+        assert!(entry("换行", "x").is_ok());
         assert!(entry("", "x").is_err());
         assert!(entry("签名", "  ").is_err());
         assert!(entry(&"长".repeat(21), "x").is_err());
         assert!(entry("签名", &"字".repeat(501)).is_err());
-        // 改过的指令说法也不能当口令
-        let mut changed = Settings::default();
-        changed
-            .commands
-            .words
-            .insert("new_line".into(), vec!["下一行".into()]);
-        assert!(snippet_entry("下一行", "x", &changed.command_options()).is_err());
+        // 关着的指令的说法也不能当口令（随时可能打开）
+        let off = switch_command(&Settings::default(), VoiceCommand::DeleteAll);
+        assert!(snippet_entry("全部删除", "x", &off.command_options()).is_err());
     }
 
     #[test]
@@ -986,55 +878,64 @@ mod tests {
     }
 
     #[test]
-    fn command_menu_lists_commands_times_and_rules() {
+    fn command_menu_lists_the_five_commands_and_two_times() {
         let s = Settings::default();
-        assert_eq!(command_summary(&s), "开着 6 个");
+        assert_eq!(command_summary(&s), "开着 4 个");
         let c = command_choices(&s);
-        assert!(find(&c, "换行　「换行」").1);
-        assert!(find(&c, "删除上一句　「删除」「删掉」等 13 个").1);
-        assert!(!find(&c, "发送（按回车）　没开").1);
-        assert!(find(&c, "翻译成英文　「翻译成英文」").1);
-        assert!(find(&c, "终端里「换行」发 Ctrl+J").1);
-        for text in [
-            "说完指令后等 0.6 秒执行…",
-            "停 3 秒算一句说完…",
-            "10 秒没有新字自动结束…",
-            "一次最长听 30 分钟…",
-            "只说「翻译」：看内容…",
-            "全部恢复默认",
-        ] {
-            find(&c, text);
-        }
-        // 规则是灰字，点了没反应
+        assert!(find(&c, "删除　删掉输入框里最后一句").1);
+        assert!(find(&c, "全部删除　清空整个输入框").1);
+        assert!(!find(&c, "发送　按回车").1);
+        assert!(find(&c, "翻译成英文　整个输入框翻成英文").1);
+        assert!(find(&c, "翻译成中文　整个输入框翻成中文").1);
+        find(&c, "指令前停 1 秒…");
+        find(&c, "说完指令后等 0.6 秒执行…");
+        // 规矩是灰字，点了没反应
         let rules: Vec<_> = c.iter().filter(|(id, _, _)| *id == NOTHING).collect();
-        assert_eq!(rules.len(), 2);
-        assert!(rules.iter().all(|(id, _, _)| command_pick(*id).is_none()));
-        // 150% 缩放时 1080p 屏幕要放得下：和「更多设置」同样的上限
-        let separators = c.iter().filter(|(_, t, _)| t.is_empty()).count();
-        assert!(c.len() - separators <= 20 && c.len() <= 24, "{}", c.len());
+        assert_eq!(rules.len(), 1);
+        assert_eq!(rules[0].1, "先停够、单独说指令，再停一下才执行");
         // 每一项都认得出来，和别的菜单不串
         let picks: Vec<_> = c
             .iter()
             .filter(|(id, t, _)| !t.is_empty() && *id != NOTHING)
             .map(|(id, _, _)| command_pick(*id).unwrap())
             .collect();
-        assert_eq!(picks.len(), 7 + 4 + 3);
+        assert_eq!(picks.len(), 5 + 2);
         for (id, _, _) in &c {
             assert!(toggle(&s, *id).is_none() && pick_key(&s, *id).is_none());
+            assert!(dictation_timing(*id).is_none());
         }
+        // 以前的说法、翻译方向、终端换行、恢复默认都没了
+        for gone in ["换行", "只说「翻译」", "全部恢复默认", "停 3 秒算一句说完…"]
+        {
+            assert!(!c.iter().any(|(_, t, _)| t.contains(gone)), "{gone}");
+        }
+    }
+
+    #[test]
+    fn a_command_is_switched_on_and_off_with_one_click() {
+        let s = Settings::default();
+        let send = switch_command(&s, VoiceCommand::Send);
+        assert!(send.command_options().is_on(VoiceCommand::Send));
+        assert_eq!(command_summary(&send), "开着 5 个");
+        // 关回去就和默认一样，不往设置文件里多写
+        assert_eq!(switch_command(&send, VoiceCommand::Send), s);
+        let off = switch_command(&s, VoiceCommand::DeleteAll);
+        assert!(!off.command_options().is_on(VoiceCommand::DeleteAll));
+        assert!(!find(&command_choices(&off), "全部删除　清空整个输入框").1);
+        assert!(off.validate().is_ok());
     }
 
     #[test]
     fn times_are_picked_from_fixed_steps_with_the_default_marked() {
         let s = Settings::default();
-        let settle = timing_choices(&s, Timing::Settle);
+        let pause = timing_choices(&s, Timing::Pause);
         assert_eq!(
-            settle
-                .iter()
-                .map(|(_, t, _)| t.as_str())
-                .collect::<Vec<_>>(),
-            ["0.3 秒", "0.6 秒（默认）", "1 秒", "1.5 秒"]
+            pause.iter().map(|(_, t, _)| t.as_str()).collect::<Vec<_>>(),
+            ["0.5 秒", "1 秒（默认）", "1.5 秒", "2 秒"]
         );
+        let longer = pick_timing(&s, Timing::Pause, find(&pause, "1.5 秒").0).unwrap();
+        assert_eq!(longer.commands.pause_ms, 1500);
+        let settle = timing_choices(&s, Timing::Settle);
         assert!(find(&settle, "0.6 秒（默认）").1);
         let slower = pick_timing(&s, Timing::Settle, find(&settle, "1 秒").0).unwrap();
         assert_eq!(slower.commands.settle_ms, 1000);
@@ -1043,7 +944,7 @@ mod tests {
         assert_eq!(quick.silence_seconds, 1);
         let quiet = timing_choices(&s, Timing::QuietStop);
         let patient = pick_timing(&s, Timing::QuietStop, find(&quiet, "30 秒").0).unwrap();
-        assert_eq!(patient.commands.quiet_stop_seconds, 30);
+        assert_eq!(patient.quiet_stop_seconds, 30);
         let listen = timing_choices(&s, Timing::Listen);
         let long = pick_timing(&s, Timing::Listen, find(&listen, "120 分钟").0).unwrap();
         assert_eq!(long.max_listen_minutes, 120);
@@ -1060,85 +961,21 @@ mod tests {
         );
     }
 
+    // 主人 2026-11-24：三个听写时间从「语音指令」挪到「更多设置」
     #[test]
-    fn plain_translate_direction_has_three_fixed_choices() {
+    fn the_three_dictation_times_live_in_more_settings() {
         let s = Settings::default();
-        let c = plain_translate_choices(&s);
-        assert_eq!(c.len(), 3);
-        assert!(c[0].2 && c[0].1.ends_with("（默认）"));
-        let english = pick_plain_translate(&s, find(&c, "总是翻成英文").0).unwrap();
-        assert_eq!(english.commands.plain_translate, PlainTranslate::English);
-        assert!(
-            command_choices(&english)
-                .iter()
-                .any(|(_, t, _)| t == "只说「翻译」：总是翻成英文…")
-        );
-    }
-
-    #[test]
-    fn command_words_are_edited_in_the_dialog_by_the_fixed_rules() {
-        let s = Settings::default();
-        let (effect, words) = command_words_initial(&s, VoiceCommand::DeleteLastSentence);
-        assert_eq!(effect, "删除上一句：删掉雪耳打的上一句");
-        assert!(words.starts_with("删除、删掉、删了、撤销、撤回"));
-        // 关着的「发送」填上自带说法，保存就打开
-        assert_eq!(command_words_initial(&s, VoiceCommand::Send).1, "发送");
-        let send = set_command_words(&s, VoiceCommand::Send, "发送", "").unwrap();
-        assert_eq!(send.command_options().words(VoiceCommand::Send), ["发送"]);
-        assert_eq!(command_summary(&send), "开着 7 个");
-        // 改说法；和默认一样就不单独记
-        let changed =
-            set_command_words(&s, VoiceCommand::DeleteLastSentence, "撤回、不要了", "").unwrap();
-        assert_eq!(
-            changed
-                .command_options()
-                .words(VoiceCommand::DeleteLastSentence),
-            ["撤回", "不要了"]
-        );
-        let back =
-            set_command_words(&changed, VoiceCommand::DeleteLastSentence, &words, "").unwrap();
-        assert_eq!(back, s);
-        // 清空就是关掉
-        let off = set_command_words(&s, VoiceCommand::Translate, "", "").unwrap();
-        assert!(
-            off.command_options()
-                .words(VoiceCommand::Translate)
-                .is_empty()
-        );
-        assert!(!find(&command_choices(&off), "翻译　没开").1);
-        // 不合规矩的说清楚原因
-        let snippets = "我的邮箱=someone@example.com\n";
-        assert!(
-            set_command_words(&s, VoiceCommand::Send, "换行", "")
-                .unwrap_err()
-                .contains("换行")
-        );
-        assert!(
-            set_command_words(&s, VoiceCommand::Send, "我的油箱", snippets)
-                .unwrap_err()
-                .contains("快捷短语")
-        );
-        assert!(set_command_words(&s, VoiceCommand::Send, "发", "").is_err());
-    }
-
-    #[test]
-    fn reset_brings_every_command_setting_back() {
-        let mut s = Settings::default();
-        s = set_command_words(&s, VoiceCommand::Send, "发送", "").unwrap();
-        s.commands.settle_ms = 1500;
-        s.commands.quiet_stop_seconds = 60;
-        s.commands.plain_translate = PlainTranslate::Chinese;
-        s.silence_seconds = 1;
-        s.max_listen_minutes = 120;
-        s.text.terminal_newline = false;
-        s.text.drop_final_period = true;
-        let reset = reset_commands(&s);
-        assert_eq!(reset.commands, Settings::default().commands);
-        assert_eq!(reset.silence_seconds, 3);
-        assert_eq!(reset.max_listen_minutes, 30);
-        assert!(reset.text.terminal_newline);
-        // 别的设置不动
-        assert!(reset.text.drop_final_period);
+        let c = choices(&s);
+        for (text, timing) in [
+            ("停 3 秒算一句说完…", Timing::Silence),
+            ("10 秒没有新字自动结束…", Timing::QuietStop),
+            ("一次最长听 30 分钟…", Timing::Listen),
+        ] {
+            let (id, ticked) = find(&c, text);
+            assert!(!ticked);
+            assert_eq!(dictation_timing(id), Some(timing));
+            assert!(toggle(&s, id).is_none(), "不是开关");
+        }
     }
 
     #[test]
@@ -1170,7 +1007,7 @@ mod tests {
         // 快捷键、文字开关都是下一次听写就生效
         let mut key = s.clone();
         key.hotkey_vk = 0x77;
-        key.text.terminal_newline = false;
+        key.text.drop_final_period = true;
         assert!(!needs_restart(&s, &key));
     }
 
@@ -1284,7 +1121,7 @@ mod tests {
             "{text}"
         );
         assert!(
-            text.contains("语音指令开着 6 个（改过说法 0 个）；指令后等 0.6 秒；停 3 秒收句；10 秒没新字结束；一次最长听 30 分钟"),
+            text.contains("语音指令开着 4 个；指令前停 1 秒；指令后等 0.6 秒；停 3 秒收句；10 秒没新字结束；一次最长听 30 分钟"),
             "{text}"
         );
         assert!(text.contains("后台：聆听中"), "{text}");

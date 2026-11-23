@@ -1,14 +1,14 @@
 //! 定稿文字上屏前的整理（textflow）和上屏后的历史记录（history）。
 //!
 //! 只处理定稿（final_result）；边说边改的中间结果原样上屏，免得数字、口癖在中途跳变。
-//! 整句是语音指令（换行、撤销……）时：Win+H 路径原样上屏；快捷键路径用 `finalize` 拿到指令去按键。
+//! 整句是语音指令（删除、发送……）时：Win+H 路径原样上屏；快捷键路径用 `finalize` 拿到指令去按键。
 use crate::settings::Settings;
 use std::path::Path;
 use xueer_ear_history::{Entry, History, Settings as HistorySettings};
 use xueer_ear_protocol::transcript::SpeechEvent;
 use xueer_ear_textflow::{
     Hotwords, Options, Output, PunctOptions, Snippets, VoiceCommand, parse_command, process,
-    strip_fillers,
+    process_text, strip_fillers,
 };
 
 /// 热词文件上限，防止误放一个大文件拖慢每句话。
@@ -55,7 +55,7 @@ impl Postprocess {
             return event;
         }
         let text = match self.finalize(&event.text, now_ms) {
-            Output::Text(text) | Output::TextThen(text, _) | Output::Snippet(text) => text,
+            Output::Text(text) | Output::Snippet(text) => text,
             Output::Command(_) => event.text,
         };
         SpeechEvent {
@@ -67,8 +67,16 @@ impl Postprocess {
     /// 整理一句定稿文字（快捷键路径能执行指令，所以把指令原样交回）。
     /// 是文字（含快捷短语换出来的）且非空时写一条历史；历史写失败只打日志，不影响上屏。
     pub fn finalize(&self, text: &str, now_ms: u64) -> Output {
-        let output = process(text, &self.options);
-        if let Output::Text(text) | Output::TextThen(text, _) | Output::Snippet(text) = &output {
+        self.record(process(text, &self.options), now_ms)
+    }
+
+    /// 同 [`Self::finalize`]，但说的是指令也当普通文字（快捷键听写里前面没停够的指令）
+    pub fn finalize_text(&self, text: &str, now_ms: u64) -> Output {
+        self.record(process_text(text, &self.options), now_ms)
+    }
+
+    fn record(&self, output: Output, now_ms: u64) -> Output {
+        if let Output::Text(text) | Output::Snippet(text) = &output {
             if !text.is_empty() {
                 let entry = Entry {
                     at_ms: now_ms,
@@ -83,22 +91,25 @@ impl Postprocess {
         output
     }
 
-    /// 一句还没定稿时，这句话是不是整句只有一个语音指令（「删除」「撤回」「发送」……）。
-    /// 是的话快捷键路径可以马上执行，不用等静音收句。句中带指令词的（「删除这个文件」）不算。
+    /// 一句还没定稿时，这句话是不是整句只有一个语音指令（「删除」「发送」……）。
+    /// 是的话快捷键路径可以不等静音收句就执行。句中带指令词的（「删除这个文件」）不算。
     pub fn command_only(&self, text: &str) -> Option<VoiceCommand> {
-        let text = if self.options.strip_fillers {
+        parse_command(&self.without_fillers(text), &self.options.commands)
+    }
+
+    /// 一句还没定稿时，到目前为止的整句是不是某个指令的开头（「删」「全部」「翻译成」）：
+    /// 是的话先不打出来，等说完看是不是指令
+    pub fn starts_command(&self, text: &str) -> bool {
+        self.options
+            .commands
+            .starts_a_command(&self.without_fillers(text))
+    }
+
+    fn without_fillers(&self, text: &str) -> String {
+        if self.options.strip_fillers {
             strip_fillers(text)
         } else {
             text.to_string()
-        };
-        parse_command(&text, &self.options.commands)
-    }
-
-    /// 一句还没定稿时，句尾是不是单独一小句指令（「今天吃什么，发送」）。是的话快捷键路径可以马上执行。
-    pub fn trailing_command(&self, text: &str) -> Option<VoiceCommand> {
-        match process(text, &self.options) {
-            Output::TextThen(_, command) => Some(command),
-            _ => None,
         }
     }
 
@@ -261,17 +272,21 @@ mod tests {
     fn voice_commands_stay_as_spoken_text_for_now() {
         // 执行指令需要按键，属于 Win+H 接管部分，这里先原样上屏
         let (_dir, p) = setup(&Settings::default());
-        assert_eq!(p.apply(final_event("换行。"), 1).text, "换行。");
+        assert_eq!(p.apply(final_event("删除。"), 1).text, "删除。");
     }
 
     #[test]
     fn finalize_hands_back_commands_without_recording() {
         let (dir, p) = setup(&Settings::default());
         assert_eq!(
-            p.finalize("换行。", 1),
-            Output::Command(xueer_ear_textflow::VoiceCommand::NewLine)
+            p.finalize("删除。", 1),
+            Output::Command(VoiceCommand::DeleteLastSentence)
         );
         assert!(!dir.path().join("history.jsonl").exists());
+        // 没停够的指令当文字打出来，照样记历史
+        assert_eq!(p.finalize_text("删除。", 2), Output::Text("删除。".into()));
+        let history = fs::read_to_string(dir.path().join("history.jsonl")).unwrap();
+        assert!(history.contains("删除。"), "{history}");
     }
 
     #[test]
@@ -319,43 +334,27 @@ mod tests {
     fn only_a_whole_sentence_command_counts_as_early_command() {
         let (_dir, p) = setup(&Settings::default());
         assert_eq!(
-            p.command_only("删除"),
-            Some(VoiceCommand::DeleteLastSentence)
-        );
-        assert_eq!(
-            p.command_only("嗯，撤回。"),
+            p.command_only("嗯，删除。"),
             Some(VoiceCommand::DeleteLastSentence)
         );
         assert_eq!(p.command_only("全部删除"), Some(VoiceCommand::DeleteAll));
         assert_eq!(p.command_only("删除这个文件"), None);
-        assert_eq!(p.command_only("这句不对，删掉上一句"), None);
-        // 「发送」默认关，给它说法才算
+        assert_eq!(p.command_only("撤回"), None);
+        // 「发送」默认关，打开才算
         assert_eq!(p.command_only("发送"), None);
         let mut on = Settings::default();
-        on.commands.words.insert("send".into(), vec!["发送".into()]);
+        on.commands.switches.insert("send".into(), true);
         let (_dir, p) = setup(&on);
         assert_eq!(p.command_only("发送"), Some(VoiceCommand::Send));
     }
 
     #[test]
-    fn a_trailing_command_is_found_while_the_sentence_is_still_open() {
-        let mut on = Settings::default();
-        on.commands.words.insert("send".into(), vec!["发送".into()]);
-        let (_dir, p) = setup(&on);
-        assert_eq!(
-            p.trailing_command("今天吃什么，发送"),
-            Some(VoiceCommand::Send)
-        );
-        assert_eq!(
-            p.trailing_command("这句不对，删掉上一句"),
-            Some(VoiceCommand::DeleteLastSentence)
-        );
-        // 句中的指令词、整句只有指令词，都不算「句尾指令」
-        assert_eq!(p.trailing_command("发送的速度太慢了"), None);
-        assert_eq!(p.trailing_command("发送"), None);
-        // 「发送」关着时不算
-        let (_dir, off) = setup(&Settings::default());
-        assert_eq!(off.trailing_command("今天吃什么，发送"), None);
+    fn the_start_of_a_command_is_held_back() {
+        let (_dir, p) = setup(&Settings::default());
+        assert!(p.starts_command("嗯，全部"));
+        assert!(p.starts_command("翻译成"));
+        assert!(!p.starts_command("全部的"));
+        assert!(!p.starts_command("发"), "发送关着");
     }
 
     #[test]
@@ -452,34 +451,5 @@ mod tests {
         assert_eq!(&all[..3], ["雪耳", "Claude Code", "甲骨文"]);
         assert!(all.len() > 3 && all.len() <= 100);
         assert_eq!(all.iter().filter(|w| *w == "Claude Code").count(), 1);
-    }
-}
-
-#[cfg(test)]
-mod command_word_tests {
-    use super::*;
-
-    #[test]
-    fn changed_command_words_are_used_for_finished_and_early_commands() {
-        let dir = std::env::temp_dir().join(format!("xueer-post-words-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let mut settings = Settings::default();
-        settings
-            .commands
-            .words
-            .insert("delete_last".into(), vec!["不要了".into()]);
-        settings.history_enabled = false;
-        let p = Postprocess::new(&settings, &dir);
-        assert_eq!(
-            p.finalize("不要了。", 1),
-            Output::Command(VoiceCommand::DeleteLastSentence)
-        );
-        assert_eq!(
-            p.command_only("不要了"),
-            Some(VoiceCommand::DeleteLastSentence)
-        );
-        // 自带的「删除」不用了：当普通文字
-        assert_eq!(p.command_only("删除"), None);
-        let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -51,6 +51,11 @@ pub enum Event {
         waited_ms: u32,
     },
     Speech(SpeechEvent),
+    /// 停了一会儿后又开口了：前面停了多少毫秒，这一轮第一次开口是 `u32::MAX`。
+    /// 快捷键听写拿它判断语音指令前有没有停够
+    Voice {
+        pause_ms: u32,
+    },
     Input {
         name: String,
         muted: Option<bool>,
@@ -70,6 +75,8 @@ pub enum Event {
 }
 enum Audio {
     Ready(Option<xueer_ear_audio::microphone::Device>),
+    /// 停了一会儿后又开口了，前面停了多少毫秒（见 `ActivityEvent::Voice`）
+    Voice(u32),
     Start,
     Chunk(Vec<u8>),
     End,
@@ -234,13 +241,28 @@ fn produce(
         }
     }
     drop(accept);
-    if finite_wave && !stop.load(Ordering::Acquire) {
+    let finished = if finite_wave && !stop.load(Ordering::Acquire) {
         // A fixture may end on the last syllable. Supply the same sample-clocked
         // silence tail as live input before its natural EOF, without extending
         // the recorded-input signal counters or waiting for wall-clock silence.
-        return turns.finish_wave();
+        turns.finish_wave()
+    } else {
+        turns.finish()
+    };
+    // 这一轮屋里吵不吵，下一轮快捷键听写拿它定主通道（只记倍数，不记声音）
+    let room = turns.activity.room();
+    if let Some(ratio) = room.speech_over_noise() {
+        println!(
+            "这轮说话比底噪响 {ratio:.0} 倍{}",
+            if ratio < xueer_ear_audio::room::NOISY_BELOW {
+                "（算吵）"
+            } else {
+                ""
+            }
+        );
     }
-    turns.finish()
+    xueer_ear_audio::room::remember(room.noisy());
+    finished
 }
 
 fn turns_ready(
@@ -308,6 +330,7 @@ impl AudioTurns {
                 self.audio(&pcm)?;
             }
             ActivityEvent::Audio(pcm) => self.audio(&pcm)?,
+            ActivityEvent::Voice(pause_ms) => self.send(Audio::Voice(pause_ms))?,
             ActivityEvent::Ended => {
                 if !self.pending.is_empty() {
                     self.pending.resize(
@@ -549,6 +572,7 @@ pub fn run(
                 output(Event::Started)?;
                 output(Event::Activity("armed"))?;
             }
+            Ok(Audio::Voice(pause_ms)) => output(Event::Voice { pause_ms })?,
             Ok(Audio::Start) => {
                 if turn.is_some() {
                     return Err("overlapping speech turns".into());
@@ -688,6 +712,7 @@ mod tests {
                     }
                     Audio::End => panic!("turn ended before three seconds"),
                     Audio::Ready(_) => unreachable!(),
+                    Audio::Voice(_) => {}
                 }
             }
             assert_eq!(counts.finals, index);

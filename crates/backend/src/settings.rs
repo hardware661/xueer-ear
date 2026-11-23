@@ -10,13 +10,15 @@ use std::{
 };
 use xueer_ear_textflow::{CommandOptions, VoiceCommand};
 
-/// 设置文件上限：改过说法的语音指令也存在这里（7 个指令 × 16 个说法写满约 7 KB）
+/// 设置文件上限（正常不到 1 KB；1.3 第二轮的设置文件里可能还留着改过的说法）
 const MAX_FILE_BYTES: u64 = 16 * 1024;
 /// 右 Alt 的虚拟键码
 pub const HOTKEY_RIGHT_ALT: u32 = 0xA5;
 pub const SILENCE_SECONDS_OPTIONS: &[u32] = &[1, 2, 3, 5, 10];
 /// 说完指令后停多久执行（毫秒）的几档；设置文件里手写别的值，200～3000 之间也认
 pub const SETTLE_MS_OPTIONS: &[u32] = &[300, 600, 1000, 1500];
+/// 指令前要停多久才算单独说（毫秒）的几档；手写的 300～3000 之间也认
+pub const PAUSE_MS_OPTIONS: &[u32] = &[500, 1000, 1500, 2000];
 /// 多久没有新字自动结束（秒）的几档；手写的 3～600 之间也认
 pub const QUIET_STOP_OPTIONS: &[u32] = &[5, 10, 20, 30, 60];
 /// 一次最长听多久（分钟）的几档；手写的 1～240 之间也认
@@ -39,13 +41,15 @@ pub struct Settings {
     pub hotkey_vk: u32,
     /// 快捷键听写一次最长听多少分钟（停顿不会结束，到点才自动停）；主人 2026-11-15 要「特别特别长」
     pub max_listen_minutes: u32,
+    /// 这么久没识别出新字，就自己结束这一轮（秒；主人 2026-11-15：「10秒钟就比较合适」）
+    pub quiet_stop_seconds: u32,
     /// 晓晓提示音（没听清、系统更新后退回），本地播放
     pub sounds_enabled: bool,
     /// 以管理员身份运行（往管理员权限的窗口里打字要用）。默认关：普通权限就够，打开时不弹确认框
     pub run_as_admin: bool,
     /// 主通道：默认豆包（主人 2026-11-23 定）。另一家一直是备用：主通道连不上、出错的那句自动改走备用
     pub engine: Engine,
-    /// 语音指令：说法、只说「翻译」翻成什么、两个时间
+    /// 语音指令：哪些开着、前后各停多久
     pub commands: CommandSettings,
     /// 降噪：断句前先滤掉风扇、空调这种一直响的底噪（发给云端的仍是原声）
     pub noise_reduction: bool,
@@ -64,52 +68,37 @@ pub enum Engine {
     Wetype,
 }
 
-/// 语音指令（控制面板「语音指令」那一行）。规则见 textflow 的 commands 模块
+/// 语音指令（控制面板「语音指令」那一行）。说法固定，规则见 textflow 的 commands 模块
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct CommandSettings {
-    /// 改过说法的指令，键是指令的 id（如 "send"）；没写的用默认（自带说法，「发送」关着）。
-    /// 空列表 = 不用这个指令
+    /// 改过开关的指令，键是指令的 id（如 "send"）；没写的用默认（「发送」关，别的开）
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
-    pub words: BTreeMap<String, Vec<String>>,
-    /// 只说「翻译」时翻成什么
-    pub plain_translate: PlainTranslate,
+    pub switches: BTreeMap<String, bool>,
+    /// 指令前要停这么久（毫秒）才算单独说；没停够的指令当普通字打出来（主人 2026-11-24：要强调等待）
+    pub pause_ms: u32,
     /// 单独说完一个指令、停这么久没再出新字就执行，不等静音收句（毫秒）
     pub settle_ms: u32,
-    /// 这么久没识别出新字，就自己结束这一轮（秒；主人 2026-11-15：「10秒钟就比较合适」）
-    pub quiet_stop_seconds: u32,
 }
 
 impl Default for CommandSettings {
     fn default() -> Self {
         Self {
-            words: BTreeMap::new(),
-            plain_translate: PlainTranslate::Auto,
+            switches: BTreeMap::new(),
+            pause_ms: 1000,
             settle_ms: 600,
-            quiet_stop_seconds: 10,
         }
     }
 }
 
 impl CommandSettings {
+    pub fn pause(&self) -> Duration {
+        Duration::from_millis(u64::from(self.pause_ms))
+    }
+
     pub fn settle(&self) -> Duration {
         Duration::from_millis(u64::from(self.settle_ms))
     }
-
-    pub fn quiet_stop(&self) -> Duration {
-        Duration::from_secs(u64::from(self.quiet_stop_seconds))
-    }
-}
-
-/// 只说「翻译」（不说成英文还是中文）时翻成什么
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum PlainTranslate {
-    /// 有中文就翻成英文，全是英文才翻成中文
-    #[default]
-    Auto,
-    English,
-    Chinese,
 }
 
 impl Default for Settings {
@@ -125,6 +114,7 @@ impl Default for Settings {
             hotkey_vk: HOTKEY_RIGHT_ALT,
             sounds_enabled: true,
             max_listen_minutes: 30,
+            quiet_stop_seconds: 10,
             run_as_admin: false,
             engine: Engine::Doubao,
             commands: CommandSettings::default(),
@@ -143,9 +133,6 @@ pub struct TextSettings {
     pub drop_final_period: bool,
     pub cjk_latin_space: bool,
     pub fullwidth_punct_in_cjk: bool,
-    /// 终端里说「换行」时发 Ctrl+J。Claude Code 里是换行；普通 bash/zsh 里 Ctrl+J 就是回车、会执行命令，
-    /// 常在普通命令行里听写的可以关掉（关掉后终端里「换行」什么都不做）。
-    pub terminal_newline: bool,
     /// 用软件自带的通用热词表（AI/编程常听错的词，见 textflow 的 builtin_hotwords.txt）
     pub builtin_hotwords: bool,
 }
@@ -158,7 +145,6 @@ impl Default for TextSettings {
             drop_final_period: false,
             cjk_latin_space: false,
             fullwidth_punct_in_cjk: false,
-            terminal_newline: true,
             builtin_hotwords: true,
         }
     }
@@ -192,25 +178,33 @@ impl Settings {
 
     fn validate_commands(&self) -> Result<()> {
         let commands = &self.commands;
+        if !(300..=3000).contains(&commands.pause_ms) {
+            return Err("指令前停顿的时间需在 0.3～3 秒之间".into());
+        }
         if !(200..=3000).contains(&commands.settle_ms) {
             return Err("说完指令后等待的时间需在 0.2～3 秒之间".into());
         }
-        if !(3..=600).contains(&commands.quiet_stop_seconds) {
+        if !(3..=600).contains(&self.quiet_stop_seconds) {
             return Err("没有新字自动结束的时间需在 3～600 秒之间".into());
         }
-        let options = self.command_options();
-        for (id, words) in &commands.words {
-            let command =
-                VoiceCommand::from_id(id).ok_or_else(|| format!("不认识的语音指令「{id}」"))?;
-            xueer_ear_textflow::check_words(command, words, &options, &[])
-                .map_err(|reason| format!("语音指令「{}」：{reason}", command.name()))?;
+        if let Some(id) = commands
+            .switches
+            .keys()
+            .find(|id| VoiceCommand::from_id(id).is_none())
+        {
+            return Err(format!("不认识的语音指令「{id}」").into());
         }
         Ok(())
     }
 
-    /// 语音指令现在用的说法（没改过的用默认）
+    /// 语音指令现在哪些开着（没改过的用默认）
     pub fn command_options(&self) -> CommandOptions {
-        CommandOptions::with_words(|command| self.commands.words.get(command.id()).cloned())
+        CommandOptions::with_switches(|command| self.commands.switches.get(command.id()).copied())
+    }
+
+    /// 多久没识别出新字就结束这一轮
+    pub fn quiet_stop(&self) -> Duration {
+        Duration::from_secs(u64::from(self.quiet_stop_seconds))
     }
 
     pub fn load_default() -> Result<Self> {
@@ -261,16 +255,44 @@ impl Settings {
         Ok(settings)
     }
 
-    /// 旧版设置文件里挪了地方的项：1.2 及以前「说「发送」时按回车」是 text.allow_send，
-    /// 1.3 起是「发送」指令有没有说法（下次保存时旧字段自然去掉）
+    /// 旧版设置文件里挪了地方的项（下次保存时旧字段自然去掉）：
+    /// - 1.2 及以前「说「发送」时按回车」是 text.allow_send；
+    /// - 1.3 第二轮的指令有「说法」列表：清空 = 关掉，「发送」有说法 = 开着；
+    /// - 「多久没有新字自动结束」以前在 commands 里。
+    ///
+    /// 新的开关已经写了的以新的为准
     fn upgrade(&mut self, raw: &serde_json::Value) {
-        let send = VoiceCommand::Send;
-        let old_send = raw
+        let mut chosen: Vec<(String, bool)> = Vec::new();
+        if raw
             .pointer("/text/allow_send")
-            .and_then(serde_json::Value::as_bool);
-        if old_send == Some(true) && !self.commands.words.contains_key(send.id()) {
-            let words = send.builtin_words().iter().map(|w| w.to_string()).collect();
-            self.commands.words.insert(send.id().to_owned(), words);
+            .and_then(serde_json::Value::as_bool)
+            == Some(true)
+        {
+            chosen.push((VoiceCommand::Send.id().to_owned(), true));
+        }
+        if let Some(words) = raw
+            .pointer("/commands/words")
+            .and_then(serde_json::Value::as_object)
+        {
+            for (id, list) in words {
+                let Some(command) = VoiceCommand::from_id(id) else {
+                    continue;
+                };
+                let said = list.as_array().is_some_and(|list| !list.is_empty());
+                if !said || !command.on_by_default() {
+                    chosen.push((id.clone(), said));
+                }
+            }
+        }
+        for (id, on) in chosen {
+            self.commands.switches.entry(id).or_insert(on);
+        }
+        if raw.get("quiet_stop_seconds").is_none()
+            && let Some(seconds) = raw
+                .pointer("/commands/quiet_stop_seconds")
+                .and_then(serde_json::Value::as_u64)
+        {
+            self.quiet_stop_seconds = u32::try_from(seconds).unwrap_or(u32::MAX);
         }
     }
 
@@ -388,12 +410,7 @@ mod tests {
         assert_eq!(loaded.silence_seconds, 2);
         assert_eq!(loaded.text, TextSettings::default());
         assert!(loaded.text.strip_fillers && loaded.text.normalize_numbers);
-        assert!(
-            loaded
-                .command_options()
-                .words(VoiceCommand::Send)
-                .is_empty()
-        );
+        assert!(!loaded.command_options().is_on(VoiceCommand::Send));
         assert!(loaded.history_enabled);
         assert_eq!(loaded.history_keep_days, 7);
     }
@@ -505,28 +522,16 @@ mod tests {
 }
 
 #[cfg(test)]
-mod terminal_newline_tests {
-    use super::*;
-
-    #[test]
-    fn terminal_newline_defaults_on_and_old_files_keep_it_on() {
-        assert!(Settings::default().text.terminal_newline);
-        let old: Settings = serde_json::from_str(r#"{"text": {"strip_fillers": true}}"#).unwrap();
-        assert!(old.text.terminal_newline);
-        assert!(Settings::default().text.builtin_hotwords);
-        assert!(old.text.builtin_hotwords);
-    }
-}
-
-#[cfg(test)]
 mod command_tests {
     use super::*;
 
     fn load(json: &str) -> Result<Settings> {
+        // 每次一个新目录：测试并行跑时，长度一样的两段设置不能写到同一个文件里
+        static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
         let root = std::env::temp_dir().join(format!(
             "xueer-commands-{}-{}",
             std::process::id(),
-            json.len()
+            NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
         ));
         fs::create_dir_all(&root).unwrap();
         let path = root.join("settings.json");
@@ -538,68 +543,91 @@ mod command_tests {
     }
 
     #[test]
-    fn command_defaults_keep_the_old_behaviour() {
+    fn command_defaults() {
         let s = Settings::default();
+        assert_eq!(s.commands.pause(), Duration::from_secs(1));
         assert_eq!(s.commands.settle(), Duration::from_millis(600));
-        assert_eq!(s.commands.quiet_stop(), Duration::from_secs(10));
-        assert_eq!(s.commands.plain_translate, PlainTranslate::Auto);
+        assert_eq!(s.quiet_stop(), Duration::from_secs(10));
         let options = s.command_options();
-        assert!(options.words(VoiceCommand::Send).is_empty(), "发送默认关");
-        assert_eq!(options.words(VoiceCommand::NewLine), ["换行"]);
-        // 没改过就不往文件里写说法
+        assert!(!options.is_on(VoiceCommand::Send), "发送默认关");
+        assert!(options.is_on(VoiceCommand::DeleteLastSentence));
+        // 没改过开关就不往文件里写
         let json = serde_json::to_string(&s).unwrap();
-        assert!(!json.contains(r#""words""#), "{json}");
+        assert!(!json.contains("switches"), "{json}");
     }
 
     #[test]
-    fn send_turned_on_in_old_versions_stays_on() {
-        let on = load(r#"{"text": {"allow_send": true}}"#).unwrap();
-        assert_eq!(on.command_options().words(VoiceCommand::Send), ["发送"]);
-        let off = load(r#"{"text": {"allow_send": false}}"#).unwrap();
-        assert!(off.command_options().words(VoiceCommand::Send).is_empty());
-        // 新版里已经改过「发送」的，以新版为准
-        let chosen =
-            load(r#"{"text": {"allow_send": true}, "commands": {"words": {"send": []}}}"#).unwrap();
-        assert!(
-            chosen
-                .command_options()
-                .words(VoiceCommand::Send)
-                .is_empty()
-        );
-    }
-
-    #[test]
-    fn changed_words_and_times_round_trip() {
+    fn switches_and_times_round_trip() {
         let loaded = load(
-            r#"{"commands": {"words": {"delete_last": ["撤回", "不要了"], "translate": []},
-                "plain_translate": "english", "settle_ms": 1000, "quiet_stop_seconds": 30}}"#,
+            r#"{"quiet_stop_seconds": 30, "commands": {"switches": {"send": true, "delete_all": false},
+                "pause_ms": 1500, "settle_ms": 1000}}"#,
         )
         .unwrap();
         let options = loaded.command_options();
-        assert_eq!(
-            options.words(VoiceCommand::DeleteLastSentence),
-            ["撤回", "不要了"]
-        );
-        assert!(options.words(VoiceCommand::Translate).is_empty());
-        assert_eq!(loaded.commands.plain_translate, PlainTranslate::English);
+        assert!(options.is_on(VoiceCommand::Send));
+        assert!(!options.is_on(VoiceCommand::DeleteAll));
+        assert_eq!(loaded.commands.pause(), Duration::from_millis(1500));
         assert_eq!(loaded.commands.settle(), Duration::from_secs(1));
-        assert_eq!(loaded.commands.quiet_stop(), Duration::from_secs(30));
+        assert_eq!(loaded.quiet_stop(), Duration::from_secs(30));
         let again: Settings =
             serde_json::from_str(&serde_json::to_string(&loaded).unwrap()).unwrap();
         assert_eq!(again, loaded);
     }
 
+    // 主人 2026-11-24 前的设置文件：「发送」在 1.2 是 text.allow_send，1.3 第二轮是「说法」列表；
+    // 「多久没有新字自动结束」以前放在 commands 里
+    #[test]
+    fn older_settings_files_keep_what_the_owner_chose() {
+        let owner = load(
+            r#"{"silence_seconds": 1, "text": {"terminal_newline": true},
+                "commands": {"words": {"send": ["发送"]}, "plain_translate": "auto",
+                "settle_ms": 600, "quiet_stop_seconds": 20}}"#,
+        )
+        .unwrap();
+        assert!(owner.command_options().is_on(VoiceCommand::Send));
+        assert_eq!(owner.quiet_stop(), Duration::from_secs(20));
+        assert_eq!(owner.silence_seconds, 1);
+        let json = serde_json::to_string(&owner).unwrap();
+        for gone in [r#""words""#, "plain_translate", "terminal_newline"] {
+            assert!(!json.contains(gone), "{gone}: {json}");
+        }
+        // 1.2 的「说发送时按回车」
+        let on = load(r#"{"text": {"allow_send": true}}"#).unwrap();
+        assert!(on.command_options().is_on(VoiceCommand::Send));
+        let off = load(r#"{"text": {"allow_send": false}}"#).unwrap();
+        assert!(!off.command_options().is_on(VoiceCommand::Send));
+        // 第二轮里把指令的说法清空 = 关掉，换成说法的照样开着；已经没有的指令不管
+        let cleared = load(
+            r#"{"commands": {"words": {"delete_all": [], "delete_last": ["撤回"], "new_line": []}}}"#,
+        )
+        .unwrap();
+        let options = cleared.command_options();
+        assert!(!options.is_on(VoiceCommand::DeleteAll));
+        assert!(options.is_on(VoiceCommand::DeleteLastSentence));
+        // 新的开关已经写了的，以它为准
+        let chosen =
+            load(r#"{"text": {"allow_send": true}, "commands": {"switches": {"send": false}}}"#)
+                .unwrap();
+        assert!(!chosen.command_options().is_on(VoiceCommand::Send));
+    }
+
     #[test]
     fn broken_command_settings_are_refused() {
         for json in [
-            r#"{"commands": {"words": {"other": ["随便"]}}}"#,
-            r#"{"commands": {"words": {"send": ["换行"]}}}"#,
-            r#"{"commands": {"words": {"send": ["发"]}}}"#,
+            r#"{"commands": {"switches": {"other": true}}}"#,
             r#"{"commands": {"settle_ms": 50}}"#,
-            r#"{"commands": {"quiet_stop_seconds": 1}}"#,
-            r#"{"commands": {"plain_translate": "french"}}"#,
+            r#"{"commands": {"pause_ms": 100}}"#,
+            r#"{"commands": {"pause_ms": 5000}}"#,
+            r#"{"quiet_stop_seconds": 1}"#,
         ] {
             assert!(load(json).is_err(), "{json}");
         }
+    }
+
+    #[test]
+    fn builtin_hotwords_default_on_for_old_files() {
+        let old: Settings = serde_json::from_str(r#"{"text": {"strip_fillers": true}}"#).unwrap();
+        assert!(Settings::default().text.builtin_hotwords);
+        assert!(old.text.builtin_hotwords);
     }
 }

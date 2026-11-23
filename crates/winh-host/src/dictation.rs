@@ -1,7 +1,9 @@
 //! 雪耳面板的听写状态机（纯逻辑，可在 WSL 测）。
-//! 主人 2026-11-15 定：点一下热键开始；再点一下（或点麦克风、Esc、按住后松开）就停止并收起面板；
+//! 主人 2026-11-15 定：点一下热键开始；再点一下（或点麦克风、Esc）就停止并收起面板；
 //! 一阵子没识别出新字，听写自己结束，面板也收起。没有「灰着等着」的状态。
-use std::time::{Duration, Instant};
+//! 主人 2026-11-24 砍掉了「按住说话、松开结束」：按住右 Alt 时只弹出面板、不出字，
+//! 编辑器的菜单栏还被 Alt 切来切去。现在按多久都只算点一下，松开什么都不做。
+use std::time::Instant;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Panel {
@@ -13,6 +15,7 @@ pub enum Panel {
 pub enum Input {
     /// 热键按下（只在从松开到按下的那一刻发一次）
     KeyDown,
+    /// 热键松开（什么都不做；按住说话已经去掉）
     KeyUp,
     /// 点了面板上的麦克风
     MicClick,
@@ -35,18 +38,13 @@ pub enum Effect {
 }
 
 pub struct Dictation {
-    hold_threshold: Duration,
     panel: Panel,
-    /// 这次按下的时刻，以及这次按下是不是开启了听写（只有开启的那次，松开才可能算「按住说话」）
-    pressed: Option<(Instant, bool)>,
 }
 
 impl Dictation {
-    pub fn new(hold_threshold: Duration) -> Self {
+    pub fn new() -> Self {
         Self {
-            hold_threshold,
             panel: Panel::Hidden,
-            pressed: None,
         }
     }
 
@@ -54,27 +52,14 @@ impl Dictation {
         self.panel
     }
 
-    pub fn input(&mut self, now: Instant, input: Input) -> Vec<Effect> {
+    pub fn input(&mut self, _now: Instant, input: Input) -> Vec<Effect> {
         match (self.panel, input) {
-            (_, Input::Chord) => vec![],
+            (_, Input::Chord | Input::KeyUp) => vec![],
             (Panel::Hidden, Input::KeyDown) => {
-                self.pressed = Some((now, true));
                 self.panel = Panel::Listening;
                 vec![Effect::Show, Effect::Start]
             }
-            (Panel::Listening, Input::KeyDown) => {
-                self.pressed = Some((now, false));
-                self.stop()
-            }
-            (_, Input::KeyUp) => match self.pressed.take() {
-                Some((at, true))
-                    if self.panel == Panel::Listening
-                        && now.duration_since(at) >= self.hold_threshold =>
-                {
-                    self.stop()
-                }
-                _ => vec![],
-            },
+            (Panel::Listening, Input::KeyDown) => self.stop(),
             (Panel::Listening, Input::MicClick | Input::Close) => self.stop(),
             (Panel::Listening, Input::SessionEnded) => {
                 self.panel = Panel::Hidden;
@@ -96,12 +81,12 @@ mod tests {
     use Effect::*;
     use Input::*;
 
-    const HOLD: Duration = Duration::from_millis(400);
+    use std::time::Duration;
 
     struct Clock(Instant, Dictation);
     impl Clock {
         fn new() -> Self {
-            Self(Instant::now(), Dictation::new(HOLD))
+            Self(Instant::now(), Dictation::new())
         }
         fn at(&mut self, ms: u64, input: Input) -> Vec<Effect> {
             self.1.input(self.0 + Duration::from_millis(ms), input)
@@ -126,11 +111,14 @@ mod tests {
         assert_eq!(c.at(5100, KeyUp), []);
     }
 
+    // 主人 2026-11-24：按住说话去掉了，按多久松开都只是点一下
     #[test]
-    fn hold_then_release_stops_and_hides() {
+    fn holding_the_key_then_releasing_keeps_listening() {
         let mut c = Clock::new();
         c.at(0, KeyDown);
-        assert_eq!(c.at(2000, KeyUp), [Finish, Hide]);
+        assert_eq!(c.at(2000, KeyUp), []);
+        assert_eq!(c.1.panel(), Panel::Listening);
+        assert_eq!(c.at(5000, KeyDown), [Finish, Hide]);
     }
 
     #[test]

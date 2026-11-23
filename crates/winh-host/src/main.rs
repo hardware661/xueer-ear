@@ -3,7 +3,7 @@ mod broker;
 #[cfg(windows)]
 mod clipboard;
 #[cfg(any(windows, test))]
-mod command_wait;
+mod command_gate;
 #[cfg(windows)]
 mod control;
 #[cfg(any(windows, test))]

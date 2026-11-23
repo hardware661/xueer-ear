@@ -312,6 +312,7 @@ pub fn run(
                 output(Event::Activity("armed"))?;
                 channel.prepare(&stop);
             }
+            Ok(Audio::Voice(pause_ms)) => output(Event::Voice { pause_ms })?,
             Ok(Audio::Start) => {
                 if turn.is_some() {
                     return Err("overlapping speech turns".into());
