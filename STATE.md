@@ -10,7 +10,7 @@
 - 验证：WSL 全工作区测试过；Windows 全工作区 360 项通过、0 失败、0 警告。翻译真请求（测试身份、隔离 LOCALAPPDATA、不带主人的 Key，原文用 README 和 GPL 全文）：四家短句中英各一次全成（0.3～0.6 秒）；11326 字 31 段：火山 1.9 秒、微软 1.8 秒、B 站 10.4 秒、微信 10.7 秒；18305 字 41 段：火山 2.7 秒、微软 2.3 秒、B 站 5.9 秒、微信 6.5 秒；只给 B 站+微信：补位 11 次、31 段全由 B 站先回、0 失败。脚本 `D:\projects\_build\xe-probe\r3\tr\live*.ps1`。
 - 吵不吵：用雪耳 audio 库同一条声音链（增益 → 降噪断句 → `Room`）过主人的录音（scratch `xueer-ear-ns/room-tool`）：开风扇 8.0 倍（算吵）、关风扇 256 倍、只有风扇 2.4 倍；门槛 20 留着。按计划删了录音（`D:\projects\_build\xe-probe\fan\` 的三段 wav 和 `exp/`），录音小工具留着。
 - 桌面：功能介绍改成定稿（主人批注版另存 `~/tools/ai/claude/scratch/backups/20261124-0545-雪耳功能介绍（这轮调整后）-主人批注版.md`）；新测试清单 `雪耳1.3第三轮测试清单.md`。
-- 06:xx 打包：`D:\projects\_build\xueer-ear-1.3.0-r3\release`（版本号还是 1.3.0）；回滚用 `D:\projects\_build\xueer-ear-1.3.0-r2\release\xueer-ear-1.3.0-windows-x64-setup.exe`。
+- 05:45 打包（打包脚本里的测试全过、包体检查通过）：`D:\projects\_build\xueer-ear-1.3.0-r3\release`，版本号还是 1.3.0，安装包 4,296,733 字节（SHA-256 865abee2…），便携包 6637b982…；回滚用 `D:\projects\_build\xueer-ear-1.3.0-r2\release\xueer-ear-1.3.0-windows-x64-setup.exe`。
 - 还差：① 真机界面测试（记事本、Chrome 输入框、新开 Windows Terminal 里的 Claude Code/Codex、微信「文件传输助手」只打字不发）——录音和脚本备好了：`D:\projects\_build\xe-probe\r3\wav\*.wav`（scratch `xueer-ear-r3/make_cmds.py` 生成）、`r3\ui\common.ps1`、`notepad.ps1`（还要补 Chrome、终端、微信三份）。脚本会抢焦点打字，主人当时在用电脑，等主人让出电脑再跑。② 装机重启雪耳。③ README 控制面板配图是旧的（「静音收句」），要 `tools/readme-images.sh` 重新离屏渲染。
 - 没做：推送、发版（等主人）；翻译小窗方向判断和界面（下一轮）。release 版 `panic = "abort"`，翻译线程 panic 会让整个程序退出，不会「一直在翻译中」，所以没加 catch_unwind。
 
