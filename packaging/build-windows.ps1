@@ -59,7 +59,9 @@ try {
     foreach ($name in @('Start.cmd', 'Stop.cmd')) {
         Copy-Item -LiteralPath (Join-Path $PSScriptRoot $name) -Destination $stage
     }
-    Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'licenses\OCTICONS-LICENSE.txt') -Destination $stage
+    foreach ($name in @('OCTICONS-LICENSE.txt', 'RNNOISE-LICENSE.txt')) {
+        Copy-Item -LiteralPath (Join-Path $PSScriptRoot "licenses\$name") -Destination $stage
+    }
     Invoke-Tool 'python' @((Join-Path $PSScriptRoot 'verify_payload.py'), '--stage', $stage, '--version', $version)
     $portable = Join-Path $releaseDirectory $portableName
     Compress-Archive -LiteralPath @(Get-ChildItem -LiteralPath $stage -File | ForEach-Object FullName) -DestinationPath $portable -Force

@@ -53,6 +53,7 @@ Source: "{#StageDir}\LICENSE"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#StageDir}\Start.cmd"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#StageDir}\Stop.cmd"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#StageDir}\OCTICONS-LICENSE.txt"; DestDir: "{app}"; Flags: ignoreversion
+Source: "{#StageDir}\RNNOISE-LICENSE.txt"; DestDir: "{app}"; Flags: ignoreversion
 ; Only the new GUI implements the current cooperative-shutdown contract.
 Source: "{#StageDir}\xueer-ear.exe"; DestName: "xueer-ear-shutdown.exe"; Flags: dontcopy
 

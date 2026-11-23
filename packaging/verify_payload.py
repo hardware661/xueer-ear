@@ -9,7 +9,8 @@ import zipfile
 
 def payload_names(version):
     return {"xueer-ear.exe", "xueer-ear-host.exe", f"xueer_ear_bridge-{version}.dll",
-            "README.md", "LICENSE", "Start.cmd", "Stop.cmd", "OCTICONS-LICENSE.txt"}
+            "README.md", "LICENSE", "Start.cmd", "Stop.cmd", "OCTICONS-LICENSE.txt",
+            "RNNOISE-LICENSE.txt"}
 
 
 class PE:

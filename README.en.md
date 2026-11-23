@@ -7,7 +7,7 @@
 **Tap Right Alt, speak, and the words stream into the cursor as you talk.**
 
 Chinese voice typing for Windows 11. It also works in terminal apps such as Claude Code and Codex.<br>
-Recognition runs on WeChat Input Method's cloud service: no model download, no sign-in, and the installer is under 4 MB.
+Recognition runs on Doubao Input Method's cloud service, with WeChat Input Method as an automatic fallback: no model download, no sign-in, and the installer is under 4 MB.
 
 [![Release](https://img.shields.io/github/v/release/hardware661/xueer-ear)](https://github.com/hardware661/xueer-ear/releases/latest)
 [![Downloads](https://img.shields.io/github/downloads/hardware661/xueer-ear/total)](https://github.com/hardware661/xueer-ear/releases)
@@ -30,9 +30,12 @@ Recognition runs on WeChat Input Method's cloud service: no model download, no s
 
 - Streaming dictation: text appears at the cursor while you are still talking. When you pause, the sentence is cleaned up (filler words, numbers, hotwords) and dictation keeps going.
 - Works in terminals: one session can last 30 minutes. Saying "换行" (new line) sends Ctrl+J, so Claude Code gets a line break instead of a submit; "发送" (send) presses Enter.
-- No model download: recognition and translation use WeChat Input Method's cloud service, so nothing heavy runs on your PC. You do not need WeChat installed or an account.
+- No model download: recognition uses Doubao Input Method's cloud service; if Doubao fails, that sentence is resent to WeChat Input Method automatically. Translation uses WeChat Input Method. Nothing heavy runs on your PC, and you need neither app installed nor an account.
+- Works next to a fan: steady background noise (fans, air conditioning) is filtered out before Xueer Ear decides where a sentence ends.
 - Voice commands: delete the last sentence, delete everything, send, and translate the whole round into English or Chinese.
-- Hotwords: add a term once and misheard product names get corrected. A built-in list covers common AI and programming terms.
+- Hotwords: add a term once and misheard product names get corrected. Fix a misheard word in the history list and Xueer Ear offers to remember the fix. A built-in list covers common AI and programming terms.
+- Snippets: say a trigger phrase such as "我的邮箱" on its own and a saved text (your email address) is typed instead.
+- Less fuss: other apps are turned down while you dictate; if no text field has focus, the round is copied to the clipboard instead of typed.
 - Follows Windows: dark mode follows the system theme, and the installed version updates itself in one click (download, SHA-256 check, silent install, restart).
 
 <p align="center">
@@ -44,14 +47,14 @@ Recognition runs on WeChat Input Method's cloud service: no model download, no s
 | | Xueer Ear | Windows voice typing (Win+H) | [CapsWriter-Offline](https://github.com/HaujetZhao/CapsWriter-Offline) | [Handy](https://github.com/cjpais/Handy) |
 | --- | --- | --- | --- | --- |
 | Output | Streams while you talk | Streams while you talk | Whole result after you release the key | Whole result after you stop recording |
-| Recognition | WeChat Input Method cloud | Microsoft cloud | Local offline model | Local offline model |
+| Recognition | Doubao Input Method cloud (WeChat as fallback) | Microsoft cloud | Local offline model | Local offline model |
 | Model download | No | No | Yes | Yes |
 | Works offline | No | No | Yes | Yes |
 | Hotwords | Yes | No | Yes | Yes |
 | Platforms | Windows 11 | Windows 10, 11 | Windows 10, 11 | Windows, macOS, Linux |
 | Open source | MIT | No | MIT | MIT |
 
-The trade-off: Xueer Ear needs a network connection and sends your audio to WeChat Input Method's servers for recognition. In return you get streaming output with no local model. If you need offline recognition or want audio to stay on your machine, use CapsWriter-Offline or Handy.
+The trade-off: Xueer Ear needs a network connection and sends your audio to Doubao Input Method's servers (or WeChat Input Method's, as a fallback) for recognition. In return you get streaming output with no local model. If you need offline recognition or want audio to stay on your machine, use CapsWriter-Offline or Handy.
 
 In our tests, Win+H stops after about 30 seconds in a terminal. Xueer Ear does not go through Win+H, so it has no such limit.
 
@@ -82,12 +85,19 @@ Say a command on its own, with a short pause before and after:
 
 Commands only touch text that Xueer Ear typed in the current session.
 
+## Noise, snippets and corrections
+
+- Noise reduction: RNNoise cleans the audio only for deciding where you stopped talking; the cloud still receives the original audio, which it recognizes better. With simulated fan noise 5 dB below speech, Doubao got 3.9% of characters wrong and WeChat 2.2%, about the same as in silence. Without noise reduction the fan kept the sentence open and WeChat lost 86%. On by default.
+- Snippets: add them under 快捷短语 in the control panel, or edit `snippets.txt` (one `trigger=text` per line; `\n` is a line break). Triggers match by pronunciation, only as a whole sentence, and cannot reuse a voice command.
+- Corrections: click a sentence in 历史 (history). It is copied as before, and a small box lets you fix it. Xueer Ear compares the two versions and asks before adding a `wrong=right` rule to your hotword list, telling you how many past sentences the rule would change.
+
 ## Privacy
 
-- Audio is streamed to WeChat Input Method's cloud for recognition while you dictate. Xueer Ear does not save recordings.
+- Audio is streamed to Doubao Input Method's cloud for recognition while you dictate; a sentence Doubao fails on is resent to WeChat Input Method. Xueer Ear does not save recordings.
+- When Doubao is used, the words in your hotword list (up to 100) are sent along as recognition hints. The text in your input box and app names are never sent.
 - Text you translate is sent to the translation service in use (WeChat Input Method by default; Microsoft, Google or Zhipu only if you add a key).
-- No account: a random anonymous device identity is created on first run and kept on your PC.
-- Settings, hotwords, history and logs live in `%LOCALAPPDATA%\XueerEar`. Apart from recognition and translation, the app only contacts GitHub anonymously to check for and download updates.
+- No account: a random anonymous device identity for each service is created on first use and kept on your PC.
+- Settings, hotwords, snippets, history and logs live in `%LOCALAPPDATA%\XueerEar`. Apart from recognition and translation, the app only contacts GitHub anonymously to check for and download updates.
 
 ## Integration: dictation status
 
@@ -108,6 +118,8 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) before sending a pull request.
 
 - [weiwin](https://github.com/Elnyxn/weiwin) (Elnyxn, MIT): Xueer Ear is built on it; the WeChat Input Method cloud recognition client comes from weiwin.
 - [CapsWriter-Offline](https://github.com/HaujetZhao/CapsWriter-Offline) (Haujet Zhao, MIT): part of the built-in hotword list follows its examples.
+- [VoiceKey](https://github.com/J3n5en/voicekey) (J3n5en, Apache-2.0), [doubao-asr-free](https://github.com/RayMorTwinkle/doubao-asr-free) (RayMorTwinkle), [doubao-asr-web](https://github.com/glwhappen/doubao-asr-web) (glwhappen, MIT) and [VoxType](https://github.com/melody0709/VoxType) (melody0709): their public notes on the Doubao Input Method protocol were the reference for Xueer Ear's own client.
+- [nnnoiseless](https://github.com/jneem/nnnoiseless) (Joe Neeman, BSD-3-Clause): the Rust port of RNNoise used for noise reduction. Its license ships as `RNNOISE-LICENSE.txt`.
 
 ## License
 
