@@ -431,7 +431,7 @@ pub fn translate_choices(
         ),
         (
             NOTHING,
-            "读不到输入框（终端）就翻雪耳打的字".to_owned(),
+            "终端里只认 Claude Code、Codex 的输入框".to_owned(),
             false,
         ),
         separator(),
@@ -692,6 +692,8 @@ mod translate_menu_tests {
         assert_eq!(translate_summary(&configured), "打开");
         let menu = translate_choices(&configured);
         assert_eq!(menu[0].0, OPEN_TRANSLATOR);
+        // 1.3 第三轮起终端也读整个输入框，不再「读不到就翻雪耳打的字」
+        assert!(!menu.iter().any(|(_, t, _)| t.contains("雪耳打的字")));
         assert!(
             menu.iter()
                 .any(|(_, t, _)| t == "服务：火山、微软、B站、微信、谷歌、智谱，谁快先用谁"),
