@@ -12,6 +12,8 @@ mod focus;
 mod hotkey;
 #[cfg(any(windows, test))]
 mod input_guard;
+#[cfg(any(windows, test))]
+mod inputbox;
 #[cfg(windows)]
 mod install;
 #[cfg(any(windows, test))]

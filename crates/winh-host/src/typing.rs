@@ -12,9 +12,12 @@ pub enum Key {
     CtrlJ,
     /// 退格若干次
     Backspace(usize),
+    /// Ctrl+A 全选（整框换成译文前）
+    SelectAll,
 }
 
-/// 这次听写里雪耳已经上屏的东西，一条一条记着，用来往回删和在终端里补句间分隔。
+/// 雪耳在这个输入框里已经上屏、还留在框里的东西，一条一条记着，用来往回删、整段翻译和在终端里补句间分隔。
+/// 跨轮记着（见 [`Carried`]），主人按回车发走、动了键盘鼠标就忘掉。
 pub struct Typist {
     typed: Vec<Typed>,
     /// 终端里「换行」发不发 Ctrl+J（设置 text.terminal_newline）
@@ -30,10 +33,22 @@ impl Default for Typist {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
 enum Typed {
     Sentence(String),
     /// 语音「换行」打出来的那个换行
     NewLine,
+}
+
+/// 一轮结束时雪耳在输入框里留下的字，交给下一轮接着用（同一个输入框、中间没按回车没动键鼠时）：
+/// 下一轮说「删除」「全部删除」够得着，读不到输入框时「翻译」也翻得到
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Carried(Vec<Typed>);
+
+impl Carried {
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
 }
 
 impl Typed {
@@ -143,8 +158,8 @@ impl Typist {
         }
     }
 
-    /// 这次听写里雪耳打出去、还留在输入框里的全部文字（换行按 \n）
-    pub fn round_text(&self) -> String {
+    /// 雪耳打出去、还留在输入框里的全部文字（换行按 \n）
+    pub fn typed_text(&self) -> String {
         self.typed
             .iter()
             .map(|t| match t {
@@ -154,7 +169,7 @@ impl Typist {
             .collect()
     }
 
-    /// 把这次听写打出去的全部文字换成 `text`（翻译结果）：退格删掉，再整段打上。
+    /// 把雪耳打出去的全部文字换成 `text`（翻译结果）：退格删掉，再整段打上。
     /// 之后再说「撤回」删的就是这整段。
     pub fn replace_all(&mut self, text: &str, terminal: bool) -> Vec<Key> {
         let count: usize = self.typed.drain(..).map(|t| t.width()).sum();
@@ -304,15 +319,42 @@ impl Live {
         self.revision.pending()
     }
 
-    /// 这一轮雪耳打出去、还留在输入框里的全部文字（说「翻译」时整段拿去翻）。
-    /// 主人这轮动过键鼠时是 None：光标可能已经不在原处，不能按退格整段替换。
-    pub fn round_text(&self) -> Option<String> {
-        (!self.touched_round).then(|| self.typist.round_text())
+    /// 接着上一轮在同一个输入框里打的字（只在一轮刚开始、还没打字时调用）
+    pub fn resume(&mut self, carried: Carried) {
+        self.typist.typed = carried.0;
     }
 
-    /// 把这一轮打出去的字整段换成译文
-    pub fn replace_round(&mut self, text: &str) -> Vec<Key> {
+    /// 这一轮结束时留在输入框里的、雪耳打的字（主人这轮动过键鼠就是空的）
+    pub fn carried(&self) -> Carried {
+        if self.touched_round {
+            Carried::default()
+        } else {
+            Carried(self.typist.typed.clone())
+        }
+    }
+
+    /// 雪耳打出去、还留在输入框里的全部文字，含前几轮接着的（读不到输入框时说「翻译」整段拿去翻）。
+    /// 主人这轮动过键鼠时是 None：光标可能已经不在原处，不能按退格整段替换。
+    pub fn typed_text(&self) -> Option<String> {
+        (!self.touched_round).then(|| self.typist.typed_text())
+    }
+
+    /// 把雪耳打出去的字整段换成译文（退格删掉再打）
+    pub fn replace_typed(&mut self, text: &str) -> Vec<Key> {
         self.typist.replace_all(text, self.terminal)
+    }
+
+    /// 整个输入框换成译文（读得到输入框时）：全选再打。之后这整框都算雪耳打的，
+    /// 「撤回」删的就是它；光标在最后，主人之前动过键鼠也不要紧了
+    pub fn replace_box(&mut self, text: &str) -> Vec<Key> {
+        // 空的译文不动输入框，免得把整框清掉
+        if text.trim().is_empty() {
+            return vec![];
+        }
+        self.typist.typed = vec![Typed::Sentence(text.to_string())];
+        self.touched_round = false;
+        self.frozen = None;
+        vec![Key::SelectAll, Key::Text(text.to_string())]
     }
 
     /// 主人自己动了键盘或鼠标（点了别处、打了字、选了文字）。雪耳改字靠「退格再重打」，
@@ -578,6 +620,8 @@ pub fn apply_keys(doc: &mut String, keys: &[Key]) {
                 let cut: usize = doc.graphemes(true).take(keep).map(str::len).sum();
                 doc.truncate(cut);
             }
+            // 攒着的字只有这一份，全选后接着打的字就是替换它
+            Key::SelectAll => doc.clear(),
         }
     }
 }
@@ -669,7 +713,7 @@ mod tests {
         type_into(&mut doc, &t.command(VoiceCommand::NewLine, false));
         type_into(&mut doc, &t.text("明天呢？", false));
         assert_eq!(t.command(VoiceCommand::Translate, false), []);
-        assert_eq!(t.round_text(), "今天吃什么。\n明天呢？");
+        assert_eq!(t.typed_text(), "今天吃什么。\n明天呢？");
         type_into(
             &mut doc,
             &t.replace_all("What to eat today?\nAnd tomorrow?", false),
@@ -697,10 +741,10 @@ mod tests {
             &mut doc,
             &live.finalize(Output::TextThen("明天呢，".into(), VoiceCommand::Translate)),
         );
-        assert_eq!(live.round_text().as_deref(), Some("今天吃什么？明天呢，"));
+        assert_eq!(live.typed_text().as_deref(), Some("今天吃什么？明天呢，"));
         type_into(
             &mut doc,
-            &live.replace_round("What to eat today? And tomorrow?"),
+            &live.replace_typed("What to eat today? And tomorrow?"),
         );
         assert_eq!(doc, "原有What to eat today? And tomorrow?");
     }
@@ -728,7 +772,7 @@ mod tests {
             &live.finalize_from(&late, Output::Text(late.clone())),
         );
         assert_eq!(doc, "今天天气很好。");
-        assert_eq!(live.round_text().as_deref(), Some("今天天气很好。"));
+        assert_eq!(live.typed_text().as_deref(), Some("今天天气很好。"));
     }
 
     // 同一口气说「今天天气很好，翻译成英文」：前半句已提前定稿上屏，云端定稿整句变成了英文
@@ -774,7 +818,7 @@ mod tests {
         let mut live = Live::new(false);
         live.finalize(Output::Text("第一句。".into()));
         live.user_touched();
-        assert_eq!(live.round_text(), None);
+        assert_eq!(live.typed_text(), None);
     }
 
     #[test]
@@ -805,8 +849,93 @@ mod tests {
                     }
                 }
                 Key::Enter | Key::CtrlJ => doc.push('\n'),
+                Key::SelectAll => doc.clear(),
             }
         }
+    }
+
+    #[test]
+    fn the_next_round_in_the_same_box_can_still_delete_what_was_typed() {
+        let mut first = Live::new(false);
+        let mut doc = String::from("原有");
+        type_into(&mut doc, &first.partial("第一句"));
+        type_into(&mut doc, &first.finalize(Output::Text("第一句。".into())));
+        let carried = first.carried();
+        assert!(!carried.is_empty());
+        let mut second = Live::new(false);
+        second.resume(carried);
+        type_into(&mut doc, &second.partial("第二句"));
+        type_into(&mut doc, &second.finalize(Output::Text("第二句。".into())));
+        assert_eq!(second.typed_text().as_deref(), Some("第一句。第二句。"));
+        // 删上一句删的是这一轮的；再删就删到上一轮的，不碰原有的字
+        let delete = Output::Command(VoiceCommand::DeleteLastSentence);
+        type_into(&mut doc, &second.finalize(delete.clone()));
+        assert_eq!(doc, "原有第一句。");
+        type_into(&mut doc, &second.finalize(delete));
+        assert_eq!(doc, "原有");
+    }
+
+    #[test]
+    fn translating_without_a_readable_box_covers_earlier_rounds_too() {
+        let mut first = Live::new(true);
+        let mut doc = String::new();
+        type_into(&mut doc, &first.finalize(Output::Text("先读文档".into())));
+        let mut second = Live::new(true);
+        second.resume(first.carried());
+        type_into(
+            &mut doc,
+            &second.finalize(Output::TextThen(
+                "再跑测试".into(),
+                VoiceCommand::TranslateToEnglish,
+            )),
+        );
+        assert_eq!(doc, "先读文档，再跑测试");
+        assert_eq!(second.typed_text().as_deref(), Some("先读文档，再跑测试"));
+        type_into(
+            &mut doc,
+            &second.replace_typed("Read the docs first, then run the tests"),
+        );
+        assert_eq!(doc, "Read the docs first, then run the tests");
+    }
+
+    #[test]
+    fn a_round_where_the_owner_touched_the_keyboard_carries_nothing() {
+        let mut live = Live::new(false);
+        live.finalize(Output::Text("第一句。".into()));
+        live.user_touched();
+        assert!(live.carried().is_empty());
+    }
+
+    #[test]
+    fn the_whole_box_is_replaced_by_select_all_then_typing() {
+        let mut live = Live::new(false);
+        let mut doc = String::from("手打的，");
+        type_into(&mut doc, &live.finalize(Output::Text("说的话。".into())));
+        // 主人中途点了一下也不要紧：整框换
+        live.user_touched();
+        let keys = live.replace_box("Typed by hand, spoken words.");
+        assert_eq!(
+            keys,
+            [
+                Key::SelectAll,
+                Key::Text("Typed by hand, spoken words.".into())
+            ]
+        );
+        type_into(&mut doc, &keys);
+        assert_eq!(doc, "Typed by hand, spoken words.");
+        // 之后整框都算雪耳打的：撤回删掉整段，下一轮也接得上
+        assert_eq!(
+            live.typed_text().as_deref(),
+            Some("Typed by hand, spoken words.")
+        );
+        assert!(!live.carried().is_empty());
+        type_into(
+            &mut doc,
+            &live.finalize(Output::Command(VoiceCommand::DeleteLastSentence)),
+        );
+        assert_eq!(doc, "");
+        // 译文是空的不动输入框
+        assert_eq!(live.replace_box("  "), []);
     }
 
     #[test]

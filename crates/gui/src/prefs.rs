@@ -437,10 +437,14 @@ pub fn translate_choices(
         (OPEN_TRANSLATOR, "打开翻译小窗".to_owned(), false),
         separator(),
         (NOTHING, status, false),
-        (NOTHING, "听写最后说「翻译成英文 / 中文」".to_owned(), false),
         (
             NOTHING,
-            "只说「翻译」：中文变英文，英文变中文".to_owned(),
+            "听写时说「翻译成英文 / 中文」：整框翻译".to_owned(),
+            false,
+        ),
+        (
+            NOTHING,
+            "读不到输入框（终端）就翻雪耳打的字".to_owned(),
             false,
         ),
         separator(),
