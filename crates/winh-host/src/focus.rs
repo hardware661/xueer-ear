@@ -33,6 +33,9 @@ const SHELL: [&str; 4] = [
     "Shell_TrayWnd",
     "Shell_SecondaryTrayWnd",
 ];
+/// 浏览器的窗口类名（Chrome、Edge、360 这类 Chromium 内核的，和 Firefox）。只读文档只在浏览器里才算
+/// 「没点进输入框的网页」；别的程序的输入框万一也报成文档，不能因此不打字
+const BROWSERS: [&str; 2] = ["Chrome_WidgetWin_1", "MozillaWindowClass"];
 
 pub fn classify(window_class: &str, control: Option<Control>) -> Focus {
     if SHELL.contains(&window_class) {
@@ -46,7 +49,10 @@ pub fn classify(window_class: &str, control: Option<Control>) -> Focus {
         return Focus::Text;
     }
     match control.kind {
-        EDIT | DOCUMENT if control.read_only == Some(true) => Focus::NoText,
+        EDIT if control.read_only == Some(true) => Focus::NoText,
+        DOCUMENT if control.read_only == Some(true) && BROWSERS.contains(&window_class) => {
+            Focus::NoText
+        }
         kind if NOT_TEXT.contains(&kind) => Focus::NoText,
         _ => Focus::Text,
     }
@@ -272,6 +278,11 @@ mod tests {
         assert_eq!(classify("Notepad", control(EDIT, Some(false))), Focus::Text);
         assert_eq!(classify("Notepad", control(EDIT, None)), Focus::Text);
         assert_eq!(classify("OpusApp", control(DOCUMENT, None)), Focus::Text);
+        // 只读文档只在浏览器里算没有输入框
+        assert_eq!(
+            classify("Qt51514QWindowIcon", control(DOCUMENT, Some(true))),
+            Focus::Text
+        );
         // 列表项正在重命名：值能改
         assert_eq!(
             classify("CabinetWClass", control(50007, Some(false))),
