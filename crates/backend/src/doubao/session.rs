@@ -30,7 +30,13 @@ pub enum Update {
 }
 
 impl Session {
-    pub fn start(device: &Device, now_ms: u64, cancelled: &dyn Fn() -> bool) -> Result<Self> {
+    /// `context` 是热词提示（`doubao::context`），没有就传 None
+    pub fn start(
+        device: &Device,
+        now_ms: u64,
+        context: Option<&str>,
+        cancelled: &dyn Fn() -> bool,
+    ) -> Result<Self> {
         let mut transport = Transport::connect(device, cancelled)?;
         let request_id = request_id()?;
         transport.send(&Request {
@@ -45,7 +51,7 @@ impl Session {
         transport.send(&Request {
             token: APP_KEY,
             method: "StartSession",
-            payload: &session_payload(&device.did),
+            payload: &session_payload(&device.did, context),
             audio: &[],
             request_id: &request_id,
             frame: None,
@@ -184,7 +190,8 @@ mod tests {
     use super::*;
 
     /// 联网实测（默认不跑）：DOUBAO_DEVICE_FILE 指向测试用的设备文件（没有就用 curl 注册一台），
-    /// DOUBAO_PROBE_WAV 是 16 kHz 单声道 WAV。按真实语速发完，打印识别结果。
+    /// DOUBAO_PROBE_WAV 是 16 kHz 单声道 WAV，DOUBAO_PROBE_HINTS 是逗号分开的热词提示（可不填）。
+    /// 按真实语速发完，打印识别结果。
     /// `cargo test -p xueer-ear-backend live_probe -- --ignored --nocapture`
     #[test]
     #[ignore]
@@ -221,8 +228,16 @@ mod tests {
         println!("device {}", device.did);
         let wav = std::env::var_os("DOUBAO_PROBE_WAV").expect("DOUBAO_PROBE_WAV");
         let samples = xueer_ear_audio::wave::read(std::path::Path::new(&wav)).unwrap();
+        let hints: Vec<String> = std::env::var("DOUBAO_PROBE_HINTS")
+            .unwrap_or_default()
+            .split(',')
+            .filter(|w| !w.trim().is_empty())
+            .map(|w| w.trim().to_owned())
+            .collect();
+        let context = super::super::context(&hints);
+        println!("hints {hints:?}");
         let started = Instant::now();
-        let mut session = Session::start(&device, now_ms(), &|| false).unwrap();
+        let mut session = Session::start(&device, now_ms(), context.as_deref(), &|| false).unwrap();
         println!("handshake {} ms", started.elapsed().as_millis());
         let mut encoder = xueer_ear_audio::encoder::OpusStream::new().unwrap();
         let frame = xueer_ear_audio::encoder::FRAME_SAMPLES;

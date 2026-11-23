@@ -64,13 +64,16 @@ struct Channel {
     doubao: bool,
     /// 豆包连着失败的次数（成功一句就清零）
     failures: u32,
+    /// 带给豆包的热词提示（这一轮开始时读一次）
+    context: Option<String>,
 }
 
 impl Channel {
-    fn new(engine: Engine) -> Self {
+    fn new(engine: Engine, context: Option<String>) -> Self {
         Self {
             doubao: engine == Engine::Doubao,
             failures: 0,
+            context,
         }
     }
 
@@ -81,7 +84,7 @@ impl Channel {
         output: &mut impl FnMut(Event) -> Result<()>,
     ) -> Result<Option<Turn>> {
         if self.doubao && self.failures < DOUBAO_GIVE_UP {
-            match doubao_turn::Turn::start(stop) {
+            match doubao_turn::Turn::start(stop, self.context.as_deref()) {
                 Ok(Some(turn)) => {
                     output(Event::Channel {
                         name: "doubao",
@@ -154,6 +157,14 @@ fn reconnect(
     Ok(turn)
 }
 
+/// 主人的热词（数据目录里的热词表，按现在的设置要不要带自带表）；读不到就没有提示
+fn hints() -> Vec<String> {
+    let settings = crate::settings::Settings::load_default().unwrap_or_default();
+    crate::settings::Settings::data_dir()
+        .map(|dir| crate::postprocess::hint_words(&settings, &dir))
+        .unwrap_or_default()
+}
+
 pub fn run(
     source: Source,
     engine: Engine,
@@ -161,7 +172,11 @@ pub fn run(
     mut output: impl FnMut(Event) -> Result<()>,
 ) -> Result<String> {
     let mut capture = Capture::start(source, stop.clone());
-    let mut channel = Channel::new(engine);
+    // 走豆包时把热词表带过去当提示（这一轮开始时读一次）
+    let context = (engine == Engine::Doubao)
+        .then(hints)
+        .and_then(|words| crate::doubao::context(&words));
+    let mut channel = Channel::new(engine, context);
     let mut turn: Option<Turn> = None;
     let mut counts = Counts::default();
     let mut ready = false;

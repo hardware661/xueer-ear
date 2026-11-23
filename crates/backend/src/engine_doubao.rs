@@ -35,13 +35,14 @@ fn forget_rejected(error: &(dyn std::error::Error + Send + Sync + 'static)) {
 }
 
 impl Turn {
-    pub(super) fn start(stop: &AtomicBool) -> Result<Option<Self>> {
+    /// `context` 是这一轮的热词提示（`doubao::context`），没有就传 None
+    pub(super) fn start(stop: &AtomicBool, context: Option<&str>) -> Result<Option<Self>> {
         let cancelled = || stop.load(Ordering::Acquire);
         let device = Device::load_or_register(now_ms())?;
         if cancelled() {
             return Ok(None);
         }
-        match Session::start(&device, now_ms(), &cancelled) {
+        match Session::start(&device, now_ms(), context, &cancelled) {
             Ok(session) => Ok(Some(Self {
                 session,
                 last_text: String::new(),

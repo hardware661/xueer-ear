@@ -146,10 +146,15 @@ impl Settings {
     }
 
     fn path() -> Result<PathBuf> {
+        Ok(Self::data_dir()?.join("settings.json"))
+    }
+
+    /// 数据目录 %LOCALAPPDATA%\XueerEar（设置、热词、快捷短语、历史）
+    pub fn data_dir() -> Result<PathBuf> {
         let local = std::env::var_os("LOCALAPPDATA")
             .filter(|value| !value.is_empty())
             .ok_or("LOCALAPPDATA 不可用")?;
-        Ok(PathBuf::from(local).join("XueerEar/settings.json"))
+        Ok(PathBuf::from(local).join("XueerEar"))
     }
 
     fn load(path: &Path) -> Result<Self> {

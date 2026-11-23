@@ -15,6 +15,8 @@ use xueer_ear_textflow::{
 const MAX_HOTWORDS_BYTES: u64 = 256 * 1024;
 /// 快捷短语文件上限
 const MAX_SNIPPETS_BYTES: u64 = 64 * 1024;
+/// 带给豆包的热词提示最多几个（官方客户端也是 100）
+const MAX_HINTS: usize = 100;
 
 pub struct Postprocess {
     options: Options,
@@ -145,6 +147,33 @@ pub fn hotword_check(settings: &Settings, dir: &Path) -> std::io::Result<Vec<(St
             (changed != entry.text).then_some((entry.text, changed))
         })
         .collect())
+}
+
+/// 带给豆包的热词提示：主人热词表在前、自带表在后（关了自带表就只有主人的），取每行的词或「错=对」的「对」，
+/// 去重，最多 100 个。只是提示（实测「Resin」4 次全对、不带全错），最后还是本地热词纠错为准。
+pub fn hint_words(settings: &Settings, dir: &Path) -> Vec<String> {
+    let mut text = read_hotwords_text(&dir.join("hotwords.txt"));
+    if settings.text.builtin_hotwords {
+        text.push('\n');
+        text.push_str(xueer_ear_textflow::BUILTIN_HOTWORDS);
+    }
+    let mut words: Vec<String> = Vec::new();
+    for line in text.lines().map(str::trim) {
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let word = match line.split_once('=') {
+            Some((_, right)) => right.trim(),
+            None => line.split('\t').next().unwrap_or("").trim(),
+        };
+        if !word.is_empty() && word.chars().count() <= 30 && !words.iter().any(|w| w == word) {
+            words.push(word.to_string());
+            if words.len() == MAX_HINTS {
+                break;
+            }
+        }
+    }
+    words
 }
 
 /// 主人的热词表在前、自带表在后：同一个错法两边都写了用主人的（解析时同一个错法只认第一条）。
@@ -404,5 +433,26 @@ mod tests {
             p.apply(final_event("我的邮箱"), 2).text,
             "xueer@example.com"
         );
+    }
+
+    #[test]
+    fn hints_for_doubao_put_the_owners_words_first_and_take_the_right_side_of_rules() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(
+            dir.path().join("hotwords.txt"),
+            "# 注释\n雪耳\nCloud Code=Claude Code\n雪耳\n甲骨文\t1\n",
+        )
+        .unwrap();
+        let mut settings = Settings::default();
+        settings.text.builtin_hotwords = false;
+        assert_eq!(
+            hint_words(&settings, dir.path()),
+            ["雪耳", "Claude Code", "甲骨文"]
+        );
+        settings.text.builtin_hotwords = true;
+        let all = hint_words(&settings, dir.path());
+        assert_eq!(&all[..3], ["雪耳", "Claude Code", "甲骨文"]);
+        assert!(all.len() > 3 && all.len() <= 100);
+        assert_eq!(all.iter().filter(|w| *w == "Claude Code").count(), 1);
     }
 }
