@@ -8,6 +8,26 @@ pub fn read(path: &Path) -> Result<Vec<i16>, Box<dyn Error + Send + Sync>> {
     decode(&std::fs::read(path)?)
 }
 
+/// 16 kHz 单声道 16 位 PCM 写成 WAV（`record-wave` 录音用，`decode` 能原样读回）
+pub fn encode(samples: &[i16]) -> Vec<u8> {
+    let data = (samples.len() * 2) as u32;
+    let mut out = Vec::with_capacity(44 + samples.len() * 2);
+    out.extend_from_slice(b"RIFF");
+    out.extend_from_slice(&(36 + data).to_le_bytes());
+    out.extend_from_slice(b"WAVEfmt ");
+    out.extend_from_slice(&16_u32.to_le_bytes());
+    out.extend_from_slice(&[1, 0, 1, 0]);
+    out.extend_from_slice(&16_000_u32.to_le_bytes());
+    out.extend_from_slice(&32_000_u32.to_le_bytes());
+    out.extend_from_slice(&[2, 0, 16, 0]);
+    out.extend_from_slice(b"data");
+    out.extend_from_slice(&data.to_le_bytes());
+    for sample in samples {
+        out.extend_from_slice(&sample.to_le_bytes());
+    }
+    out
+}
+
 pub fn decode(bytes: &[u8]) -> Result<Vec<i16>, Box<dyn Error + Send + Sync>> {
     if bytes.len() < 12 || &bytes[..4] != b"RIFF" || &bytes[8..12] != b"WAVE" {
         return Err("invalid WAV header".into());
@@ -55,4 +75,15 @@ pub fn decode(bytes: &[u8]) -> Result<Vec<i16>, Box<dyn Error + Send + Sync>> {
         .chunks_exact(2)
         .map(|b| i16::from_le_bytes([b[0], b[1]]))
         .collect())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn written_wav_reads_back_the_same_samples() {
+        let samples: Vec<i16> = (0..1600).map(|i| (i * 37 % 2001 - 1000) as i16).collect();
+        assert_eq!(decode(&encode(&samples)).unwrap(), samples);
+    }
 }

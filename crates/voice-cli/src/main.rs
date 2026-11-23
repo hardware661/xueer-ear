@@ -234,6 +234,32 @@ fn run() -> Result<(), Box<dyn Error + Send + Sync>> {
             println!("opaque_key=accepted updates={} chars={}", session.recognition.updates, session.recognition.text.chars().count());
             Ok(())
         }
+        // 录一段原始麦克风声音（自动增益、降噪之前，16 kHz 单声道），给降噪实验用：`record-wave 文件.wav [秒数]`
+        #[cfg(windows)]
+        (Some(command), Some(path), seconds) if command == "record-wave" => {
+            use std::time::{Duration, Instant};
+            let seconds: u64 = seconds.and_then(|s| s.to_string_lossy().parse().ok()).unwrap_or(40).clamp(1, 110);
+            let settings = xueer_ear_backend::settings::Settings::load_default().unwrap_or_default();
+            let mut microphone = xueer_ear_audio::microphone::Microphone::open(settings.microphone.as_deref())?;
+            println!("开始录音 {seconds} 秒：{}", microphone.device.name);
+            let mut samples: Vec<i16> = Vec::with_capacity(16_000 * seconds as usize);
+            let deadline = Instant::now() + Duration::from_secs(seconds);
+            let mut next_tick = Instant::now() + Duration::from_secs(5);
+            while Instant::now() < deadline {
+                microphone.poll(|chunk| {
+                    samples.extend_from_slice(chunk);
+                    Ok(())
+                })?;
+                if Instant::now() >= next_tick {
+                    println!("已录 {} 秒", samples.len() / 16_000);
+                    next_tick += Duration::from_secs(5);
+                }
+            }
+            let peak = samples.iter().map(|s| s.unsigned_abs()).max().unwrap_or(0);
+            std::fs::write(&path, xueer_ear_audio::wave::encode(&samples))?;
+            println!("录好了：{} 秒，峰值 {peak}，存在 {}", samples.len() / 16_000, Path::new(&path).display());
+            Ok(())
+        }
         #[cfg(windows)]
         (Some(command), device, None) if command == "record-check" => {
             use std::time::{Instant, Duration};
