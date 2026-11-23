@@ -1248,6 +1248,7 @@ dependencies = [
  "tempfile",
  "unicode-segmentation",
  "windows-sys 0.61.2",
+ "xueer-ear-audio",
  "xueer-ear-backend",
  "xueer-ear-bridge",
  "xueer-ear-textflow",

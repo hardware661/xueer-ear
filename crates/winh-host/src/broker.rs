@@ -70,6 +70,11 @@ impl Backend {
             Event::Speech(speech) => output(Event::Speech(post.apply(speech, now_ms()))),
             other => output(other),
         };
+        let microphone = matches!(
+            &source,
+            Source::Microphone(_) | Source::MicrophoneHold { .. }
+        );
+        let _ducking = microphone.then(|| duck_others(&settings().0)).flatten();
         match self {
             Self::WeType => engine::run_cloud(source, settings().0.engine, stop, output),
             Self::WeChat => engine::run(install::wechat_pid()?, source, stop, output),
@@ -90,15 +95,34 @@ pub(crate) fn settings() -> (Settings, Option<String>) {
     }
 }
 
+/// 数据目录 %LOCALAPPDATA%\XueerEar（热词、快捷短语、历史、调小音量的记录都在这里）
+pub(crate) fn data_dir() -> PathBuf {
+    std::env::var_os("LOCALAPPDATA")
+        .map(|local| PathBuf::from(local).join("XueerEar"))
+        .unwrap_or_default()
+}
+
 /// 每次唤起 Win+H 重新读设置和热词，改完下次生效（和麦克风、静音时间一致）。
 pub(crate) fn postprocess() -> Postprocess {
     let settings = settings().0;
-    let dir = std::env::var_os("LOCALAPPDATA")
-        .map(|local| PathBuf::from(local).join("XueerEar"))
-        .unwrap_or_default();
-    let post = Postprocess::new(&settings, &dir);
+    let post = Postprocess::new(&settings, &data_dir());
     post.prune_history(now_ms());
     post
+}
+
+/// 听写时把别的程序调小（设置「听写时调小别的声音」）；返回的守卫丢掉时恢复。
+/// 调不了只记日志，不耽误听写
+pub(crate) fn duck_others(settings: &Settings) -> Option<xueer_ear_audio::duck::Ducking> {
+    if !settings.duck_others {
+        return None;
+    }
+    match xueer_ear_audio::duck::Ducking::start(&data_dir().join("ducking.txt")) {
+        Ok(ducking) => Some(ducking),
+        Err(error) => {
+            eprintln!("调小别的声音失败：{error}");
+            None
+        }
+    }
 }
 
 pub(crate) fn now_ms() -> u64 {
@@ -356,6 +380,8 @@ fn hotkey_only(
 
 pub fn run() -> Result<()> {
     let control = crate::control::Control::new()?;
+    // 上次听写时调小了别的程序、没来得及恢复就退出了（崩溃、断电）：先恢复
+    xueer_ear_audio::duck::restore_leftover(&data_dir().join("ducking.txt"));
     let mut arguments = std::env::args_os().skip(1);
     let command = arguments.next();
     if command.as_deref().is_some_and(|s| s != "run") {

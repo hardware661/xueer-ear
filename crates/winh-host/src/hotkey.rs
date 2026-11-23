@@ -312,6 +312,10 @@ fn record(
         },
     };
     let wave_probe = matches!(&source, Source::Wave(_));
+    // 这一轮听写期间别的程序小声一点，record 结束（含出错返回）时恢复
+    let _ducking = (!wave_probe)
+        .then(|| crate::broker::duck_others(&settings))
+        .flatten();
     // 「被新一轮取消」要单独记：引擎收完一轮正常结束时也会把传进去的 stop 置位（Capture 的 Drop），
     // 直接拿 cancel 判断的话，每轮正常结束都像被取消，说「翻译」整段替换就永远不执行（2026-11-19 复现）
     let stopped = cancel.clone();
