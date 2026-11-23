@@ -3,6 +3,14 @@
 > 任何 AI 接手先读这里；每次会话收尾在最上面追加一节（最新在上），写清做了什么、验证了什么、还差什么。
 > 计划原文：主人桌面 `雪耳xueer-ear计划-v1.md`（v1.1）。
 
+## 2026-11-23 · 1.3 计划草稿：豆包做主通道 + 小爱音箱当麦克风（待主人确认，代码没动）
+
+- 主人要（原话英文）："I want to make DouBao the main channel … with WeChat as a backup"；翻译不动（"ours is good enough for now"）；"I'd like to try using this Xiaoai Speaker as our microphone for input."
+- 完整计划和资料链接：`~/tools/ai/claude/scratch/tmp/xueer-ear-1.3-plan.md`。
+- 豆包：推荐照 J3n5en/voicekey 的 `crates/core/src/doubao.rs`（Rust、Apache-2.0、还在维护）改成雪耳的同步写法；主人挑的 doubao-asr-free 和 DoubaoVoiceIME 没有许可证，只当协议资料。豆包默认、微信自动备用（整句重发）；先用主人自己念的 15 句做豆包/微信 A/B，赢了才切默认（doubao-asr-free 实测服务端不理二遍/三遍开关，论坛说逆向版不如官方输入法准）。
+- 小爱麦：Windows 设备列表里音箱只有「扬声器」，没有麦克风/免提——蓝牙这条路不通；只能刷 open-xiaoai（支持 OH2P、Type-C 线刷、A/B 两套系统可切回）。现成补丁只有 1.58.6，主人 1.60.3 要自己做补丁包（OTA 只给官方最新版的原厂包）；没保修、小概率刷坏、效果不保证。雪耳按下右 Alt 才经 SSH 让音箱录音、走局域网传到电脑。
+- 没做：任何代码、联网测试、刷机准备。等主人回答计划里「要主人定的」三条。
+
 ## 2026-11-21 04:10 · 主人真机验收通过，分享预览图已上传
 
 - 主人真机试过（原话："The \"stay quiet until the round ends\" feature works just fine … you started talking right away"）：用雪耳听写时雪儿先不出声，说完马上念；翻译小窗拖边缘不再变灰；对着翻译小窗说话不再乱码。
