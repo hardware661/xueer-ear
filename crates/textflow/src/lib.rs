@@ -12,6 +12,8 @@ mod commands;
 pub use commands::{CommandOptions, VoiceCommand, parse_command, parse_trailing_command};
 mod hotwords;
 pub use hotwords::{Hotwords, add_hotword_line};
+mod corrections;
+pub use corrections::corrections;
 mod snippets;
 pub use snippets::{Snippets, remove_snippet_line, set_snippet_line};
 

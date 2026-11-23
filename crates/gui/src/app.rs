@@ -1551,6 +1551,7 @@ impl App {
                     self.fonts[3],
                     self.dpi,
                     &crate::pair_dialog::HOTWORD,
+                    ["", ""],
                 ) else {
                     return;
                 };
@@ -1595,6 +1596,7 @@ impl App {
                     self.fonts[3],
                     self.dpi,
                     &crate::pair_dialog::SNIPPET,
+                    ["", ""],
                 ) else {
                     return;
                 };
@@ -1669,13 +1671,54 @@ impl App {
         let result = if selected == crate::prefs::OPEN_HISTORY {
             open_data_file("history.jsonl")
         } else if let Some(text) = crate::prefs::history_pick(&texts, selected) {
-            copy_text(self.hwnd, text).map(|()| self.say("已复制，可以粘贴了"))
+            let text = text.to_owned();
+            let copied = copy_text(self.hwnd, &text).map(|()| self.say("已复制，可以粘贴了"));
+            self.correct(&text);
+            copied
         } else {
             Ok(())
         };
         if let Err(error) = result {
             self.command_error = error;
             self.refresh();
+        }
+    }
+
+    /// 历史里点了一句（已经复制好了）：再弹个小框可以改字。改了就挑出改动的词，
+    /// 每条先问「以后把 X 改成 Y？」并说历史里有几句会跟着改，同意才写进热词表；改好的这句也复制上
+    unsafe fn correct(&mut self, sentence: &str) {
+        let Some((_, fixed)) = crate::pair_dialog::ask(
+            self.hwnd,
+            self.fonts[3],
+            self.dpi,
+            &crate::pair_dialog::CORRECTION,
+            [sentence, sentence],
+        ) else {
+            return;
+        };
+        let _ = copy_text(self.hwnd, &fixed);
+        let changes = xueer_ear_textflow::corrections(sentence, &fixed);
+        if changes.is_empty() {
+            self.say("改好的已复制；没找到能记住的改法（只改了标点，或者是加字、删字）");
+            return;
+        }
+        let history = recent_history(usize::MAX, &self.settings);
+        for (wrong, right) in changes {
+            let line = format!("{wrong}={right}");
+            let affected = crate::prefs::rule_impact(&line, &history);
+            let question =
+                format!("以后把「{wrong}」改成「{right}」？\n历史里有 {affected} 句会跟着这样改。");
+            if !self.confirm(&question) {
+                continue;
+            }
+            match save_hotword(&line) {
+                Ok(_) => self.say(&format!("记住了：{wrong} → {right}（改好的已复制）")),
+                Err(error) => {
+                    self.command_error = error;
+                    self.refresh();
+                    return;
+                }
+            }
         }
     }
 
@@ -2525,11 +2568,16 @@ fn snapshot_theme(dir: &std::path::Path, dark: bool) -> Result<(), String> {
         settle(900);
         let panel = capture(hwnd, &dir.join("control-panel.png"));
         let mut asked = Ok(());
-        for (form, name) in [
-            (&crate::pair_dialog::HOTWORD, "hotword-dialog.png"),
-            (&crate::pair_dialog::SNIPPET, "snippet-dialog.png"),
+        for (form, name, initial) in [
+            (&crate::pair_dialog::HOTWORD, "hotword-dialog.png", ["", ""]),
+            (&crate::pair_dialog::SNIPPET, "snippet-dialog.png", ["", ""]),
+            (
+                &crate::pair_dialog::CORRECTION,
+                "correction-dialog.png",
+                ["我在用雪而写代码", "我在用雪耳写代码"],
+            ),
         ] {
-            let dialog = crate::pair_dialog::offscreen(hwnd, app.fonts[3], app.dpi, form);
+            let dialog = crate::pair_dialog::offscreen(hwnd, app.fonts[3], app.dpi, form, initial);
             asked = asked.and(if dialog.is_null() {
                 Err("无法创建对话框".to_owned())
             } else {

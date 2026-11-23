@@ -26,8 +26,10 @@ const FIRST: usize = 301;
 const SECOND: usize = 302;
 const HINT: usize = 303;
 const EM_SETLIMITTEXT: u32 = 0x00C5;
+const EM_SETSEL: u32 = 0x00B1;
 const EM_SETCUEBANNER: u32 = 0x1501;
 const ES_AUTOHSCROLL: u32 = 0x0080;
+const ES_READONLY: u32 = 0x0800;
 const BS_DEFPUSHBUTTON: u32 = 0x0001;
 /// 客户区大小（96 DPI）
 const WIDTH: i32 = 340;
@@ -40,6 +42,10 @@ pub struct Form {
     pub cues: [&'static str; 2],
     /// 每格最多几个字
     pub limits: [usize; 2],
+    /// 确定按钮上的字
+    pub submit: &'static str,
+    /// 第一格只给看、不能改（改错时第一格是原来的那句）
+    pub read_only_first: bool,
     /// 两格填得对不对；不对返回原因，显示在下面的红字里
     pub check: fn(&str, &str) -> Result<(), String>,
 }
@@ -49,6 +55,8 @@ pub const HOTWORD: Form = Form {
     labels: ["正确的写法", "常被听成"],
     cues: ["例如 Claude Code", "例如 Cloud Code，可不填"],
     limits: [40, 40],
+    submit: "添加",
+    read_only_first: false,
     check: check_hotword,
 };
 
@@ -57,7 +65,20 @@ pub const SNIPPET: Form = Form {
     labels: ["口令（整句只说这几个字）", "换成的文字（打 \\n 表示换行）"],
     cues: ["例如 我的邮箱", "例如 someone@example.com"],
     limits: [20, 500],
+    submit: "添加",
+    read_only_first: false,
     check: check_snippet,
+};
+
+/// 历史里点了一句：第一格是原来认成的样子，第二格改成对的
+pub const CORRECTION: Form = Form {
+    title: "改一下这句",
+    labels: ["识别成了", "改成（改掉听错的字）"],
+    cues: ["", ""],
+    limits: [500, 500],
+    submit: "记住改法",
+    read_only_first: true,
+    check: check_correction,
 };
 
 fn check_hotword(word: &str, heard: &str) -> Result<(), String> {
@@ -68,6 +89,18 @@ fn check_hotword(word: &str, heard: &str) -> Result<(), String> {
 
 fn check_snippet(trigger: &str, text: &str) -> Result<(), String> {
     crate::prefs::snippet_entry(trigger, text).map(drop)
+}
+
+fn check_correction(before: &str, after: &str) -> Result<(), String> {
+    if before.trim() == after.trim() {
+        return Err("还没改；只是复制的话按 Esc".to_owned());
+    }
+    Ok(())
+}
+
+/// 能改的那一格
+fn editable(form: &Form) -> usize {
+    if form.read_only_first { SECOND } else { FIRST }
 }
 
 struct State {
@@ -136,7 +169,7 @@ unsafe extern "system" fn procedure(
                             let hint = GetDlgItem(hwnd, HINT as i32);
                             SetWindowTextW(hint, wide(&reason).as_ptr());
                             InvalidateRect(hint, ptr::null(), 1);
-                            SetFocus(GetDlgItem(hwnd, FIRST as i32));
+                            SetFocus(GetDlgItem(hwnd, editable(state.form) as i32));
                         }
                     }
                 }
@@ -160,7 +193,19 @@ unsafe extern "system" fn procedure(
             let p = palette();
             SetBkColor(dc, colorref(p.card));
             let hint = lparam as HWND == GetDlgItem(hwnd, HINT as i32);
-            SetTextColor(dc, colorref(if hint { p.danger } else { p.ink }));
+            // 只读的那格（改错时原来的那句）用灰字，看得出来不能改
+            let fixed =
+                state.form.read_only_first && lparam as HWND == GetDlgItem(hwnd, FIRST as i32);
+            SetTextColor(
+                dc,
+                colorref(if hint {
+                    p.danger
+                } else if fixed {
+                    p.muted
+                } else {
+                    p.ink
+                }),
+            );
             brush(false) as isize
         }
         WM_CTLCOLOREDIT => {
@@ -184,6 +229,7 @@ unsafe fn open(
     font: HFONT,
     dpi: u32,
     state: *mut State,
+    initial: [&str; 2],
     at: Option<(i32, i32)>,
 ) -> HWND {
     let module = GetModuleHandleW(ptr::null());
@@ -265,8 +311,8 @@ unsafe fn open(
         ),
         (
             "EDIT",
-            "",
-            tab | ES_AUTOHSCROLL,
+            initial[0],
+            tab | ES_AUTOHSCROLL | if form.read_only_first { ES_READONLY } else { 0 },
             WS_EX_CLIENTEDGE,
             FIRST,
             22,
@@ -287,7 +333,7 @@ unsafe fn open(
         ),
         (
             "EDIT",
-            "",
+            initial[1],
             tab | ES_AUTOHSCROLL,
             WS_EX_CLIENTEDGE,
             SECOND,
@@ -310,7 +356,7 @@ unsafe fn open(
         ("BUTTON", "取消", tab, 0, CANCEL, 148, 164, 80, 30),
         (
             "BUTTON",
-            "添加",
+            form.submit,
             tab | BS_DEFPUSHBUTTON,
             0,
             ADD,
@@ -371,24 +417,28 @@ unsafe fn open(
     dialog
 }
 
-/// 弹出对话框等主人填。返回检查过的两格内容；取消返回 None。
+/// 弹出对话框等主人填，`initial` 是两格一开始的字。返回检查过的两格内容；取消返回 None。
 pub unsafe fn ask(
     parent: HWND,
     font: HFONT,
     dpi: u32,
     form: &'static Form,
+    initial: [&str; 2],
 ) -> Option<(String, String)> {
     let mut state = Box::new(State {
         done: false,
         form,
         fields: None,
     });
-    let dialog = open(parent, font, dpi, &mut *state, None);
+    let dialog = open(parent, font, dpi, &mut *state, initial, None);
     if dialog.is_null() {
         return None;
     }
     EnableWindow(parent, 0);
-    SetFocus(GetDlgItem(dialog, FIRST as i32));
+    let edit = GetDlgItem(dialog, editable(form) as i32);
+    SetFocus(edit);
+    // 光标放到最后（改错时第二格已经有字了）
+    SendMessageW(edit, EM_SETSEL, usize::MAX, -1);
     let mut message: MSG = mem::zeroed();
     while !state.done {
         let got = GetMessageW(&mut message, ptr::null_mut(), 0, 0);
@@ -412,12 +462,18 @@ pub unsafe fn ask(
 }
 
 /// 离屏建一个对话框拍照用（不抢焦点、不在屏幕里）；返回窗口句柄，用完 DestroyWindow。
-pub unsafe fn offscreen(parent: HWND, font: HFONT, dpi: u32, form: &'static Form) -> HWND {
+pub unsafe fn offscreen(
+    parent: HWND,
+    font: HFONT,
+    dpi: u32,
+    form: &'static Form,
+    initial: [&str; 2],
+) -> HWND {
     // 只拍照、不交互，状态留给进程退出时回收
     let state = Box::into_raw(Box::new(State {
         done: false,
         form,
         fields: None,
     }));
-    open(parent, font, dpi, state, Some((-32000, -32000)))
+    open(parent, font, dpi, state, initial, Some((-32000, -32000)))
 }

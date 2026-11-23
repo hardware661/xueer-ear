@@ -303,6 +303,15 @@ pub fn snippet_pick(file: &str, id: usize) -> Option<String> {
         .flatten()
 }
 
+/// 「错=对」这条规则加进热词表的话，历史里会有几句跟着改
+pub fn rule_impact(line: &str, texts: &[String]) -> usize {
+    let rule = Hotwords::parse(line);
+    texts
+        .iter()
+        .filter(|text| rule.apply(text) != **text)
+        .count()
+}
+
 /// 「快捷短语」那一行显示：有几条，一条都没有就显示「添加」
 pub fn snippet_summary(file: &str) -> String {
     match Snippets::parse(file).entries().len() {
@@ -802,5 +811,16 @@ mod tests {
         for (id, _, _) in key_choices(&s) {
             pick_key(&s, id).unwrap().validate().unwrap();
         }
+    }
+
+    #[test]
+    fn a_new_rule_reports_how_many_past_sentences_it_would_change() {
+        let history = vec![
+            "雪而好用".to_owned(),
+            "我在用雪而写代码".to_owned(),
+            "今天天气不错".to_owned(),
+        ];
+        assert_eq!(rule_impact("雪而=雪耳", &history), 2);
+        assert_eq!(rule_impact("克劳德=Claude", &history), 0);
     }
 }
