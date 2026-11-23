@@ -34,7 +34,7 @@ pub struct CommandOptions {
     pub allow_send: bool,
 }
 
-const WORDS: &[(&str, VoiceCommand)] = &[
+pub(crate) const WORDS: &[(&str, VoiceCommand)] = &[
     ("换行", VoiceCommand::NewLine),
     ("删除", VoiceCommand::DeleteLastSentence),
     ("删掉", VoiceCommand::DeleteLastSentence),

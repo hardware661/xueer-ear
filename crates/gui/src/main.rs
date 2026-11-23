@@ -2,10 +2,10 @@
 #[cfg(windows)]
 mod app;
 #[cfg(windows)]
-mod hotword_dialog;
-#[cfg(windows)]
 mod menu;
 mod model;
+#[cfg(windows)]
+mod pair_dialog;
 #[cfg(any(windows, test))]
 mod prefs;
 #[cfg(windows)]

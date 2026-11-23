@@ -35,6 +35,10 @@ pub struct Settings {
     pub run_as_admin: bool,
     /// 识别通道：默认豆包，豆包连不上的那句自动改走微信（主人 2026-11-23 定）
     pub engine: Engine,
+    /// 降噪：断句前先滤掉风扇、空调这种一直响的底噪（发给云端的仍是原声）
+    pub noise_reduction: bool,
+    /// 听写时把别的程序的声音调小，说完恢复
+    pub duck_others: bool,
 }
 
 /// 识别走哪家的云端
@@ -63,6 +67,8 @@ impl Default for Settings {
             max_listen_minutes: 30,
             run_as_admin: false,
             engine: Engine::Doubao,
+            noise_reduction: true,
+            duck_others: true,
         }
     }
 }
@@ -220,6 +226,15 @@ mod tests {
         let json = serde_json::to_string(&chosen).unwrap();
         assert!(json.contains(r#""engine":"wetype""#));
         assert!(serde_json::from_str::<Settings>(r#"{"engine":"other"}"#).is_err());
+    }
+
+    #[test]
+    fn noise_reduction_and_ducking_default_on_for_old_settings_files() {
+        let old: Settings = serde_json::from_str(r#"{"silence_seconds":3}"#).unwrap();
+        assert!(old.noise_reduction && old.duck_others);
+        let off: Settings =
+            serde_json::from_str(r#"{"noise_reduction":false,"duck_others":false}"#).unwrap();
+        assert!(!off.noise_reduction && !off.duck_others);
     }
 
     struct Fixture {

@@ -1,5 +1,5 @@
 use xueer_ear_textflow::{
-    Hotwords, Options, Output, VoiceCommand, join_for_terminal, process, terminal_append,
+    Hotwords, Options, Output, Snippets, VoiceCommand, join_for_terminal, process, terminal_append,
 };
 
 #[test]
@@ -181,5 +181,41 @@ fn terminal_joins_a_cut_off_sentence_without_a_comma() {
     assert_eq!(
         terminal_append("今天天气不错", "我们去公园"),
         "，我们去公园"
+    );
+}
+
+#[test]
+fn a_whole_sentence_snippet_trigger_becomes_its_text_untouched() {
+    let o = Options {
+        snippets: Snippets::parse(
+            "我的邮箱=xueer@example.com\n报价=一百块。\\n谢谢\n换行=不会生效\n",
+        ),
+        ..Options::default()
+    };
+    assert_eq!(
+        process("嗯，我的邮箱。", &o),
+        Output::Snippet("xueer@example.com".into())
+    );
+    // 换出来的文字不再整理（不改数字、标点）
+    assert_eq!(
+        process("报价", &o),
+        Output::Snippet("一百块。\n谢谢".into())
+    );
+    // 句子里提到口令照常是文字
+    assert_eq!(
+        process("把我的邮箱发给他", &o),
+        Output::Text("把我的邮箱发给他".into())
+    );
+    // 指令优先
+    assert_eq!(process("换行", &o), Output::Command(VoiceCommand::NewLine));
+}
+
+#[test]
+fn recognized_text_never_carries_line_breaks_into_the_output() {
+    // 换行只能来自「换行」指令或快捷短语；云端文字里的控制字符当空格
+    let o = Options::default();
+    assert_eq!(
+        process("第一行\n第二行", &o),
+        Output::Text("第一行 第二行".into())
     );
 }

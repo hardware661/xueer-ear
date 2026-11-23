@@ -5,6 +5,7 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+nnnoiseless = { version = "0.5", default-features = false }
 opus = "0.4"
 webrtc-vad = "0.4"
 

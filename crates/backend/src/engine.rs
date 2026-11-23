@@ -157,7 +157,7 @@ fn produce(
     let hold_wave = matches!(&source, Source::WaveHold(_));
     let finite_wave = matches!(&source, Source::Wave(_));
     let settings = Settings::load_default()?;
-    let mut turns = AudioTurns::new(sender, settings.silence_seconds)?;
+    let mut turns = AudioTurns::new(sender, settings.silence_seconds, settings.noise_reduction)?;
     let ready_sender = turns.sender.clone();
     // 麦克风离嘴远时声音太小，云端会直接认不出字：送去断句和识别前先自动放大。
     // 录好的 WAV 不放大（测试用的是正常音量）。面板上的音量条看的是放大前的原始声音。
@@ -259,10 +259,15 @@ struct AudioTurns {
 }
 
 impl AudioTurns {
-    fn new(sender: SyncSender<Audio>, silence_seconds: u32) -> Result<Self> {
+    fn new(sender: SyncSender<Audio>, silence_seconds: u32, denoise: bool) -> Result<Self> {
+        let activity = Activity::with_silence_seconds(silence_seconds)?;
         Ok(Self {
             sender,
-            activity: Activity::with_silence_seconds(silence_seconds)?,
+            activity: if denoise {
+                activity.denoised()
+            } else {
+                activity
+            },
             encoder: None,
             pending: Vec::with_capacity(CHUNK_SAMPLES * 2),
         })
@@ -648,7 +653,7 @@ mod tests {
     #[test]
     fn two_turns_finalize_without_eof_and_idle_has_no_audio() {
         let (sender, input) = mpsc::sync_channel(128);
-        let mut audio = AudioTurns::new(sender, 3).unwrap();
+        let mut audio = AudioTurns::new(sender, 3, false).unwrap();
         let mut receiver = None;
         let mut counts = Counts::default();
         let mut speech = Vec::new();
@@ -757,7 +762,7 @@ mod tests {
     #[test]
     fn finite_wave_tail_honors_ten_second_threshold() {
         let (sender, input) = mpsc::sync_channel(128);
-        let mut audio = AudioTurns::new(sender, 10).unwrap();
+        let mut audio = AudioTurns::new(sender, 10, false).unwrap();
         audio.accept(&voice()).unwrap();
         audio.finish_wave().unwrap();
         let events: Vec<_> = input.try_iter().collect();

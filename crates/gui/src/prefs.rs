@@ -1,7 +1,7 @@
 //! 控制面板各行的菜单：选项列表、点选后的设置变化、行上显示的摘要（纯逻辑，可在 WSL 测）。
 //! 菜单项是（命令号, 文字, 是否打勾）；命令号 0 且文字为空表示分隔线。
-use xueer_ear_backend::settings::Settings;
-use xueer_ear_textflow::Hotwords;
+use xueer_ear_backend::settings::{Engine, Settings};
+use xueer_ear_textflow::{Hotwords, Snippets};
 
 /// 点了没反应的占位项（「还没有记录」）
 pub const NOTHING: usize = 1099;
@@ -12,9 +12,17 @@ pub const BUILTIN_HOTWORDS: usize = 1103;
 pub const OPEN_TRANSLATOR: usize = 1104;
 pub const OPEN_TRANSLATE_KEYS: usize = 1105;
 pub const COPY_DIAGNOSTICS: usize = 1106;
+pub const ADD_SNIPPET: usize = 1107;
+pub const OPEN_SNIPPETS: usize = 1108;
 const BASE: usize = 1110;
 const KEY_BASE: usize = 1200;
 const HISTORY_BASE: usize = 1300;
+const SNIPPET_BASE: usize = 1400;
+/// 历史菜单里的「记录历史」，后面跟着几个保留天数
+pub const HISTORY_SWITCH: usize = 1500;
+const HISTORY_DAYS: usize = 1501;
+/// 快捷短语菜单里最多列几条（多了去表里改）
+pub const SNIPPETS_SHOWN: usize = 12;
 /// 历史菜单里列最近多少句
 pub const HISTORY_SHOWN: usize = 10;
 const DAYS: [u32; 4] = [1, 7, 30, 90];
@@ -33,7 +41,8 @@ type Switch = (&'static str, fn(&mut Settings) -> &mut bool);
 type Choice = (usize, String, bool);
 
 /// 「更多设置」里的开关，顺序就是菜单顺序；`GROUPS` 说明每组几个，组之间画分隔线。
-const SWITCHES: [Switch; 11] = [
+/// 菜单不能再长：150% 缩放时 1080p 屏幕放不下（「记录历史」和保留天数因此放在历史那一行的菜单里）
+const SWITCHES: [Switch; 12] = [
     ("去掉口头禅", |s| &mut s.text.strip_fillers),
     ("中文数字转阿拉伯数字", |s| {
         &mut s.text.normalize_numbers
@@ -47,37 +56,42 @@ const SWITCHES: [Switch; 11] = [
     ("终端里说「换行」发 Ctrl+J", |s| {
         &mut s.text.terminal_newline
     }),
+    ("降噪（开风扇、空调时也能断好句）", |s| {
+        &mut s.noise_reduction
+    }),
+    ("听写时调小别的声音", |s| &mut s.duck_others),
     ("提示音", |s| &mut s.sounds_enabled),
     ("同时接管 Win+H", |s| &mut s.winh_enabled),
     ("以管理员身份运行", |s| &mut s.run_as_admin),
-    ("记录历史", |s| &mut s.history_enabled),
 ];
-/// 文字整理 7 个、提示音、Win+H、管理员 3 个；「记录历史」和保留天数一组
+/// 文字整理 7 个；降噪、调小别的声音、提示音 3 个；Win+H、管理员 2 个
 const GROUPS: [usize; 2] = [7, 10];
+/// 「更多设置」最上面一项：打勾是豆包为主（连不上的那句自动换微信），不打勾是只用微信
+const ENGINE_SWITCH: usize = BASE + SWITCHES.len() + LISTEN.len();
 
 fn separator() -> Choice {
     (0, String::new(), false)
 }
 
-/// 「更多设置」菜单
+/// 「更多设置」菜单：最上面是识别通道
 pub fn choices(s: &Settings) -> Vec<Choice> {
     let mut copy = s.clone();
-    let mut out = Vec::new();
+    let mut out = vec![
+        (
+            ENGINE_SWITCH,
+            "用豆包识别（连不上自动换微信）".to_owned(),
+            s.engine == Engine::Doubao,
+        ),
+        separator(),
+    ];
     for (i, (text, field)) in SWITCHES.iter().enumerate() {
         if GROUPS.contains(&i) {
             out.push(separator());
         }
         out.push((BASE + i, (*text).to_owned(), *field(&mut copy)));
     }
-    out.extend(DAYS.iter().enumerate().map(|(i, days)| {
-        (
-            BASE + SWITCHES.len() + i,
-            format!("保留 {days} 天历史"),
-            s.history_enabled && s.history_keep_days == *days,
-        )
-    }));
     out.push(separator());
-    let listen_base = BASE + SWITCHES.len() + DAYS.len();
+    let listen_base = BASE + SWITCHES.len();
     out.extend(LISTEN.iter().enumerate().map(|(i, minutes)| {
         (
             listen_base + i,
@@ -102,11 +116,18 @@ pub fn diagnostics(
 ) -> String {
     let lines: Vec<&str> = log.lines().collect();
     let tail = lines[lines.len().saturating_sub(DIAGNOSTIC_LINES)..].join("\n");
+    let on = |value: bool| if value { "开" } else { "关" };
     let mut out = format!(
-        "雪耳 {version}\nWindows {windows}\n快捷键 {}；接管 Win+H {}；管理员身份 {}；一次最长听 {} 分钟\n后台：{status}\n\n--- service.log 最后 {} 行 ---\n{tail}\n",
+        "雪耳 {version}\nWindows {windows}\n识别 {}；降噪 {}；调小别的声音 {}\n快捷键 {}；接管 Win+H {}；管理员身份 {}；一次最长听 {} 分钟\n后台：{status}\n\n--- service.log 最后 {} 行 ---\n{tail}\n",
+        match s.engine {
+            Engine::Doubao => "豆包（失败换微信）",
+            Engine::Wetype => "只用微信",
+        },
+        on(s.noise_reduction),
+        on(s.duck_others),
         key_name(s.hotkey_vk),
-        if s.winh_enabled { "开" } else { "关" },
-        if s.run_as_admin { "开" } else { "关" },
+        on(s.winh_enabled),
+        on(s.run_as_admin),
         s.max_listen_minutes,
         DIAGNOSTIC_LINES,
     );
@@ -126,16 +147,20 @@ const DIAGNOSTIC_LINES: usize = 50;
 
 /// 点了「更多设置」里某项后的新设置；不认识的命令号返回 None。
 pub fn toggle(s: &Settings, id: usize) -> Option<Settings> {
-    let index = id.checked_sub(BASE)?;
     let mut next = s.clone();
+    if id == ENGINE_SWITCH {
+        next.engine = match s.engine {
+            Engine::Doubao => Engine::Wetype,
+            Engine::Wetype => Engine::Doubao,
+        };
+        return Some(next);
+    }
+    let index = id.checked_sub(BASE)?;
     if let Some((_, field)) = SWITCHES.get(index) {
         let value = field(&mut next);
         *value = !*value;
-    } else if let Some(days) = DAYS.get(index - SWITCHES.len()) {
-        next.history_keep_days = *days;
-        next.history_enabled = true;
     } else {
-        next.max_listen_minutes = *LISTEN.get(index - SWITCHES.len() - DAYS.len())?;
+        next.max_listen_minutes = *LISTEN.get(index - SWITCHES.len())?;
     }
     Some(next)
 }
@@ -222,6 +247,70 @@ pub fn hotword_summary(file: &str) -> String {
     }
 }
 
+/// 「添加快捷短语」对话框的两格（口令、换成的文字）。文字里打 `\n` 表示换行。
+/// 返回（口令, 文字）；口令和语音指令撞了、太长、空着都不行，说明原因。
+pub fn snippet_entry(trigger: &str, text: &str) -> Result<(String, String), String> {
+    let trigger = trigger.trim();
+    let text = text.trim().replace("\\n", "\n");
+    if trigger.chars().count() > 20 {
+        return Err("口令太长了，最多 20 个字".to_owned());
+    }
+    if text.chars().count() > 500 {
+        return Err("文字太长了，最多 500 个字".to_owned());
+    }
+    xueer_ear_textflow::set_snippet_line("", trigger, &text)?;
+    Ok((trigger.to_owned(), text))
+}
+
+/// 「快捷短语」菜单：添加、打开表；下面列出已有的（点一条可以删掉）
+pub fn snippet_choices(file: &str) -> Vec<Choice> {
+    let snippets = Snippets::parse(file);
+    let mut out = vec![
+        (ADD_SNIPPET, "添加快捷短语…".to_owned(), false),
+        (OPEN_SNIPPETS, "打开快捷短语表".to_owned(), false),
+    ];
+    if !snippets.is_empty() {
+        out.push(separator());
+        out.push((NOTHING, "点一条可以删掉：".to_owned(), false));
+        out.extend(
+            snippets
+                .entries()
+                .iter()
+                .take(SNIPPETS_SHOWN)
+                .enumerate()
+                .map(|(i, (trigger, text))| {
+                    (
+                        SNIPPET_BASE + i,
+                        format!("{trigger} → {}", history_label(text)),
+                        false,
+                    )
+                }),
+        );
+    }
+    out
+}
+
+/// 点了快捷短语菜单里的哪一条：返回它的口令
+pub fn snippet_pick(file: &str, id: usize) -> Option<String> {
+    let index = id.checked_sub(SNIPPET_BASE)?;
+    (index < SNIPPETS_SHOWN)
+        .then(|| {
+            Snippets::parse(file)
+                .entries()
+                .get(index)
+                .map(|(t, _)| t.clone())
+        })
+        .flatten()
+}
+
+/// 「快捷短语」那一行显示：有几条，一条都没有就显示「添加」
+pub fn snippet_summary(file: &str) -> String {
+    match Snippets::parse(file).entries().len() {
+        0 => "添加".to_owned(),
+        count => format!("{count} 条"),
+    }
+}
+
 /// 「历史」那一行显示
 pub fn history_summary(s: &Settings) -> String {
     if s.history_enabled {
@@ -241,19 +330,45 @@ pub fn history_label(text: &str) -> String {
     flat.chars().take(MAX - 1).chain(Some('…')).collect()
 }
 
-/// 「历史」菜单：最近说过的话（最新在上，点一句就复制），最后是打开全部记录
-pub fn history_choices(texts: &[String]) -> Vec<Choice> {
-    if texts.is_empty() {
-        return vec![(NOTHING, "还没有记录".to_owned(), false)];
+/// 「历史」菜单：最近说过的话（最新在上，点一句就复制）、打开全部记录；最下面是记不记、留几天
+pub fn history_choices(texts: &[String], s: &Settings) -> Vec<Choice> {
+    let mut out = Vec::new();
+    if s.history_enabled {
+        if texts.is_empty() {
+            out.push((NOTHING, "还没有记录".to_owned(), false));
+        } else {
+            out.extend(
+                texts
+                    .iter()
+                    .enumerate()
+                    .map(|(i, text)| (HISTORY_BASE + i, history_label(text), false)),
+            );
+            out.push(separator());
+            out.push((OPEN_HISTORY, "打开全部记录".to_owned(), false));
+        }
+        out.push(separator());
     }
-    let mut out: Vec<_> = texts
-        .iter()
-        .enumerate()
-        .map(|(i, text)| (HISTORY_BASE + i, history_label(text), false))
-        .collect();
-    out.push(separator());
-    out.push((OPEN_HISTORY, "打开全部记录".to_owned(), false));
+    out.push((HISTORY_SWITCH, "记录历史".to_owned(), s.history_enabled));
+    out.extend(DAYS.iter().enumerate().map(|(i, days)| {
+        (
+            HISTORY_DAYS + i,
+            format!("保留 {days} 天"),
+            s.history_enabled && s.history_keep_days == *days,
+        )
+    }));
     out
+}
+
+/// 点了历史菜单里的「记录历史」或保留天数以后的新设置；点的是别的返回 None
+pub fn history_setting(s: &Settings, id: usize) -> Option<Settings> {
+    let mut next = s.clone();
+    if id == HISTORY_SWITCH {
+        next.history_enabled = !s.history_enabled;
+        return Some(next);
+    }
+    next.history_keep_days = *DAYS.get(id.checked_sub(HISTORY_DAYS)?)?;
+    next.history_enabled = true;
+    Some(next)
 }
 
 /// 点了历史菜单里的哪一句（全文）
@@ -415,8 +530,7 @@ mod tests {
         assert!(!find(&c, "同时接管 Win+H").1);
         assert!(!find(&c, "以管理员身份运行").1);
         assert!(find(&c, "提示音").1);
-        assert!(find(&c, "保留 7 天历史").1);
-        assert!(!find(&c, "保留 30 天历史").1);
+        assert!(find(&c, "用豆包识别（连不上自动换微信）").1);
         // 快捷键、热词、历史各有自己的一行，不在「更多设置」里
         assert!(!c.iter().any(|(_, t, _)| t.contains("快捷键")));
         assert!(!c.iter().any(|(_, t, _)| t.contains("热词")));
@@ -426,11 +540,7 @@ mod tests {
     fn each_switch_flips_only_itself() {
         let s = Settings::default();
         for (id, text, on) in choices(&s) {
-            if text.is_empty()
-                || text.starts_with("保留")
-                || text.starts_with("一次最长听")
-                || id == COPY_DIAGNOSTICS
-            {
+            if text.is_empty() || text.starts_with("一次最长听") || id == COPY_DIAGNOSTICS {
                 continue;
             }
             let next = toggle(&s, id).unwrap_or_else(|| panic!("{text}"));
@@ -446,22 +556,80 @@ mod tests {
         let s = Settings::default();
         let c = choices(&s);
         let separators = c.iter().filter(|(_, t, _)| t.is_empty()).count();
-        assert_eq!(separators, 4);
+        assert_eq!(separators, 5);
+        // 150% 缩放时 1080p 屏幕要放得下：不能比 1.2 版（20 项、4 条分隔线）更高
+        assert!(c.len() - separators <= 20 && c.len() <= 24, "{}", c.len());
         assert!(c.iter().all(|(id, t, _)| t.is_empty() == (*id == 0)));
         assert!(!c.first().unwrap().1.is_empty() && !c.last().unwrap().1.is_empty());
         assert!(toggle(&s, 0).is_none());
     }
 
     #[test]
-    fn history_days_and_off() {
+    fn history_days_and_off_live_in_the_history_menu() {
         let s = Settings::default();
-        let id = find(&choices(&s), "保留 30 天历史").0;
-        let next = toggle(&s, id).unwrap();
+        let c = history_choices(&[], &s);
+        assert!(find(&c, "记录历史").1);
+        assert!(find(&c, "保留 7 天").1);
+        let next = history_setting(&s, find(&c, "保留 30 天").0).unwrap();
         assert_eq!(next.history_keep_days, 30);
         assert!(next.history_enabled);
-        let off = find(&choices(&s), "记录历史").0;
-        assert!(!toggle(&s, off).unwrap().history_enabled);
+        let off = history_setting(&s, HISTORY_SWITCH).unwrap();
+        assert!(!off.history_enabled);
+        // 关了以后菜单里只剩开关和天数，选个天数就重新打开
+        let c = history_choices(&[], &off);
+        assert_eq!(c[0], (HISTORY_SWITCH, "记录历史".to_owned(), false));
+        assert!(c.iter().all(|(_, _, on)| !on));
+        assert!(
+            history_setting(&off, find(&c, "保留 1 天").0)
+                .unwrap()
+                .history_enabled
+        );
+        assert!(history_setting(&s, OPEN_HISTORY).is_none());
         assert!(toggle(&s, 9999).is_none());
+    }
+
+    #[test]
+    fn recognition_channel_switches_between_doubao_and_wechat_only() {
+        let s = Settings::default();
+        let (id, on) = find(&choices(&s), "用豆包识别（连不上自动换微信）");
+        assert!(on);
+        let wetype = toggle(&s, id).unwrap();
+        assert_eq!(wetype.engine, Engine::Wetype);
+        assert_eq!(toggle(&wetype, id).unwrap(), s);
+    }
+
+    #[test]
+    fn noise_reduction_and_ducking_switches_are_on_by_default() {
+        let c = choices(&Settings::default());
+        assert!(find(&c, "降噪（开风扇、空调时也能断好句）").1);
+        assert!(find(&c, "听写时调小别的声音").1);
+    }
+
+    #[test]
+    fn snippet_dialog_checks_the_trigger_and_turns_backslash_n_into_lines() {
+        assert_eq!(
+            snippet_entry(" 我的地址 ", "某某路 1 号\\n张三收"),
+            Ok(("我的地址".to_owned(), "某某路 1 号\n张三收".to_owned()))
+        );
+        assert!(snippet_entry("换行", "x").unwrap_err().contains("换行"));
+        assert!(snippet_entry("", "x").is_err());
+        assert!(snippet_entry("签名", "  ").is_err());
+        assert!(snippet_entry(&"长".repeat(21), "x").is_err());
+        assert!(snippet_entry("签名", &"字".repeat(501)).is_err());
+    }
+
+    #[test]
+    fn snippet_menu_lists_entries_that_can_be_picked_for_deletion() {
+        assert_eq!(snippet_summary(""), "添加");
+        let file = "# 说明\n我的邮箱=xueer@example.com\n地址=某某路\\n张三收\n";
+        assert_eq!(snippet_summary(file), "2 条");
+        let c = snippet_choices(file);
+        assert!(c.iter().any(|(id, _, _)| *id == ADD_SNIPPET));
+        assert!(c.iter().any(|(id, _, _)| *id == OPEN_SNIPPETS));
+        let (id, _) = find(&c, "地址 → 某某路 张三收");
+        assert_eq!(snippet_pick(file, id).as_deref(), Some("地址"));
+        assert_eq!(snippet_pick(file, ADD_SNIPPET), None);
+        assert_eq!(snippet_choices("").len(), 2, "没有快捷短语时只有添加和打开");
     }
 
     #[test]
@@ -531,7 +699,7 @@ mod tests {
         assert!(label.ends_with('…'));
         // 最新的在最上面；点哪条就拿到哪条的全文
         let texts = vec!["最新".to_owned(), long.clone(), "最旧".to_owned()];
-        let c = history_choices(&texts);
+        let c = history_choices(&texts, &Settings::default());
         assert_eq!(c[0].1, "最新");
         assert_eq!(history_pick(&texts, c[1].0), Some(long.as_str()));
         assert_eq!(history_pick(&texts, c[2].0), Some("最旧"));
@@ -539,8 +707,8 @@ mod tests {
         assert_eq!(c[4], (OPEN_HISTORY, "打开全部记录".to_owned(), false));
         assert_eq!(history_pick(&texts, OPEN_HISTORY), None);
         // 没有记录时说一声
-        let empty = history_choices(&[]);
-        assert_eq!(empty, [(NOTHING, "还没有记录".to_owned(), false)]);
+        let empty = history_choices(&[], &Settings::default());
+        assert_eq!(empty[0], (NOTHING, "还没有记录".to_owned(), false));
         assert_eq!(history_pick(&[], NOTHING), None);
     }
 
@@ -608,6 +776,10 @@ mod tests {
         assert!(text.starts_with("雪耳 1.2.0\nWindows 11 25H2"), "{text}");
         assert!(
             text.contains("快捷键 右 Alt；接管 Win+H 关；管理员身份 关"),
+            "{text}"
+        );
+        assert!(
+            text.contains("识别 豆包（失败换微信）；降噪 开；调小别的声音 开"),
             "{text}"
         );
         assert!(text.contains("后台：聆听中"), "{text}");

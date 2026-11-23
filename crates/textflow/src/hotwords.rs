@@ -260,6 +260,29 @@ struct Span {
 
 const SPACE: Unit = Unit::Other(' ');
 
+/// 两段话读音一样（快捷短语认口令用）：空格标点不算，英文数字不分大小写；
+/// 汉字两个字以上才按读音比（规则同热词），只有一个汉字时要原字。
+pub(crate) fn sounds_like(a: &str, b: &str) -> bool {
+    let spoken = |s: &str| -> Vec<Unit> {
+        units_of(s)
+            .into_iter()
+            .map(|(u, _)| u)
+            .filter(|u| !matches!(u, Unit::Other(c) if !c.is_alphanumeric()))
+            .collect()
+    };
+    let (a, b) = (spoken(a), spoken(b));
+    if a.is_empty() || a.len() != b.len() {
+        return false;
+    }
+    let han_count = a.iter().filter(|u| matches!(u, Unit::Han(..))).count();
+    a.iter().zip(&b).all(|pair| match pair {
+        (Unit::Han(ac, ap), Unit::Han(bc, bp)) => {
+            ac == bc || (han_count >= 2 && ap.iter().any(|p| bp.contains(p)))
+        }
+        (x, y) => x == y,
+    })
+}
+
 fn match_at(entry: &Entry, units: &[(Unit, Span)], i: usize) -> Option<usize> {
     let first_latin = matches!(entry.units.first(), Some(Unit::Latin(_)));
     if first_latin && i > 0 && prev_non_space(units, i).is_some_and(|u| matches!(u, Unit::Latin(_)))

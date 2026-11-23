@@ -76,6 +76,40 @@ impl Typist {
         vec![Key::Text(typed)]
     }
 
+    /// 上屏一段快捷短语：文字原样打，里面的换行和说「换行」按同一个键（终端里关了换行就换成空格）。
+    /// 整段记成一句，紧接着说「删除」会整段删掉。
+    pub fn snippet(&mut self, text: &str, terminal: bool) -> Vec<Key> {
+        let newline = match (terminal, self.terminal_newline) {
+            (false, _) => Some(Key::Enter),
+            (true, true) => Some(Key::CtrlJ),
+            (true, false) => None,
+        };
+        let mut keys = Vec::new();
+        let mut typed = String::new();
+        for (i, line) in text.split('\n').enumerate() {
+            let line = clean(line);
+            let piece = match (i, &newline) {
+                (0, _) if terminal => xueer_ear_textflow::terminal_append(self.previous(), &line),
+                (0, _) | (_, Some(_)) => line,
+                (_, None) => format!(" {line}"),
+            };
+            if i > 0
+                && let Some(key) = &newline
+            {
+                keys.push(key.clone());
+                typed.push('\n');
+            }
+            if !piece.is_empty() {
+                typed.push_str(&piece);
+                keys.push(Key::Text(piece));
+            }
+        }
+        if !typed.is_empty() {
+            self.typed.push(Typed::Sentence(typed));
+        }
+        keys
+    }
+
     pub fn command(&mut self, command: VoiceCommand, terminal: bool) -> Vec<Key> {
         match command {
             VoiceCommand::NewLine if terminal && !self.terminal_newline => vec![],
@@ -387,7 +421,7 @@ impl Live {
     /// 定稿：把屏幕上没说定的那一截整个换成整理后的文字，或者擦掉后执行指令。
     pub fn finalize(&mut self, output: Output) -> Vec<Key> {
         let raw = match &output {
-            Output::Text(text) | Output::TextThen(text, _) => text.clone(),
+            Output::Text(text) | Output::TextThen(text, _) | Output::Snippet(text) => text.clone(),
             Output::Command(_) => String::new(),
         };
         self.finalize_from(&raw, output)
@@ -418,14 +452,16 @@ impl Live {
                 keys.extend(self.typist.command(command, self.terminal));
                 keys
             }
+            Output::Snippet(text) => self.typist.snippet(&text, self.terminal),
         });
         keep_common_prefix(&shown, keys)
     }
 
     /// 冻结状态下的定稿：不退格、不替换，按原话补上还没上屏的尾巴；会删东西的指令不执行。
+    /// 快捷短语也不换：口令已经在屏幕上了，换不掉。
     fn finalize_frozen(&mut self, raw: &str, output: Output) -> Vec<Key> {
         let keys = match output {
-            Output::Text(_) => {
+            Output::Text(_) | Output::Snippet(_) => {
                 let text = self.separated(&clean(raw));
                 self.append_only(&text)
             }
@@ -1312,5 +1348,67 @@ mod tests {
             t.command(VoiceCommand::DeleteLastSentence, false),
             [Key::Backspace(2)]
         );
+    }
+
+    #[test]
+    fn a_snippet_replaces_the_spoken_trigger_and_keeps_its_line_breaks() {
+        let mut live = Live::new(false);
+        let mut doc = String::from("开头。");
+        live.finalize(Output::Text(String::new()));
+        type_into(&mut doc, &live.partial("我的签名"));
+        let keys = live.finalize(Output::Snippet("雪儿\n敬上".into()));
+        assert!(keys.contains(&Key::Enter), "换行和说「换行」按同一个键");
+        type_into(&mut doc, &keys);
+        assert_eq!(doc, "开头。雪儿\n敬上");
+    }
+
+    #[test]
+    fn snippet_line_breaks_in_a_terminal_follow_the_newline_setting() {
+        let mut live = Live::new(true);
+        let mut doc = String::new();
+        type_into(&mut doc, &live.partial("签名"));
+        let keys = live.finalize(Output::Snippet("雪儿\n敬上".into()));
+        assert!(keys.contains(&Key::CtrlJ) && !keys.contains(&Key::Enter));
+        type_into(&mut doc, &keys);
+        assert_eq!(doc, "雪儿\n敬上");
+        // 终端里关了换行：换成空格，绝不按回车
+        let mut live = Live::new(true);
+        live.set_terminal_newline(false);
+        let mut doc = String::new();
+        type_into(&mut doc, &live.partial("签名"));
+        type_into(
+            &mut doc,
+            &live.finalize(Output::Snippet("雪儿\n敬上".into())),
+        );
+        assert_eq!(doc, "雪儿 敬上");
+    }
+
+    #[test]
+    fn deleting_right_after_a_snippet_removes_all_of_it() {
+        let mut live = Live::new(false);
+        let mut doc = String::from("开头。");
+        live.finalize(Output::Text(String::new()));
+        type_into(&mut doc, &live.partial("地址"));
+        type_into(
+            &mut doc,
+            &live.finalize(Output::Snippet("某某路\n张三收".into())),
+        );
+        type_into(
+            &mut doc,
+            &live.finalize(Output::Command(VoiceCommand::DeleteLastSentence)),
+        );
+        assert_eq!(doc, "开头。");
+    }
+
+    #[test]
+    fn a_frozen_sentence_keeps_the_spoken_words_instead_of_a_snippet() {
+        // 主人中途动了键盘：屏幕上的口令不能退格换掉，只按原话补完
+        let mut live = Live::new(false);
+        let mut doc = String::new();
+        type_into(&mut doc, &live.partial("我的"));
+        live.user_touched();
+        let keys = live.finalize_from("我的邮箱", Output::Snippet("a@b.c".into()));
+        type_into(&mut doc, &keys);
+        assert_eq!(doc, "我的邮箱");
     }
 }

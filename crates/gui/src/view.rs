@@ -8,7 +8,7 @@ use windows_sys::Win32::Graphics::{Gdi::HDC, GdiPlus as gp};
 
 pub const WIDTH: i32 = 400;
 pub const HEADER: i32 = 42;
-pub const HEIGHT: i32 = 544;
+pub const HEIGHT: i32 = 588;
 
 /// 一套界面颜色（0xRRGGBB）。浅色是雪耳原来的黑白灰；深色参照 macOS 深色模式。
 /// GDI+ 画图用 `argb`，GDI 的字和画刷用 `colorref`
@@ -341,7 +341,7 @@ impl Drop for Canvas {
 }
 
 /// 卡片的位置（96 DPI）：状态卡、「听写」组、「文字」组、更多设置
-pub const CARDS: [(f32, f32); 4] = [(52., 72.), (170., 132.), (336., 132.), (484., 44.)];
+pub const CARDS: [(f32, f32); 4] = [(52., 72.), (170., 132.), (336., 176.), (528., 44.)];
 /// 一行多高
 pub const ROW: f32 = 44.;
 /// 系统设置式：浅灰底上几张白色圆角卡片（深色是深灰底上的灰卡片）；

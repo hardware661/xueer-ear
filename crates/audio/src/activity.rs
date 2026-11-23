@@ -1,6 +1,9 @@
 //! Local, sample-clocked turn detection. No audio leaves this module while idle.
-use crate::encoder::{FRAME_SAMPLES, SAMPLE_RATE};
-use std::collections::VecDeque;
+use crate::{
+    denoise::Denoiser,
+    encoder::{FRAME_SAMPLES, SAMPLE_RATE},
+};
+use std::{borrow::Cow, collections::VecDeque};
 use webrtc_vad::{SampleRate, Vad, VadMode};
 
 pub const SILENCE_SAMPLES: usize = SAMPLE_RATE as usize * 3;
@@ -20,12 +23,29 @@ pub enum ActivityEvent {
 pub struct Activity {
     vad: Vad,
     pending: Vec<i16>,
+    /// 和 `pending` 对齐的、用来判断有没有人说话的那份声音（没开降噪时不用）
+    pending_detect: Vec<i16>,
+    denoise: Option<Denoised>,
     preroll: VecDeque<i16>,
     attack: usize,
     silent: usize,
     silence_samples: usize,
     active: bool,
     noise: f64,
+}
+
+/// 断句看降噪后的声音，发出去的是原声：原声按降噪的延迟排队，和降噪后的声音逐个样本对齐
+struct Denoised {
+    denoiser: Denoiser,
+    raw: VecDeque<i16>,
+}
+
+impl Denoised {
+    fn new() -> Self {
+        let denoiser = Denoiser::resume();
+        let raw = std::iter::repeat_n(0, denoiser.delay()).collect();
+        Self { denoiser, raw }
+    }
 }
 
 impl Default for Activity {
@@ -42,6 +62,8 @@ impl Activity {
         Ok(Self {
             vad: Vad::new_with_rate_and_mode(SampleRate::Rate16kHz, VadMode::Quality),
             pending: Vec::with_capacity(FRAME_SAMPLES),
+            pending_detect: Vec::with_capacity(FRAME_SAMPLES),
+            denoise: None,
             preroll: VecDeque::with_capacity(PREROLL_SAMPLES),
             attack: 0,
             silent: 0,
@@ -51,21 +73,40 @@ impl Activity {
         })
     }
 
+    /// 判断有没有人说话时先降噪（风扇、空调这种一直响的底噪不再让它以为一直有人在说话）。
+    /// 发出去的仍是原声，只晚 12 ms：云端对原声认得更准（见 `denoise` 模块说明）。
+    pub fn denoised(mut self) -> Self {
+        self.denoise = Some(Denoised::new());
+        self
+    }
+
     pub fn silence_samples(&self) -> usize {
         self.silence_samples
     }
 
     /// WASAPI packet boundaries do not affect the silence deadline.
     pub fn push(&mut self, pcm: &[i16]) -> Vec<ActivityEvent> {
+        let (detect, audio): (Cow<[i16]>, Cow<[i16]>) = match self.denoise.as_mut() {
+            None => (Cow::Borrowed(pcm), Cow::Borrowed(pcm)),
+            Some(denoise) => {
+                denoise.raw.extend(pcm);
+                let clean = denoise.denoiser.process(pcm);
+                let raw: Vec<i16> = denoise.raw.drain(..clean.len()).collect();
+                (Cow::Owned(clean), Cow::Owned(raw))
+            }
+        };
         let mut events = Vec::new();
-        for &sample in pcm {
+        for (&heard, &sample) in detect.iter().zip(audio.iter()) {
             self.pending.push(sample);
+            self.pending_detect.push(heard);
             if self.pending.len() == FRAME_SAMPLES {
                 let frame = std::mem::replace(&mut self.pending, Vec::with_capacity(FRAME_SAMPLES));
+                let heard =
+                    std::mem::replace(&mut self.pending_detect, Vec::with_capacity(FRAME_SAMPLES));
                 // Remove DC bias when measuring energy; WebRTC supplies the actual
                 // speech/noise decision, rather than treating all loud sound as voice.
-                let mean = frame.iter().map(|&s| f64::from(s)).sum::<f64>() / FRAME_SAMPLES as f64;
-                let rms = (frame
+                let mean = heard.iter().map(|&s| f64::from(s)).sum::<f64>() / FRAME_SAMPLES as f64;
+                let rms = (heard
                     .iter()
                     .map(|&s| (f64::from(s) - mean).powi(2))
                     .sum::<f64>()
@@ -73,7 +114,7 @@ impl Activity {
                     .sqrt();
                 let voice = self
                     .vad
-                    .is_voice_segment(&frame)
+                    .is_voice_segment(&heard)
                     .expect("fixed 16 kHz / 20 ms VAD frame")
                     && rms >= (self.noise * 2.5).max(80.0);
                 if !self.active && !voice {
@@ -114,13 +155,23 @@ impl Activity {
     pub fn finish(&mut self) -> Vec<ActivityEvent> {
         let mut events = Vec::new();
         if self.active {
-            if !self.pending.is_empty() {
-                events.push(ActivityEvent::Audio(std::mem::take(&mut self.pending)));
+            // 还在排队等降噪结果的原声也是这句的尾巴
+            let mut tail = std::mem::take(&mut self.pending);
+            if let Some(denoise) = self.denoise.as_mut() {
+                tail.extend(denoise.raw.drain(..));
+            }
+            if !tail.is_empty() {
+                events.push(ActivityEvent::Audio(tail));
             }
             self.active = false;
             events.push(ActivityEvent::Ended);
         }
+        // 先放下旧的（把学到的底噪留下来），再接着它开始
+        if self.denoise.take().is_some() {
+            self.denoise = Some(Denoised::new());
+        }
         self.pending.clear();
+        self.pending_detect.clear();
         self.preroll.clear();
         self.attack = 0;
         self.silent = 0;
@@ -246,5 +297,93 @@ mod tests {
         for invalid in [0, 4, 6, 11, u32::MAX] {
             assert!(Activity::with_silence_seconds(invalid).is_err());
         }
+    }
+
+    /// 可复现的白噪声（风扇声的简化）
+    fn hiss(samples: usize, amplitude: f64) -> Vec<i16> {
+        let mut seed = 0x2545_f491_u32;
+        (0..samples)
+            .map(|_| {
+                seed ^= seed << 13;
+                seed ^= seed >> 17;
+                seed ^= seed << 5;
+                ((f64::from(seed) / f64::from(u32::MAX) * 2. - 1.) * amplitude) as i16
+            })
+            .collect()
+    }
+
+    /// 2 秒噪声，2 秒说话（带同样的噪声），再 4 秒噪声；返回各事件发生在第几毫秒、发出去的全部声音
+    fn run_in_hiss(mut gate: Activity) -> (Vec<String>, Vec<i16>) {
+        let mut signal = hiss(32_000, 3_000.);
+        let speech = voice(32_000);
+        let noise = hiss(32_000, 3_000.);
+        signal.extend(speech.iter().zip(&noise).map(|(a, b)| a.saturating_add(*b)));
+        signal.extend(hiss(64_000, 3_000.));
+        let (mut log, mut sent) = (Vec::new(), Vec::new());
+        for (i, chunk) in signal.chunks(1_600).enumerate() {
+            for event in gate.push(chunk) {
+                match event {
+                    ActivityEvent::Started(pcm) => {
+                        log.push(format!("start@{}", i * 100));
+                        sent.extend(pcm);
+                    }
+                    ActivityEvent::Audio(pcm) => sent.extend(pcm),
+                    ActivityEvent::Ended => log.push(format!("end@{}", i * 100)),
+                }
+            }
+        }
+        (log, sent)
+    }
+
+    #[test]
+    fn steady_loud_noise_holds_a_turn_open_unless_denoised() {
+        let _serial = crate::denoise::serial();
+        let gate = || Activity::with_silence_seconds(1).unwrap();
+        let (plain, _) = run_in_hiss(gate());
+        assert!(!plain.iter().any(|e| e.starts_with("end")), "{plain:?}");
+        let (denoised, _) = run_in_hiss(gate().denoised());
+        assert!(
+            denoised.iter().any(|e| e.starts_with("end")),
+            "说完 4 秒内要能收句：{denoised:?}"
+        );
+    }
+
+    #[test]
+    fn with_denoising_the_sound_sent_is_the_original_only_later() {
+        let _serial = crate::denoise::serial();
+        let mut gate = Activity::with_silence_seconds(1).unwrap().denoised();
+        let delay = Denoiser::new().delay();
+        let mut input = vec![0; 16_000];
+        input.extend(voice(16_000));
+        input.extend(vec![0; 40_000]);
+        let mut sent = Vec::new();
+        for chunk in input.chunks(1_000) {
+            for event in gate.push(chunk) {
+                if let ActivityEvent::Started(pcm) | ActivityEvent::Audio(pcm) = event {
+                    sent.extend(pcm);
+                }
+            }
+        }
+        assert!(!sent.is_empty());
+        let delayed: Vec<i16> = std::iter::repeat_n(0, delay).chain(input).collect();
+        assert!(
+            delayed.windows(sent.len()).any(|w| w == sent.as_slice()),
+            "发出去的必须是原声的一段，不能是降噪后的"
+        );
+    }
+
+    #[test]
+    fn finishing_a_denoised_turn_sends_the_queued_tail() {
+        let _serial = crate::denoise::serial();
+        let mut gate = Activity::default().denoised();
+        let speech = voice(16_000);
+        let mut sent: Vec<i16> = Vec::new();
+        for event in gate.push(&speech).into_iter().chain(gate.finish()) {
+            if let ActivityEvent::Started(pcm) | ActivityEvent::Audio(pcm) = event {
+                sent.extend(pcm);
+            }
+        }
+        // 开头多出延迟那么多个 0，原声一个不少
+        assert!(sent.ends_with(&speech[speech.len() - 1_000..]));
     }
 }

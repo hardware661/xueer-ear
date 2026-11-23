@@ -7,12 +7,14 @@ use std::path::Path;
 use xueer_ear_history::{Entry, History, Settings as HistorySettings};
 use xueer_ear_protocol::transcript::SpeechEvent;
 use xueer_ear_textflow::{
-    CommandOptions, Hotwords, Options, Output, PunctOptions, VoiceCommand, parse_command, process,
-    strip_fillers,
+    CommandOptions, Hotwords, Options, Output, PunctOptions, Snippets, VoiceCommand, parse_command,
+    process, strip_fillers,
 };
 
 /// 热词文件上限，防止误放一个大文件拖慢每句话。
 const MAX_HOTWORDS_BYTES: u64 = 256 * 1024;
+/// 快捷短语文件上限
+const MAX_SNIPPETS_BYTES: u64 = 64 * 1024;
 
 pub struct Postprocess {
     options: Options,
@@ -20,11 +22,12 @@ pub struct Postprocess {
 }
 
 impl Postprocess {
-    /// `dir` 是数据目录（%LOCALAPPDATA%\XueerEar），里面放 hotwords.txt 和 history.jsonl。
+    /// `dir` 是数据目录（%LOCALAPPDATA%\XueerEar），里面放 hotwords.txt、snippets.txt 和 history.jsonl。
     pub fn new(settings: &Settings, dir: &Path) -> Self {
         let text = &settings.text;
         let options = Options {
             hotwords: hotwords(&dir.join("hotwords.txt"), text.builtin_hotwords),
+            snippets: Snippets::parse(&read_snippets_text(&dir.join("snippets.txt"))),
             punct: PunctOptions {
                 drop_final_period: text.drop_final_period,
                 cjk_latin_space: text.cjk_latin_space,
@@ -52,7 +55,7 @@ impl Postprocess {
             return event;
         }
         let text = match self.finalize(&event.text, now_ms) {
-            Output::Text(text) | Output::TextThen(text, _) => text,
+            Output::Text(text) | Output::TextThen(text, _) | Output::Snippet(text) => text,
             Output::Command(_) => event.text,
         };
         SpeechEvent {
@@ -62,10 +65,10 @@ impl Postprocess {
     }
 
     /// 整理一句定稿文字（快捷键路径能执行指令，所以把指令原样交回）。
-    /// 是文字且非空时写一条历史；历史写失败只打日志，不影响上屏。
+    /// 是文字（含快捷短语换出来的）且非空时写一条历史；历史写失败只打日志，不影响上屏。
     pub fn finalize(&self, text: &str, now_ms: u64) -> Output {
         let output = process(text, &self.options);
-        if let Output::Text(text) | Output::TextThen(text, _) = &output {
+        if let Output::Text(text) | Output::TextThen(text, _) | Output::Snippet(text) = &output {
             if !text.is_empty() {
                 let entry = Entry {
                     at_ms: now_ms,
@@ -155,6 +158,21 @@ fn hotwords(path: &Path, builtin: bool) -> Hotwords {
 
 fn read_hotwords(path: &Path) -> Hotwords {
     Hotwords::parse(&read_hotwords_text(path))
+}
+
+/// 快捷短语文件的内容；没有、太大或读不了都当空表（打日志），不影响上屏。
+fn read_snippets_text(path: &Path) -> String {
+    let Ok(meta) = std::fs::metadata(path) else {
+        return String::new();
+    };
+    if meta.len() > MAX_SNIPPETS_BYTES {
+        eprintln!("快捷短语文件超过 64 KiB，已忽略");
+        return String::new();
+    }
+    std::fs::read_to_string(path).unwrap_or_else(|error| {
+        eprintln!("快捷短语文件读取失败：{error}");
+        String::new()
+    })
 }
 
 /// 主人热词表的内容；没有、太大或读不了都当空表（打日志），不影响上屏。
@@ -363,6 +381,28 @@ mod tests {
                 ("雪而好用".to_owned(), "雪耳好用".to_owned()),
                 ("用克劳德写代码".to_owned(), "用Claude写代码".to_owned()),
             ]
+        );
+    }
+
+    #[test]
+    fn a_snippet_trigger_comes_back_as_its_text_and_is_recorded() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(
+            dir.path().join("snippets.txt"),
+            "我的邮箱=xueer@example.com\n",
+        )
+        .unwrap();
+        let p = Postprocess::new(&Settings::default(), dir.path());
+        assert_eq!(
+            p.finalize("我的邮箱。", 1),
+            Output::Snippet("xueer@example.com".into())
+        );
+        let history = fs::read_to_string(dir.path().join("history.jsonl")).unwrap();
+        assert!(history.contains("xueer@example.com"), "{history}");
+        // Win+H 路径也换
+        assert_eq!(
+            p.apply(final_event("我的邮箱"), 2).text,
+            "xueer@example.com"
         );
     }
 }

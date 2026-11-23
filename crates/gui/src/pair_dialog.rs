@@ -1,4 +1,4 @@
-//! 「添加热词」小对话框：两格——正确的写法、常被听成什么（可不填）。
+//! 两格的小对话框：「添加热词」（正确的写法、常被听成什么）和「添加快捷短语」（口令、换成的文字）共用。
 //! 回车添加、Esc 取消；填得不对就在下面用红字说哪里不对，不关窗口。
 #![allow(unsafe_op_in_unsafe_fn)]
 use crate::view::{colorref, dark, palette};
@@ -19,11 +19,11 @@ use windows_sys::Win32::{
     },
 };
 
-const CLASS: &str = "XueerEar.HotwordDialog";
+const CLASS: &str = "XueerEar.PairDialog";
 const ADD: usize = 1; // IDOK：回车
 const CANCEL: usize = 2; // IDCANCEL：Esc
-const WORD: usize = 301;
-const HEARD: usize = 302;
+const FIRST: usize = 301;
+const SECOND: usize = 302;
 const HINT: usize = 303;
 const EM_SETLIMITTEXT: u32 = 0x00C5;
 const EM_SETCUEBANNER: u32 = 0x1501;
@@ -33,9 +33,47 @@ const BS_DEFPUSHBUTTON: u32 = 0x0001;
 const WIDTH: i32 = 340;
 const HEIGHT: i32 = 206;
 
+/// 对话框里写什么、怎么检查
+pub struct Form {
+    pub title: &'static str,
+    pub labels: [&'static str; 2],
+    pub cues: [&'static str; 2],
+    /// 每格最多几个字
+    pub limits: [usize; 2],
+    /// 两格填得对不对；不对返回原因，显示在下面的红字里
+    pub check: fn(&str, &str) -> Result<(), String>,
+}
+
+pub const HOTWORD: Form = Form {
+    title: "添加热词",
+    labels: ["正确的写法", "常被听成"],
+    cues: ["例如 Claude Code", "例如 Cloud Code，可不填"],
+    limits: [40, 40],
+    check: check_hotword,
+};
+
+pub const SNIPPET: Form = Form {
+    title: "添加快捷短语",
+    labels: ["口令（整句只说这几个字）", "换成的文字（打 \\n 表示换行）"],
+    cues: ["例如 我的邮箱", "例如 someone@example.com"],
+    limits: [20, 500],
+    check: check_snippet,
+};
+
+fn check_hotword(word: &str, heard: &str) -> Result<(), String> {
+    crate::prefs::hotword_line(word, heard)
+        .map(drop)
+        .map_err(str::to_owned)
+}
+
+fn check_snippet(trigger: &str, text: &str) -> Result<(), String> {
+    crate::prefs::snippet_entry(trigger, text).map(drop)
+}
+
 struct State {
     done: bool,
-    line: Option<String>,
+    form: &'static Form,
+    fields: Option<(String, String)>,
 }
 
 fn wide(value: &str) -> Vec<u16> {
@@ -61,9 +99,9 @@ fn scale(value: i32, dpi: u32) -> i32 {
     (value * dpi as i32 + 48) / 96
 }
 
-unsafe fn text_of(dialog: HWND, id: usize) -> String {
+unsafe fn text_of(dialog: HWND, id: usize, limit: usize) -> String {
     let control = GetDlgItem(dialog, id as i32);
-    let mut buffer = [0_u16; 128];
+    let mut buffer = vec![0_u16; limit * 2 + 2];
     let len = GetWindowTextW(control, buffer.as_mut_ptr(), buffer.len() as i32).max(0);
     String::from_utf16_lossy(&buffer[..len as usize])
 }
@@ -87,16 +125,18 @@ unsafe extern "system" fn procedure(
         WM_COMMAND => {
             match wparam & 0xffff {
                 ADD => {
-                    match crate::prefs::hotword_line(&text_of(hwnd, WORD), &text_of(hwnd, HEARD)) {
-                        Ok(line) => {
-                            state.line = Some(line);
+                    let [first, second] = state.form.limits;
+                    let fields = (text_of(hwnd, FIRST, first), text_of(hwnd, SECOND, second));
+                    match (state.form.check)(&fields.0, &fields.1) {
+                        Ok(()) => {
+                            state.fields = Some(fields);
                             state.done = true;
                         }
                         Err(reason) => {
                             let hint = GetDlgItem(hwnd, HINT as i32);
-                            SetWindowTextW(hint, wide(reason).as_ptr());
+                            SetWindowTextW(hint, wide(&reason).as_ptr());
                             InvalidateRect(hint, ptr::null(), 1);
-                            SetFocus(GetDlgItem(hwnd, WORD as i32));
+                            SetFocus(GetDlgItem(hwnd, FIRST as i32));
                         }
                     }
                 }
@@ -180,10 +220,11 @@ unsafe fn open(
             owner.top + (owner.bottom - owner.top - height) / 2,
         )
     });
+    let form = (*state).form;
     let dialog = CreateWindowExW(
         extended,
         class_name.as_ptr(),
-        wide("添加热词").as_ptr(),
+        wide(form.title).as_ptr(),
         style,
         x,
         y,
@@ -213,7 +254,7 @@ unsafe fn open(
     let controls: [(&str, &str, u32, u32, usize, i32, i32, i32, i32); 7] = [
         (
             "STATIC",
-            "正确的写法",
+            form.labels[0],
             WS_CHILD | WS_VISIBLE,
             0,
             0,
@@ -227,7 +268,7 @@ unsafe fn open(
             "",
             tab | ES_AUTOHSCROLL,
             WS_EX_CLIENTEDGE,
-            WORD,
+            FIRST,
             22,
             42,
             296,
@@ -235,7 +276,7 @@ unsafe fn open(
         ),
         (
             "STATIC",
-            "常被听成",
+            form.labels[1],
             WS_CHILD | WS_VISIBLE,
             0,
             0,
@@ -249,7 +290,7 @@ unsafe fn open(
             "",
             tab | ES_AUTOHSCROLL,
             WS_EX_CLIENTEDGE,
-            HEARD,
+            SECOND,
             22,
             106,
             296,
@@ -311,12 +352,12 @@ unsafe fn open(
             }
         }
     }
-    for (id, cue) in [
-        (WORD, "例如 Claude Code"),
-        (HEARD, "例如 Cloud Code，可不填"),
-    ] {
+    for ((id, cue), limit) in [(FIRST, form.cues[0]), (SECOND, form.cues[1])]
+        .into_iter()
+        .zip(form.limits)
+    {
         let edit = GetDlgItem(dialog, id as i32);
-        SendMessageW(edit, EM_SETLIMITTEXT, 40, 0);
+        SendMessageW(edit, EM_SETLIMITTEXT, limit, 0);
         SendMessageW(edit, EM_SETCUEBANNER, 1, wide(cue).as_ptr() as isize);
     }
     ShowWindow(
@@ -330,18 +371,24 @@ unsafe fn open(
     dialog
 }
 
-/// 弹出对话框等主人填。返回要加进热词表的一行（一个词，或「错=对」）；取消返回 None。
-pub unsafe fn ask(parent: HWND, font: HFONT, dpi: u32) -> Option<String> {
+/// 弹出对话框等主人填。返回检查过的两格内容；取消返回 None。
+pub unsafe fn ask(
+    parent: HWND,
+    font: HFONT,
+    dpi: u32,
+    form: &'static Form,
+) -> Option<(String, String)> {
     let mut state = Box::new(State {
         done: false,
-        line: None,
+        form,
+        fields: None,
     });
     let dialog = open(parent, font, dpi, &mut *state, None);
     if dialog.is_null() {
         return None;
     }
     EnableWindow(parent, 0);
-    SetFocus(GetDlgItem(dialog, WORD as i32));
+    SetFocus(GetDlgItem(dialog, FIRST as i32));
     let mut message: MSG = mem::zeroed();
     while !state.done {
         let got = GetMessageW(&mut message, ptr::null_mut(), 0, 0);
@@ -361,15 +408,16 @@ pub unsafe fn ask(parent: HWND, font: HFONT, dpi: u32) -> Option<String> {
     EnableWindow(parent, 1);
     SetForegroundWindow(parent);
     DestroyWindow(dialog);
-    state.line.take()
+    state.fields.take()
 }
 
 /// 离屏建一个对话框拍照用（不抢焦点、不在屏幕里）；返回窗口句柄，用完 DestroyWindow。
-pub unsafe fn offscreen(parent: HWND, font: HFONT, dpi: u32) -> HWND {
+pub unsafe fn offscreen(parent: HWND, font: HFONT, dpi: u32, form: &'static Form) -> HWND {
     // 只拍照、不交互，状态留给进程退出时回收
     let state = Box::into_raw(Box::new(State {
         done: false,
-        line: None,
+        form,
+        fields: None,
     }));
     open(parent, font, dpi, state, Some((-32000, -32000)))
 }

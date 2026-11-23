@@ -1,13 +1,15 @@
 //! 对外入口：一句识别结果进来，按固定顺序处理，得到要上屏的文字或一条指令。
 
 use crate::{
-    CommandOptions, Hotwords, PunctOptions, VoiceCommand, apply_punctuation, drop_false_full_stop,
-    is_unfinished, normalize_numbers, parse_command, parse_trailing_command, strip_fillers,
+    CommandOptions, Hotwords, PunctOptions, Snippets, VoiceCommand, apply_punctuation,
+    drop_false_full_stop, is_unfinished, normalize_numbers, parse_command, parse_trailing_command,
+    strip_fillers,
 };
 
 #[derive(Debug, Clone)]
 pub struct Options {
     pub hotwords: Hotwords,
+    pub snippets: Snippets,
     pub punct: PunctOptions,
     pub commands: CommandOptions,
     pub strip_fillers: bool,
@@ -18,6 +20,7 @@ impl Default for Options {
     fn default() -> Self {
         Self {
             hotwords: Hotwords::default(),
+            snippets: Snippets::default(),
             punct: PunctOptions::default(),
             commands: CommandOptions::default(),
             strip_fillers: true,
@@ -32,19 +35,30 @@ pub enum Output {
     Command(VoiceCommand),
     /// 一句话末尾单独一小句是指令（「这句是错的，删掉上一句」）：先打文字，再执行指令
     TextThen(String, VoiceCommand),
+    /// 整句是快捷短语的口令：换成它的文字，原样上屏（里面的换行和「换行」指令一样按）
+    Snippet(String),
 }
 
-/// 顺序：口癖 → 指令 → 热词 → 数字 → 标点。
+/// 顺序：口癖 → 指令 → 快捷短语 → 热词 → 数字 → 标点。
 /// 指令放在口癖之后（「嗯，换行」也算指令）、热词之前（热词不会把指令词改掉）；
+/// 快捷短语排在指令后面（口令和指令撞了指令赢），整句是口令就不再整理；
 /// 数字放在热词之后：热词按读音匹配，要先于把汉字改成阿拉伯数字。
+/// 云端文字里的换行等控制字符先换成空格：上屏的换行只来自「换行」指令和快捷短语。
 pub fn process(text: &str, options: &Options) -> Output {
+    let text: String = text
+        .chars()
+        .map(|c| if c.is_control() { ' ' } else { c })
+        .collect();
     let text = if options.strip_fillers {
-        strip_fillers(text)
+        strip_fillers(&text)
     } else {
-        text.to_string()
+        text
     };
     if let Some(command) = parse_command(&text, &options.commands) {
         return Output::Command(command);
+    }
+    if let Some(snippet) = options.snippets.lookup(&text) {
+        return Output::Snippet(snippet.to_string());
     }
     if let Some((head, command)) = split_trailing_command(&text, &options.commands) {
         return Output::TextThen(tidy(head, options), command);

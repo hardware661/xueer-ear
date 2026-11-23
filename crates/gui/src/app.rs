@@ -73,12 +73,15 @@ const LABEL_TRANSLATE_VALUE: usize = 232;
 /// 分组小标题：「听写」「文字」
 const GROUP_DICTATION: usize = 233;
 const GROUP_TEXT: usize = 234;
+const LABEL_SNIPPETS: usize = 235;
+const LABEL_SNIPPETS_VALUE: usize = 236;
 /// 右边带小箭头、点了出菜单的那几个按钮
-const VALUE_BUTTONS: [usize; 7] = [
+const VALUE_BUTTONS: [usize; 8] = [
     LABEL_HOTKEY_VALUE,
     LABEL_MIC_VALUE,
     LABEL_SILENCE_VALUE,
     LABEL_HOTWORDS_VALUE,
+    LABEL_SNIPPETS_VALUE,
     LABEL_HISTORY_VALUE,
     LABEL_TRANSLATE_VALUE,
     LABEL_TEXT_VALUE,
@@ -86,6 +89,9 @@ const VALUE_BUTTONS: [usize; 7] = [
 /// 热词表最大多少字节（和后台读它时的上限一致）
 const HOTWORDS_LIMIT: u64 = 256 * 1024;
 const HOTWORDS_HEADER: &str = "# 雪耳热词表：一行一个词，读音像的识别结果会改成这个词。\r\n# 固定的错法写成「错=对」，例如 Cloud Code=Claude Code。# 开头是注释。\r\n";
+/// 快捷短语表最大多少字节（和后台读它时的上限一致）
+const SNIPPETS_LIMIT: u64 = 64 * 1024;
+const SNIPPETS_HEADER: &str = "# 雪耳快捷短语：一行一条「口令=文字」，整句只说口令时换成后面的文字。\r\n# 文字里 \\n 是换行。# 开头是注释。例如：\r\n# 我的邮箱=someone@example.com\r\n";
 /// GDI 的字色（COLORREF），跟着深浅色走
 fn ink() -> u32 {
     view::colorref(view::palette().ink)
@@ -112,6 +118,7 @@ unsafe fn open_data_file(name: &str) -> Result<(), String> {
     if !path.exists() {
         let header = match name {
             "hotwords.txt" => HOTWORDS_HEADER,
+            "snippets.txt" => SNIPPETS_HEADER,
             "translate.json" => {
                 "{\r\n  \"wetype_enabled\": true,\r\n  \"azure_key\": \"\",\r\n  \"azure_region\": \"eastasia\",\r\n  \"google_key\": \"\",\r\n  \"zhipu_key\": \"\"\r\n}\r\n"
             }
@@ -163,7 +170,6 @@ fn read_hotwords() -> Result<String, String> {
 
 /// 往热词表加一行。返回 false 表示表里已经有了。
 fn save_hotword(line: &str) -> Result<bool, String> {
-    let dir = data_dir()?;
     let mut file = read_hotwords()?;
     if file.is_empty() {
         file = HOTWORDS_HEADER.to_owned();
@@ -171,12 +177,69 @@ fn save_hotword(line: &str) -> Result<bool, String> {
     let Some(updated) = xueer_ear_textflow::add_hotword_line(&file, line) else {
         return Ok(false);
     };
-    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-    let temp = dir.join(format!("hotwords.{}.tmp", std::process::id()));
-    std::fs::write(&temp, updated)
-        .and_then(|()| std::fs::rename(&temp, dir.join("hotwords.txt")))
-        .map_err(|e| format!("无法保存热词表：{e}"))?;
+    replace_data_file("hotwords.txt", &updated).map_err(|e| format!("无法保存热词表：{e}"))?;
     Ok(true)
+}
+
+/// 快捷短语表的内容；不存在返回空，太大或读不了返回错误。
+fn read_snippets() -> Result<String, String> {
+    let path = data_dir()?.join("snippets.txt");
+    match std::fs::metadata(&path) {
+        Err(_) => Ok(String::new()),
+        Ok(meta) if meta.len() > SNIPPETS_LIMIT => Err("快捷短语表太大了，请先删掉一些".to_owned()),
+        Ok(_) => std::fs::read_to_string(&path).map_err(|e| format!("无法读取快捷短语表：{e}")),
+    }
+}
+
+/// 加一条快捷短语（同一个口令已有就换成新的文字）
+fn save_snippet(trigger: &str, text: &str) -> Result<(), String> {
+    let mut file = read_snippets()?;
+    if file.is_empty() {
+        file = SNIPPETS_HEADER.to_owned();
+    }
+    let updated = xueer_ear_textflow::set_snippet_line(&file, trigger, text)?;
+    replace_data_file("snippets.txt", &updated).map_err(|e| format!("无法保存快捷短语表：{e}"))
+}
+
+/// 删掉一个口令
+fn remove_snippet(trigger: &str) -> Result<(), String> {
+    let file = read_snippets()?;
+    match xueer_ear_textflow::remove_snippet_line(&file, trigger) {
+        Some(updated) => replace_data_file("snippets.txt", &updated)
+            .map_err(|e| format!("无法保存快捷短语表：{e}")),
+        None => Ok(()),
+    }
+}
+
+/// 整个换掉数据目录里的一个文件：先写临时文件再改名，写到一半断电也不会留下半截
+fn replace_data_file(name: &str, content: &str) -> Result<(), String> {
+    let dir = data_dir()?;
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let temp = dir.join(format!("{name}.{}.tmp", std::process::id()));
+    std::fs::write(&temp, content)
+        .and_then(|()| std::fs::rename(&temp, dir.join(name)))
+        .map_err(|e| e.to_string())
+}
+
+/// 某个数据文件在面板那一行上的摘要（「N 个」）；文件的修改时间没变就用上次算的
+fn file_summary(
+    seen: &mut Option<(Option<std::time::SystemTime>, String)>,
+    name: &str,
+    read: fn() -> Result<String, String>,
+    summarize: fn(&str) -> String,
+) -> String {
+    let modified = data_dir()
+        .ok()
+        .and_then(|dir| std::fs::metadata(dir.join(name)).ok())
+        .and_then(|meta| meta.modified().ok());
+    if let Some((at, summary)) = seen
+        && *at == modified
+    {
+        return summary.clone();
+    }
+    let summary = summarize(&read().unwrap_or_default());
+    *seen = Some((modified, summary.clone()));
+    summary
 }
 
 /// 最近说过的几句（新的在前）。读不了就当没有。
@@ -443,6 +506,8 @@ struct App {
     notice: Option<(String, std::time::Instant)>,
     /// 热词表的修改时间和「N 个」摘要，文件变了才重读
     hotwords_seen: Option<(Option<std::time::SystemTime>, String)>,
+    /// 快捷短语表的修改时间和「N 条」摘要
+    snippets_seen: Option<(Option<std::time::SystemTime>, String)>,
     /// 离屏拍照核对外观：不建托盘图标、不查更新
     snapshot: bool,
     sender: mpsc::Sender<Completed>,
@@ -510,6 +575,7 @@ impl App {
             command_error: settings_error,
             notice: None,
             hotwords_seen: None,
+            snippets_seen: None,
             snapshot: false,
             sender,
             receiver,
@@ -570,6 +636,7 @@ impl App {
             (LABEL_MIC_TITLE, "麦克风"),
             (LABEL_SILENCE, "静音收句"),
             (LABEL_HOTWORDS, "热词"),
+            (LABEL_SNIPPETS, "快捷短语"),
             (LABEL_HISTORY, "历史"),
             (LABEL_TRANSLATE, "翻译"),
             (LABEL_TEXT, "更多设置"),
@@ -587,6 +654,7 @@ impl App {
             (LABEL_SILENCE_VALUE, "3 秒", BS_OWNERDRAW),
             (LABEL_HOTKEY_VALUE, "右 Alt", BS_OWNERDRAW),
             (LABEL_HOTWORDS_VALUE, "添加", BS_OWNERDRAW),
+            (LABEL_SNIPPETS_VALUE, "添加", BS_OWNERDRAW),
             (LABEL_HISTORY_VALUE, "最近 7 天", BS_OWNERDRAW),
             (LABEL_TRANSLATE_VALUE, "打开", BS_OWNERDRAW),
             (LABEL_TEXT_VALUE, "", BS_OWNERDRAW),
@@ -678,8 +746,9 @@ impl App {
             (1, 1, LABEL_MIC_TITLE, LABEL_MIC_VALUE),
             (1, 2, LABEL_SILENCE, LABEL_SILENCE_VALUE),
             (2, 0, LABEL_HOTWORDS, LABEL_HOTWORDS_VALUE),
-            (2, 1, LABEL_HISTORY, LABEL_HISTORY_VALUE),
-            (2, 2, LABEL_TRANSLATE, LABEL_TRANSLATE_VALUE),
+            (2, 1, LABEL_SNIPPETS, LABEL_SNIPPETS_VALUE),
+            (2, 2, LABEL_HISTORY, LABEL_HISTORY_VALUE),
+            (2, 3, LABEL_TRANSLATE, LABEL_TRANSLATE_VALUE),
             (3, 0, LABEL_TEXT, LABEL_TEXT_VALUE),
         ] {
             positions.push((label, 32, row(card, i) + 11, 110, 22, 0));
@@ -779,18 +848,22 @@ impl App {
 
     /// 「热词」那一行右边显示的字；热词表文件变了才重读
     fn hotword_summary(&mut self) -> String {
-        let modified = data_dir()
-            .ok()
-            .and_then(|dir| std::fs::metadata(dir.join("hotwords.txt")).ok())
-            .and_then(|meta| meta.modified().ok());
-        if let Some((seen, summary)) = &self.hotwords_seen {
-            if *seen == modified {
-                return summary.clone();
-            }
-        }
-        let summary = crate::prefs::hotword_summary(&read_hotwords().unwrap_or_default());
-        self.hotwords_seen = Some((modified, summary.clone()));
-        summary
+        file_summary(
+            &mut self.hotwords_seen,
+            "hotwords.txt",
+            read_hotwords,
+            crate::prefs::hotword_summary,
+        )
+    }
+
+    /// 「快捷短语」那一行右边显示的字
+    fn snippet_summary(&mut self) -> String {
+        file_summary(
+            &mut self.snippets_seen,
+            "snippets.txt",
+            read_snippets,
+            crate::prefs::snippet_summary,
+        )
     }
 
     unsafe fn refresh(&mut self) {
@@ -846,6 +919,8 @@ impl App {
         );
         let hotwords = self.hotword_summary();
         self.set_text(LABEL_HOTWORDS_VALUE, &hotwords);
+        let snippets = self.snippet_summary();
+        self.set_text(LABEL_SNIPPETS_VALUE, &snippets);
         self.set_text(
             LABEL_HISTORY_VALUE,
             &crate::prefs::history_summary(&self.settings),
@@ -1324,6 +1399,7 @@ impl App {
             LABEL_SILENCE_VALUE => self.settings_menu(false),
             LABEL_HOTKEY_VALUE => self.hotkey_menu(),
             LABEL_HOTWORDS_VALUE => self.hotwords_menu(),
+            LABEL_SNIPPETS_VALUE => self.snippets_menu(),
             LABEL_TRANSLATE_VALUE => self.translate_menu(),
             LABEL_HISTORY_VALUE => self.history_menu(),
             LABEL_TEXT_VALUE => self.text_menu(),
@@ -1470,8 +1546,16 @@ impl App {
                 self.apply(candidate);
             }
             crate::prefs::ADD_HOTWORD => {
-                let Some(line) = crate::hotword_dialog::ask(self.hwnd, self.fonts[3], self.dpi)
-                else {
+                let Some((word, heard)) = crate::pair_dialog::ask(
+                    self.hwnd,
+                    self.fonts[3],
+                    self.dpi,
+                    &crate::pair_dialog::HOTWORD,
+                ) else {
+                    return;
+                };
+                // 对话框里已经检查过
+                let Ok(line) = crate::prefs::hotword_line(&word, &heard) else {
                     return;
                 };
                 match save_hotword(&line) {
@@ -1491,6 +1575,55 @@ impl App {
             }
             _ => {}
         }
+    }
+
+    /// 快捷短语：弹小对话框加一条、用记事本打开整张表，或者点一条删掉（先问一句）。
+    unsafe fn snippets_menu(&mut self) {
+        let file = match read_snippets() {
+            Ok(file) => file,
+            Err(error) => {
+                self.command_error = error;
+                self.refresh();
+                return;
+            }
+        };
+        let picked = self.popup_under(LABEL_SNIPPETS_VALUE, &crate::prefs::snippet_choices(&file));
+        let result = match picked {
+            crate::prefs::ADD_SNIPPET => {
+                let Some((trigger, text)) = crate::pair_dialog::ask(
+                    self.hwnd,
+                    self.fonts[3],
+                    self.dpi,
+                    &crate::pair_dialog::SNIPPET,
+                ) else {
+                    return;
+                };
+                crate::prefs::snippet_entry(&trigger, &text)
+                    .and_then(|(trigger, text)| save_snippet(&trigger, &text).map(|()| trigger))
+                    .map(|trigger| self.say(&format!("已添加：整句说「{trigger}」就会换掉")))
+            }
+            crate::prefs::OPEN_SNIPPETS => open_data_file("snippets.txt"),
+            id => match crate::prefs::snippet_pick(&file, id) {
+                Some(trigger) if self.confirm(&format!("删掉快捷短语「{trigger}」？")) => {
+                    remove_snippet(&trigger).map(|()| self.say(&format!("已删掉：{trigger}")))
+                }
+                _ => Ok(()),
+            },
+        };
+        if let Err(error) = result {
+            self.command_error = error;
+            self.refresh();
+        }
+    }
+
+    /// 问一句是 / 否
+    unsafe fn confirm(&self, question: &str) -> bool {
+        MessageBoxW(
+            self.hwnd,
+            wide(question).as_ptr(),
+            wide(APP_NAME).as_ptr(),
+            MB_YESNO | MB_ICONQUESTION,
+        ) == IDYES
     }
 
     /// 翻译：打开翻译小窗，或者用记事本打开翻译设置。
@@ -1520,13 +1653,19 @@ impl App {
 
     /// 历史：列最近说过的几句，点一句就复制；也能用记事本打开全部。
     unsafe fn history_menu(&mut self) {
-        if !self.settings.history_enabled {
-            self.say("历史记录已关闭");
+        let texts = if self.settings.history_enabled {
+            recent_history(crate::prefs::HISTORY_SHOWN, &self.settings)
+        } else {
+            Vec::new()
+        };
+        let selected = self.popup_under(
+            LABEL_HISTORY_VALUE,
+            &crate::prefs::history_choices(&texts, &self.settings),
+        );
+        if let Some(candidate) = crate::prefs::history_setting(&self.settings, selected) {
+            self.apply(candidate);
             return;
         }
-        let texts = recent_history(crate::prefs::HISTORY_SHOWN, &self.settings);
-        let selected =
-            self.popup_under(LABEL_HISTORY_VALUE, &crate::prefs::history_choices(&texts));
         let result = if selected == crate::prefs::OPEN_HISTORY {
             open_data_file("history.jsonl")
         } else if let Some(text) = crate::prefs::history_pick(&texts, selected) {
@@ -1540,7 +1679,7 @@ impl App {
         }
     }
 
-    /// 更多设置：文字整理开关、提示音、接管 Win+H、历史保留天数、一次最长听多久。
+    /// 更多设置：识别通道、文字整理开关、降噪、调小别的声音、提示音、接管 Win+H、一次最长听多久。
     unsafe fn text_menu(&mut self) {
         let selected = self.popup_under(LABEL_TEXT_VALUE, &crate::prefs::choices(&self.settings));
         if selected == crate::prefs::COPY_DIAGNOSTICS {
@@ -1964,6 +2103,7 @@ unsafe extern "system" fn procedure(
                     LABEL_MIC_TITLE,
                     LABEL_SILENCE,
                     LABEL_HOTWORDS,
+                    LABEL_SNIPPETS,
                     LABEL_HISTORY,
                     LABEL_TRANSLATE,
                     LABEL_TEXT,
@@ -2384,15 +2524,21 @@ fn snapshot_theme(dir: &std::path::Path, dark: bool) -> Result<(), String> {
         ShowWindow(hwnd, SW_SHOWNOACTIVATE);
         settle(900);
         let panel = capture(hwnd, &dir.join("control-panel.png"));
-        let dialog = crate::hotword_dialog::offscreen(hwnd, app.fonts[3], app.dpi);
-        let asked = if dialog.is_null() {
-            Err("无法创建对话框".to_owned())
-        } else {
-            settle(400);
-            let result = capture(dialog, &dir.join("hotword-dialog.png"));
-            DestroyWindow(dialog);
-            result
-        };
+        let mut asked = Ok(());
+        for (form, name) in [
+            (&crate::pair_dialog::HOTWORD, "hotword-dialog.png"),
+            (&crate::pair_dialog::SNIPPET, "snippet-dialog.png"),
+        ] {
+            let dialog = crate::pair_dialog::offscreen(hwnd, app.fonts[3], app.dpi, form);
+            asked = asked.and(if dialog.is_null() {
+                Err("无法创建对话框".to_owned())
+            } else {
+                settle(400);
+                let result = capture(dialog, &dir.join(name));
+                DestroyWindow(dialog);
+                result
+            });
+        }
         // 托盘右键菜单：按「正在用」的样子画一张，鼠标停在「打开控制面板」上
         let tray = {
             let choices = crate::prefs::tray_choices(
@@ -2421,6 +2567,24 @@ fn snapshot_theme(dir: &std::path::Path, dark: bool) -> Result<(), String> {
             let choices = crate::prefs::hotword_choices(&app.settings);
             let (bitmap, _, _) = crate::menu::render(&choices, app.fonts[3], app.dpi, 0);
             let result = save_bitmap(bitmap, &dir.join("hotword-menu.png"));
+            DeleteObject(bitmap);
+            result
+        };
+        // 「更多设置」按默认设置画，核对 150% 缩放时也放得下
+        let settings_menu = {
+            let choices = crate::prefs::choices(&xueer_ear_backend::settings::Settings::default());
+            let (bitmap, _, _) = crate::menu::render(&choices, app.fonts[3], app.dpi, 0);
+            let result = save_bitmap(bitmap, &dir.join("settings-menu.png"));
+            DeleteObject(bitmap);
+            result
+        };
+        // 快捷短语菜单用示例内容画，不带出本机的表
+        let snippets = {
+            let choices = crate::prefs::snippet_choices(
+                "我的邮箱=someone@example.com\n收货地址=某某路 1 号\\n张三收\n",
+            );
+            let (bitmap, _, _) = crate::menu::render(&choices, app.fonts[3], app.dpi, 0);
+            let result = save_bitmap(bitmap, &dir.join("snippet-menu.png"));
             DeleteObject(bitmap);
             result
         };
@@ -2459,6 +2623,8 @@ fn snapshot_theme(dir: &std::path::Path, dark: bool) -> Result<(), String> {
             .and(asked)
             .and(tray)
             .and(hotwords)
+            .and(snippets)
+            .and(settings_menu)
             .and(translated)
             .and(translate_menu)
             .and(offer)
