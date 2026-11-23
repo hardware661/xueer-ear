@@ -7,7 +7,7 @@
 **Tap Right Alt, speak, and the words stream into the cursor as you talk.**
 
 Chinese voice typing for Windows 11. It also works in terminal apps such as Claude Code and Codex.<br>
-Recognition runs on Doubao Input Method's cloud service, with WeChat Input Method as an automatic fallback: no model download, no sign-in, and the installer is under 4 MB.
+Recognition runs on Doubao Input Method's cloud service, with WeChat Input Method as an automatic fallback: no model download, no sign-in, and the installer is about 4 MB.
 
 [![Release](https://img.shields.io/github/v/release/hardware661/xueer-ear)](https://github.com/hardware661/xueer-ear/releases/latest)
 [![Downloads](https://img.shields.io/github/downloads/hardware661/xueer-ear/total)](https://github.com/hardware661/xueer-ear/releases)

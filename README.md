@@ -7,7 +7,7 @@
 **点一下右 Alt，说话，字边说边打到光标那里。**
 
 Windows 11 的中文语音输入。Claude Code、Codex 这类终端程序里也能用。<br>
-用豆包输入法的云端识别，豆包不行时自动换微信输入法：不用下载模型，不用登录，安装包不到 4 MB。
+用豆包输入法的云端识别，豆包不行时自动换微信输入法：不用下载模型，不用登录，安装包 4 MB 左右。
 
 [![最新版本](https://img.shields.io/github/v/release/hardware661/xueer-ear?label=%E6%9C%80%E6%96%B0%E7%89%88%E6%9C%AC)](https://github.com/hardware661/xueer-ear/releases/latest)
 [![下载次数](https://img.shields.io/github/downloads/hardware661/xueer-ear/total?label=%E4%B8%8B%E8%BD%BD)](https://github.com/hardware661/xueer-ear/releases)
