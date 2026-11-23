@@ -157,12 +157,20 @@ pub struct Live {
     /// 主人在这句说到一半时动了键盘或鼠标：光标可能已经不在原处，这句剩下的时间只往后接字。
     /// 值是冻结时这句已经上屏的字数。
     frozen: Option<usize>,
-    /// 这句里的语音指令已经提前执行了（值是指令词）：后续结果里去掉指令词和它前面的部分再上屏
-    early: Option<String>,
+    /// 这句里的语音指令已经提前执行了：后续结果里去掉指令词和它前面的部分再上屏
+    early: Option<Early>,
     /// 这一轮里主人动过键盘或鼠标
     touched_round: bool,
     /// 上次说话中途退格改字的时间
     last_fix: Option<std::time::Instant>,
+}
+
+/// 这句里提前执行过的语音指令
+struct Early {
+    /// 指令词（中间结果最后那一小句）
+    word: String,
+    /// 是不是翻译指令
+    translate: bool,
 }
 
 /// 说话中途一次最多退格改这么多字；更多的留到定稿
@@ -212,7 +220,10 @@ impl Live {
         };
         self.revision.clear();
         self.frozen = self.frozen.map(|_| 0);
-        self.early = Some(spoken);
+        self.early = Some(Early {
+            word: spoken,
+            translate: command.is_translate(),
+        });
         let mut keys = edit(erase, "");
         keys.extend(self.typist.command(command, self.terminal));
         keys
@@ -236,7 +247,10 @@ impl Live {
         }
         let mut keys = self.finalize(Output::Text(head));
         keys.extend(self.typist.command(command, self.terminal));
-        self.early = Some(last_clause(spoken));
+        self.early = Some(Early {
+            word: last_clause(spoken),
+            translate: command.is_translate(),
+        });
         keys
     }
 
@@ -317,34 +331,15 @@ impl Live {
     /// 提前执行过指令的这句：去掉指令词和它前面的部分（前面的已经上屏或发走了），只留后面接着说的。
     /// 按「去掉标点后」找指令词最后一次出现的位置：云端常改前面几个字、换标点，
     /// 也会把后面的话直接粘在指令词后面（「换行接着说」）。找不到就整句照打，宁可多打也不丢字（审查 R3）。
+    /// 翻译指令例外：微信云端会把「翻译成英文」那句自己翻成英文再定稿（主人 2026-11-23），
+    /// 找不到指令词就是被云端改写了，译文由雪耳整段出，这句不再上屏。
     fn without_early(&self, text: &str) -> String {
-        let Some(word) = self.early.as_deref() else {
+        let Some(early) = self.early.as_ref().filter(|e| !e.word.is_empty()) else {
             return text.to_string();
         };
-        let word: Vec<char> = word.chars().filter(|c| !is_punct(*c)).collect();
-        if word.is_empty() {
-            return text.to_string();
-        }
-        // 去掉标点后的字，以及每个字在原文里结束的字节位置
-        let letters: Vec<(char, usize)> = text
-            .char_indices()
-            .filter(|(_, c)| !is_punct(*c))
-            .map(|(i, c)| (c, i + c.len_utf8()))
-            .collect();
-        let found = (0..=letters.len().saturating_sub(word.len()))
-            .rev()
-            .find(|&start| {
-                letters.len() >= word.len()
-                    && letters[start..start + word.len()]
-                        .iter()
-                        .map(|(c, _)| *c)
-                        .eq(word.iter().copied())
-            });
-        match found {
-            Some(start) => {
-                let end = letters[start + word.len() - 1].1;
-                text[end..].trim_start_matches(is_punct).to_string()
-            }
+        match find_last(text, &early.word) {
+            Some(end) => text[end..].trim_start_matches(is_punct).to_string(),
+            None if early.translate => String::new(),
             None => text.to_string(),
         }
     }
@@ -490,6 +485,39 @@ fn keep_common_prefix(shown: &str, mut keys: Vec<Key>) -> Vec<Key> {
 }
 
 /// 最后一小句（去掉标点和空格），用来记住说出来的指令词
+/// 定稿里还找得到中间结果最后那一小句（指令词）吗？找不到就是云端把这句改写了：
+/// 微信会把单独说的「翻译成英文」自己翻成英文再定稿（主人 2026-11-23）。
+pub fn keeps_last_clause(spoken: &str, final_text: &str) -> bool {
+    let word = last_clause(spoken);
+    word.is_empty() || find_last(final_text, &word).is_some()
+}
+
+/// 按「去掉标点后」找 `word` 在 `text` 里最后一次出现，返回它在原文里结束的字节位置。
+fn find_last(text: &str, word: &str) -> Option<usize> {
+    let word: Vec<char> = word.chars().filter(|c| !is_punct(*c)).collect();
+    if word.is_empty() {
+        return None;
+    }
+    // 去掉标点后的字，以及每个字在原文里结束的字节位置
+    let letters: Vec<(char, usize)> = text
+        .char_indices()
+        .filter(|(_, c)| !is_punct(*c))
+        .map(|(i, c)| (c, i + c.len_utf8()))
+        .collect();
+    if letters.len() < word.len() {
+        return None;
+    }
+    (0..=letters.len() - word.len())
+        .rev()
+        .find(|&start| {
+            letters[start..start + word.len()]
+                .iter()
+                .map(|(c, _)| *c)
+                .eq(word.iter().copied())
+        })
+        .map(|start| letters[start + word.len() - 1].1)
+}
+
 fn last_clause(text: &str) -> String {
     let body = text.trim_end_matches(is_punct);
     let start = body.rfind(is_punct).map_or(0, |i| {
@@ -623,6 +651,70 @@ mod tests {
             &live.replace_round("What to eat today? And tomorrow?"),
         );
         assert_eq!(doc, "原有What to eat today? And tomorrow?");
+    }
+
+    // 主人 2026-11-23：单独说「翻译成英文」，翻译已经提前执行；微信云端的定稿却把这句自己翻成了
+    // "Translate into English."。雪耳找不到指令词就整句照打，结果又跟着正文被翻了一遍。
+    #[test]
+    fn a_command_sentence_the_cloud_rewrote_into_english_is_not_typed() {
+        let mut live = Live::new(false);
+        let mut doc = String::new();
+        type_into(&mut doc, &live.partial("今天天气很好"));
+        type_into(
+            &mut doc,
+            &live.finalize(Output::Text("今天天气很好。".into())),
+        );
+        type_into(&mut doc, &live.partial("翻译成英文"));
+        type_into(
+            &mut doc,
+            &live.early_command(VoiceCommand::TranslateToEnglish),
+        );
+        assert_eq!(doc, "今天天气很好。");
+        let late = live.unsent("Translate into English.");
+        type_into(
+            &mut doc,
+            &live.finalize_from(&late, Output::Text(late.clone())),
+        );
+        assert_eq!(doc, "今天天气很好。");
+        assert_eq!(live.round_text().as_deref(), Some("今天天气很好。"));
+    }
+
+    // 同一口气说「今天天气很好，翻译成英文」：前半句已提前定稿上屏，云端定稿整句变成了英文
+    #[test]
+    fn a_trailing_translate_sentence_the_cloud_rewrote_is_not_typed_again() {
+        let mut live = Live::new(false);
+        let mut doc = String::new();
+        let spoken = "今天天气很好，翻译成英文";
+        type_into(&mut doc, &live.partial(spoken));
+        type_into(
+            &mut doc,
+            &live.early_finish(
+                Output::TextThen("今天天气很好，".into(), VoiceCommand::TranslateToEnglish),
+                spoken,
+            ),
+        );
+        assert_eq!(doc, "今天天气很好，");
+        let late = live.unsent("The weather is very good today. Translate into English.");
+        type_into(
+            &mut doc,
+            &live.finalize_from(&late, Output::Text(late.clone())),
+        );
+        assert_eq!(doc, "今天天气很好，");
+    }
+
+    // 中间结果已经是「翻译成英文」、还没停够 600 毫秒定稿就到了：定稿里还有没有指令词，决定要不要按中间结果执行
+    #[test]
+    fn a_final_that_lost_the_spoken_command_is_noticed() {
+        assert!(keeps_last_clause("翻译成英文", "翻译成英文。"));
+        assert!(keeps_last_clause(
+            "今天天气很好，翻译成英文",
+            "今天天气很好。翻译成英文。"
+        ));
+        assert!(!keeps_last_clause("翻译成英文", "Translate into English."));
+        assert!(!keeps_last_clause(
+            "今天天气很好，翻译成英文",
+            "The weather is very good today. Translate into English."
+        ));
     }
 
     #[test]

@@ -10,7 +10,7 @@ use crate::{
     recovery,
     reload::KeyWatch,
     status::Status,
-    typing::{Key, Live},
+    typing::{Key, Live, keeps_last_clause},
 };
 use std::{
     mem::size_of,
@@ -33,6 +33,7 @@ use windows_sys::Win32::UI::{
 };
 use xueer_ear_backend::{
     engine::{self, Event, Source},
+    postprocess::Postprocess,
     settings::Settings,
 };
 use xueer_ear_textflow::{Output, VoiceCommand};
@@ -389,20 +390,8 @@ fn record(
                 // 指令说完停了一下、没再出新字：现在就执行，不等静音收句
                 if let Some((text, since)) = &pending_command {
                     if since.elapsed() >= COMMAND_SETTLE {
-                        let keys = match post.command_only(text) {
-                            Some(command) => {
-                                if command.is_translate() {
-                                    request_translation = Some((command, true));
-                                }
-                                live.early_command(command)
-                            }
-                            // 句尾指令：前面的话先定稿上屏（会记进历史），再按指令
-                            None => {
-                                let output = post.finalize(text, crate::broker::now_ms());
-                                request_translation = translation_of(&output).map(|c| (c, true));
-                                live.early_finish(output, text)
-                            }
-                        };
+                        let (keys, translate) = settle_command(&post, &mut live, text);
+                        request_translation = translate;
                         pending_command = None;
                         typed_any |= keys.iter().any(|k| matches!(k, Key::Text(_)));
                         send_keys(&keys);
@@ -458,11 +447,26 @@ fn record(
                     translation = None;
                 }
                 let keys = if speech.final_result {
-                    pending_command = None;
                     sentence_finished = true;
+                    // 中间结果已经是翻译指令、还没停够定稿就到了，定稿里却没有指令词：微信云端会把
+                    // 「翻译成英文」那句自己翻成英文再定稿（主人 2026-11-23）。按中间结果执行，这句定稿不上屏
+                    let mut keys = Vec::new();
+                    let mut text = text;
+                    if let Some((spoken, _)) = pending_command.take()
+                        && is_translate_command(&post, &spoken)
+                        && !keeps_last_clause(&spoken, &speech.text)
+                    {
+                        let (settled, translate) = settle_command(&post, &mut live, &spoken);
+                        keys = settled;
+                        request_translation = translate;
+                        text = live.unsent(&speech.text);
+                    }
                     let output = post.finalize(&text, crate::broker::now_ms());
-                    request_translation = translation_of(&output).map(|c| (c, false));
-                    live.finalize_from(&text, output)
+                    if let Some(command) = translation_of(&output) {
+                        request_translation = Some((command, false));
+                    }
+                    keys.extend(live.finalize_from(&text, output));
+                    keys
                 } else {
                     // 整句只有指令词，或者句尾单独一小句是指令（「今天吃什么，发送」）：
                     // 记下来，停一小会儿没再说别的就提前执行
@@ -581,6 +585,33 @@ fn open_control_panel(args: &[&str]) {
     {
         eprintln!("打不开控制面板：{error}");
     }
+}
+
+/// 中间结果里的指令现在就执行（停够了，或定稿把指令那句改写了）：整句只有指令词就擦掉它再按指令；
+/// 句尾带指令就先把前面的话定稿上屏（会记进历史），再按指令。返回要按的键，以及要不要整段翻译。
+fn settle_command(
+    post: &Postprocess,
+    live: &mut Live,
+    spoken: &str,
+) -> (Vec<Key>, Option<(VoiceCommand, bool)>) {
+    match post.command_only(spoken) {
+        Some(command) => (
+            live.early_command(command),
+            command.is_translate().then_some((command, true)),
+        ),
+        None => {
+            let output = post.finalize(spoken, crate::broker::now_ms());
+            let translate = translation_of(&output).map(|c| (c, true));
+            (live.early_finish(output, spoken), translate)
+        }
+    }
+}
+
+/// 中间结果整句、或句尾那一小句是不是翻译指令
+fn is_translate_command(post: &Postprocess, spoken: &str) -> bool {
+    post.command_only(spoken)
+        .or_else(|| post.trailing_command(spoken))
+        .is_some_and(VoiceCommand::is_translate)
 }
 
 /// 这句是不是翻译指令，是哪一种
