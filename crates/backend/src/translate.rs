@@ -990,12 +990,12 @@ pub fn translate_into(text: &str, target: Target) -> Result<String, String> {
 
 /// 翻译小窗：边翻边报进度。从网页、PDF 复制来的英文常在句子中间硬换行，一行一行翻出来的中文一截一截的，
 /// 先并回段落；语音翻译不走这里。有的段没翻成就原样留着（`Outcome::failed` 说几段），全都没翻成才算失败。
-/// `only`：命令行排查时只用这一家
+/// `only`：命令行排查时只用这几家
 #[cfg(windows)]
 pub fn translate_into_with_progress(
     text: &str,
     target: Target,
-    only: Option<Service>,
+    only: Option<&[Service]>,
     progress: Progress,
 ) -> Result<Outcome, String> {
     let outcome = live::translate(&unwrap_english(text), target, only, progress, "小窗")?;
@@ -1023,13 +1023,13 @@ mod live {
     pub(super) fn translate(
         text: &str,
         target: Target,
-        only: Option<Service>,
+        only: Option<&[Service]>,
         progress: Progress,
         from: &str,
     ) -> Result<Outcome, String> {
         let keys = local_keys()?;
         let services = match only {
-            Some(service) => vec![service],
+            Some(only) => only.to_vec(),
             None => services(&keys),
         };
         let started = Instant::now();

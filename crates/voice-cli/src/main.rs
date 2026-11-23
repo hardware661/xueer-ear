@@ -151,7 +151,7 @@ fn run() -> Result<(), Box<dyn Error + Send + Sync>> {
             Ok(())
         }
         // 和翻译小窗同一条路：原文从文件读，译成 en / zh，打印用时、进度、各家翻了几段和译文。
-        // 设了 XUEER_EAR_TRANSLATE_ONLY（volcengine / microsoft / bilibili / wetype / azure / google / zhipu）就只用那一家
+        // 设了 XUEER_EAR_TRANSLATE_ONLY（volcengine / microsoft / bilibili / wetype / azure / google / zhipu，逗号隔开）就只用那几家
         #[cfg(windows)]
         (Some(command), Some(path), Some(target)) if command == "translate-file" => {
             use xueer_ear_backend::translate::{Service, Target, translate_into_with_progress};
@@ -161,13 +161,13 @@ fn run() -> Result<(), Box<dyn Error + Send + Sync>> {
                 _ => return Err("target must be en or zh".into()),
             };
             let only = match std::env::var("XUEER_EAR_TRANSLATE_ONLY") {
-                Ok(id) => Some(Service::from_id(&id).ok_or("unknown service")?),
+                Ok(ids) => Some(ids.split(',').map(|id| Service::from_id(id.trim()).ok_or("unknown service")).collect::<Result<Vec<_>, _>>()?),
                 Err(_) => None,
             };
             let text = fs::read_to_string(path)?;
             let started = std::time::Instant::now();
             let progress = |done: usize, total: usize| eprintln!("{done}/{total} at {} ms", started.elapsed().as_millis());
-            let out = translate_into_with_progress(&text, target, only, &progress)?;
+            let out = translate_into_with_progress(&text, target, only.as_deref(), &progress)?;
             eprintln!("done in {} ms, {} chars -> {} chars; {}", started.elapsed().as_millis(), text.chars().count(), out.text.chars().count(), out.summary);
             for reason in &out.reasons {
                 eprintln!("failed: {reason}");
