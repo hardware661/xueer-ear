@@ -1,5 +1,5 @@
-//! 两格的小对话框：「添加热词」（正确的写法、常被听成什么）和「添加快捷短语」（口令、换成的文字）共用。
-//! 回车添加、Esc 取消；填得不对就在下面用红字说哪里不对，不关窗口。
+//! 两格的小对话框：「添加热词」（正确的写法、常被听成什么）、「添加快捷短语」（口令、换成的文字）、
+//! 改错和「语音指令的说法」共用。回车确定、Esc 取消；填得不对就在下面用红字说哪里不对，不关窗口。
 #![allow(unsafe_op_in_unsafe_fn)]
 use crate::view::{colorref, dark, palette};
 use std::{
@@ -46,9 +46,10 @@ pub struct Form {
     pub submit: &'static str,
     /// 第一格只给看、不能改（改错时第一格是原来的那句）
     pub read_only_first: bool,
-    /// 两格填得对不对；不对返回原因，显示在下面的红字里
-    pub check: fn(&str, &str) -> Result<(), String>,
 }
+
+/// 两格填得对不对；不对返回原因，显示在下面的红字里
+pub type Check = Box<dyn Fn(&str, &str) -> Result<(), String>>;
 
 pub const HOTWORD: Form = Form {
     title: "添加热词",
@@ -57,7 +58,6 @@ pub const HOTWORD: Form = Form {
     limits: [40, 40],
     submit: "添加",
     read_only_first: false,
-    check: check_hotword,
 };
 
 pub const SNIPPET: Form = Form {
@@ -67,7 +67,6 @@ pub const SNIPPET: Form = Form {
     limits: [20, 500],
     submit: "添加",
     read_only_first: false,
-    check: check_snippet,
 };
 
 /// 历史里点了一句：第一格是原来认成的样子，第二格改成对的
@@ -78,20 +77,25 @@ pub const CORRECTION: Form = Form {
     limits: [500, 500],
     submit: "记住改法",
     read_only_first: true,
-    check: check_correction,
 };
 
-fn check_hotword(word: &str, heard: &str) -> Result<(), String> {
+/// 「语音指令」菜单里点了一个指令：第一格是它做什么，第二格是说法
+pub const COMMAND_WORDS: Form = Form {
+    title: "语音指令的说法",
+    labels: ["指令", "说法（用顿号隔开；清空就是不用这个指令）"],
+    cues: ["", "例如 撤回、撤销"],
+    limits: [80, 240],
+    submit: "保存",
+    read_only_first: true,
+};
+
+pub fn check_hotword(word: &str, heard: &str) -> Result<(), String> {
     crate::prefs::hotword_line(word, heard)
         .map(drop)
         .map_err(str::to_owned)
 }
 
-fn check_snippet(trigger: &str, text: &str) -> Result<(), String> {
-    crate::prefs::snippet_entry(trigger, text).map(drop)
-}
-
-fn check_correction(before: &str, after: &str) -> Result<(), String> {
+pub fn check_correction(before: &str, after: &str) -> Result<(), String> {
     if before.trim() == after.trim() {
         return Err("还没改；只是复制的话按 Esc".to_owned());
     }
@@ -106,6 +110,7 @@ fn editable(form: &Form) -> usize {
 struct State {
     done: bool,
     form: &'static Form,
+    check: Check,
     fields: Option<(String, String)>,
 }
 
@@ -160,7 +165,7 @@ unsafe extern "system" fn procedure(
                 ADD => {
                     let [first, second] = state.form.limits;
                     let fields = (text_of(hwnd, FIRST, first), text_of(hwnd, SECOND, second));
-                    match (state.form.check)(&fields.0, &fields.1) {
+                    match (state.check)(&fields.0, &fields.1) {
                         Ok(()) => {
                             state.fields = Some(fields);
                             state.done = true;
@@ -417,17 +422,19 @@ unsafe fn open(
     dialog
 }
 
-/// 弹出对话框等主人填，`initial` 是两格一开始的字。返回检查过的两格内容；取消返回 None。
+/// 弹出对话框等主人填，`initial` 是两格一开始的字。返回用 `check` 检查过的两格内容；取消返回 None。
 pub unsafe fn ask(
     parent: HWND,
     font: HFONT,
     dpi: u32,
     form: &'static Form,
     initial: [&str; 2],
+    check: Check,
 ) -> Option<(String, String)> {
     let mut state = Box::new(State {
         done: false,
         form,
+        check,
         fields: None,
     });
     let dialog = open(parent, font, dpi, &mut *state, initial, None);
@@ -473,6 +480,7 @@ pub unsafe fn offscreen(
     let state = Box::into_raw(Box::new(State {
         done: false,
         form,
+        check: Box::new(|_, _| Ok(())),
         fields: None,
     }));
     open(parent, font, dpi, state, initial, Some((-32000, -32000)))

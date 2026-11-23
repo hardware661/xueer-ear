@@ -7,7 +7,7 @@
 //! - 语音指令优先：口令和指令词读音一样时指令赢，加口令时也不让这样加（[`set_snippet_line`]）。
 //! - 换出来的文字原样上屏，不再过热词、数字、标点整理。
 
-use crate::hotwords::sounds_like;
+use crate::{CommandOptions, commands::plain, hotwords::sounds_like};
 
 #[derive(Debug, Clone, Default)]
 pub struct Snippets {
@@ -58,8 +58,13 @@ impl Snippets {
 }
 
 /// 加一条快捷短语（同一个口令已有就换成新的文字），返回新的文件内容；注释和别的行不动。
-/// 口令为空、带 `=` 或换行、和语音指令读音一样，文字为空，都不加，返回原因。
-pub fn set_snippet_line(file: &str, trigger: &str, text: &str) -> Result<String, String> {
+/// 口令为空、带 `=` 或换行、和语音指令的说法（现在用的或自带的）读音一样，文字为空，都不加，返回原因。
+pub fn set_snippet_line(
+    file: &str,
+    trigger: &str,
+    text: &str,
+    commands: &CommandOptions,
+) -> Result<String, String> {
     let trigger = trigger.trim();
     if plain(trigger).is_empty() {
         return Err("口令不能是空的".into());
@@ -67,7 +72,7 @@ pub fn set_snippet_line(file: &str, trigger: &str, text: &str) -> Result<String,
     if trigger.contains(['=', '\n', '\r']) || trigger.starts_with('#') {
         return Err("口令里不能有 = 或换行，也不能以 # 开头".into());
     }
-    if let Some(word) = command_like(trigger) {
+    if let Some(word) = commands.clashing_word(trigger) {
         return Err(format!("这个口令和语音指令「{word}」撞了，换一个吧"));
     }
     if text.trim().is_empty() {
@@ -99,14 +104,6 @@ pub fn remove_snippet_line(file: &str, trigger: &str) -> Option<String> {
     Some(kept.join("\n") + "\n")
 }
 
-/// 口令读起来是不是某个语音指令词；是就返回那个指令词
-fn command_like(trigger: &str) -> Option<&'static str> {
-    crate::commands::WORDS
-        .iter()
-        .map(|(word, _)| *word)
-        .find(|word| plain(word) == plain(trigger) || sounds_like(word, trigger))
-}
-
 /// 一行里的（口令, 文字原文）；注释、空行、没有 `=` 的行是 None
 fn split_line(line: &str) -> Option<(&str, &str)> {
     let line = line.trim();
@@ -120,14 +117,6 @@ fn split_line(line: &str) -> Option<(&str, &str)> {
 
 fn same_trigger(line: &str, trigger: &str) -> bool {
     split_line(line).is_some_and(|(t, _)| plain(t) == plain(trigger))
-}
-
-/// 只留字母、数字和汉字，英文转小写：「My Email。」和「my email」是同一个口令
-fn plain(text: &str) -> String {
-    text.chars()
-        .filter(|c| c.is_alphanumeric())
-        .map(|c| c.to_ascii_lowercase())
-        .collect()
 }
 
 /// `\n` → 换行，`\\` → 反斜杠；别的反斜杠原样留着（`C:\Users` 不用写成 `C:\\Users`）

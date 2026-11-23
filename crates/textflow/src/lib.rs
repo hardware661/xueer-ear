@@ -9,7 +9,10 @@ pub use numbers::normalize_numbers;
 mod punct;
 pub use punct::{PunctOptions, apply_punctuation};
 mod commands;
-pub use commands::{CommandOptions, VoiceCommand, parse_command, parse_trailing_command};
+pub use commands::{
+    CommandOptions, MAX_WORDS, VoiceCommand, check_words, parse_command, parse_trailing_command,
+    split_words,
+};
 mod hotwords;
 pub use hotwords::{Hotwords, add_hotword_line};
 mod corrections;

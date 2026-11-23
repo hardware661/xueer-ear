@@ -1,4 +1,8 @@
-use xueer_ear_textflow::{Snippets, remove_snippet_line, set_snippet_line};
+use xueer_ear_textflow::{CommandOptions, Snippets, VoiceCommand, remove_snippet_line};
+
+fn set_snippet_line(file: &str, trigger: &str, text: &str) -> Result<String, String> {
+    xueer_ear_textflow::set_snippet_line(file, trigger, text, &CommandOptions::default())
+}
 
 const FILE: &str = "# 我的快捷短语\n我的邮箱=xueer@example.com\n收货地址 = 某某路 1 号\\n张三收\n\nMy Sign=Best,\\nXueer\n路径=C:\\Users\\x\n反斜杠=a\\\\nb\n没有等号的行\n=没有口令\n空文字=\n";
 
@@ -99,4 +103,15 @@ fn removing_a_snippet_drops_only_its_line() {
         "# 注释\n地址=b\n"
     );
     assert_eq!(remove_snippet_line(file, "签名"), None);
+}
+
+#[test]
+fn changed_command_words_are_also_kept_off_triggers() {
+    let commands = CommandOptions::with_words(|command| {
+        (command == VoiceCommand::NewLine).then(|| vec!["下一行".to_string()])
+    });
+    assert!(xueer_ear_textflow::set_snippet_line("", "下一行", "x", &commands).is_err());
+    // 自带的「换行」不用了也不能当口令：随时可能恢复默认
+    assert!(xueer_ear_textflow::set_snippet_line("", "换行", "x", &commands).is_err());
+    assert!(xueer_ear_textflow::set_snippet_line("", "签名", "x", &commands).is_ok());
 }

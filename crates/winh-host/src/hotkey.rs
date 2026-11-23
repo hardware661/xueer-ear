@@ -44,15 +44,10 @@ static INJECTING: AtomicBool = AtomicBool::new(false);
 
 /// 按住超过这么久再松开，算「按住说话」，松开就收句；更短的算「点一下」
 const HOLD_THRESHOLD: Duration = Duration::from_millis(400);
-/// 这么久没识别出新字，就自己结束听写并收起面板（主人 2026-11-15：「10秒钟就比较合适」）
-const QUIET_STOP: Duration = Duration::from_secs(10);
 /// 停了马上又开时，等上一轮把最后一句收完的最长时间（收句最多等 4 秒定稿）
 const FINISH_GRACE: Duration = Duration::from_millis(4500);
 /// 识别出新字后，波浪保持这么久再变回麦克风
 const WAVE_HOLD: Duration = Duration::from_millis(900);
-/// 单独说一个指令词（删除、撤回、发送……）后停这么久没再出新字，就马上执行，不等静音收句。
-/// 主人 2026-11-16：「撤回和删除的速度…不是特别快，还有发送的速度」——原来要等 3 秒静音
-const COMMAND_SETTLE: Duration = Duration::from_millis(600);
 
 pub struct Hotkey {
     stop: Arc<AtomicBool>,
@@ -415,7 +410,9 @@ fn record(
                 last_gain = gain;
                 // 指令说完停了一下、没再出新字：现在就执行，不等静音收句
                 if let Some((text, since)) = &pending_command {
-                    if since.elapsed() >= COMMAND_SETTLE {
+                    // 单独说完指令停一小会儿（设置「说完指令后等」，默认 0.6 秒）就执行，不等静音收句。
+                    // 主人 2026-11-16：「撤回和删除的速度…不是特别快，还有发送的速度」——原来要等 3 秒静音
+                    if since.elapsed() >= settings.commands.settle() {
                         let (keys, translate) = settle_command(&post, &mut live, text);
                         request_translation = translate;
                         pending_command = None;
@@ -431,8 +428,10 @@ fn record(
                 {
                     panel.set_if_changed(Look::Listening);
                 }
-                // 到「最长听写时间」，或者 10 秒没识别出新字，就自己结束
-                if started.elapsed() >= max_listen || last_text.elapsed() >= QUIET_STOP {
+                // 到「最长听写时间」，或者好一阵（设置「没有新字自动结束」，默认 10 秒）没识别出新字，就自己结束
+                if started.elapsed() >= max_listen
+                    || last_text.elapsed() >= settings.commands.quiet_stop()
+                {
                     release.store(true, Ordering::Release);
                 }
             }

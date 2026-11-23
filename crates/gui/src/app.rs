@@ -57,10 +57,11 @@ const APP_TITLE: usize = 221;
 const LABEL_STATUS: usize = 203;
 const LABEL_ERROR: usize = 206;
 const LABEL_MIC_TITLE: usize = 210;
-const LABEL_SILENCE: usize = 211;
+/// 「语音指令」一行（1.3 起顶替「静音收句」，静音时间挪进它的菜单）
+const LABEL_COMMANDS: usize = 211;
 const LABEL_HOTKEY: usize = 212;
 const LABEL_MIC_VALUE: usize = 216;
-const LABEL_SILENCE_VALUE: usize = 217;
+const LABEL_COMMANDS_VALUE: usize = 217;
 const LABEL_TEXT: usize = 224;
 const LABEL_TEXT_VALUE: usize = 225;
 const LABEL_HOTKEY_VALUE: usize = 226;
@@ -79,7 +80,7 @@ const LABEL_SNIPPETS_VALUE: usize = 236;
 const VALUE_BUTTONS: [usize; 8] = [
     LABEL_HOTKEY_VALUE,
     LABEL_MIC_VALUE,
-    LABEL_SILENCE_VALUE,
+    LABEL_COMMANDS_VALUE,
     LABEL_HOTWORDS_VALUE,
     LABEL_SNIPPETS_VALUE,
     LABEL_HISTORY_VALUE,
@@ -192,12 +193,16 @@ fn read_snippets() -> Result<String, String> {
 }
 
 /// 加一条快捷短语（同一个口令已有就换成新的文字）
-fn save_snippet(trigger: &str, text: &str) -> Result<(), String> {
+fn save_snippet(
+    trigger: &str,
+    text: &str,
+    commands: &xueer_ear_textflow::CommandOptions,
+) -> Result<(), String> {
     let mut file = read_snippets()?;
     if file.is_empty() {
         file = SNIPPETS_HEADER.to_owned();
     }
-    let updated = xueer_ear_textflow::set_snippet_line(&file, trigger, text)?;
+    let updated = xueer_ear_textflow::set_snippet_line(&file, trigger, text, commands)?;
     replace_data_file("snippets.txt", &updated).map_err(|e| format!("无法保存快捷短语表：{e}"))
 }
 
@@ -634,7 +639,7 @@ impl App {
             (GROUP_TEXT, "文字"),
             (LABEL_HOTKEY, "快捷键"),
             (LABEL_MIC_TITLE, "麦克风"),
-            (LABEL_SILENCE, "静音收句"),
+            (LABEL_COMMANDS, "语音指令"),
             (LABEL_HOTWORDS, "热词"),
             (LABEL_SNIPPETS, "快捷短语"),
             (LABEL_HISTORY, "历史"),
@@ -651,7 +656,7 @@ impl App {
             (CLOSE, "关闭窗口", BS_OWNERDRAW),
             (GITHUB, "GitHub · hardware661", BS_OWNERDRAW),
             (LABEL_MIC_VALUE, "系统默认", BS_OWNERDRAW),
-            (LABEL_SILENCE_VALUE, "3 秒", BS_OWNERDRAW),
+            (LABEL_COMMANDS_VALUE, "", BS_OWNERDRAW),
             (LABEL_HOTKEY_VALUE, "右 Alt", BS_OWNERDRAW),
             (LABEL_HOTWORDS_VALUE, "添加", BS_OWNERDRAW),
             (LABEL_SNIPPETS_VALUE, "添加", BS_OWNERDRAW),
@@ -744,7 +749,7 @@ impl App {
         for (card, i, label, value) in [
             (1, 0, LABEL_HOTKEY, LABEL_HOTKEY_VALUE),
             (1, 1, LABEL_MIC_TITLE, LABEL_MIC_VALUE),
-            (1, 2, LABEL_SILENCE, LABEL_SILENCE_VALUE),
+            (1, 2, LABEL_COMMANDS, LABEL_COMMANDS_VALUE),
             (2, 0, LABEL_HOTWORDS, LABEL_HOTWORDS_VALUE),
             (2, 1, LABEL_SNIPPETS, LABEL_SNIPPETS_VALUE),
             (2, 2, LABEL_HISTORY, LABEL_HISTORY_VALUE),
@@ -910,8 +915,8 @@ impl App {
             .unwrap_or("系统默认");
         self.set_text(LABEL_MIC_VALUE, microphone);
         self.set_text(
-            LABEL_SILENCE_VALUE,
-            &format!("{} 秒", self.settings.silence_seconds),
+            LABEL_COMMANDS_VALUE,
+            &crate::prefs::command_summary(&self.settings),
         );
         self.set_text(
             LABEL_HOTKEY_VALUE,
@@ -1395,8 +1400,8 @@ impl App {
             UPDATE_SKIP => self.dismiss_update(true),
             UPDATE_CLOSE => self.dismiss_update(false),
             2 if self.update_visible => self.dismiss_update(false),
-            LABEL_MIC_VALUE => self.settings_menu(true),
-            LABEL_SILENCE_VALUE => self.settings_menu(false),
+            LABEL_MIC_VALUE => self.microphone_menu(),
+            LABEL_COMMANDS_VALUE => self.commands_menu(),
             LABEL_HOTKEY_VALUE => self.hotkey_menu(),
             LABEL_HOTWORDS_VALUE => self.hotwords_menu(),
             LABEL_SNIPPETS_VALUE => self.snippets_menu(),
@@ -1422,50 +1427,26 @@ impl App {
         Ok(())
     }
 
-    unsafe fn settings_menu(&mut self, microphone: bool) {
-        if microphone {
-            if let Err(error) = self.read_microphones() {
-                self.command_error = error;
-                self.refresh();
-                return;
-            }
+    unsafe fn microphone_menu(&mut self) {
+        if let Err(error) = self.read_microphones() {
+            self.command_error = error;
+            self.refresh();
+            return;
         }
-        let choices = if microphone {
-            let mut choices = vec![(
-                1000,
-                "系统默认".to_owned(),
-                self.settings.microphone.is_none(),
-            )];
-            choices.extend(self.microphones.iter().enumerate().map(|(i, (id, name))| {
-                (
-                    1001 + i,
-                    name.clone(),
-                    self.settings.microphone.as_ref() == Some(id),
-                )
-            }));
-            choices
-        } else {
-            [1, 2, 3, 5, 10]
-                .into_iter()
-                .enumerate()
-                .map(|(i, s)| {
-                    (
-                        1001 + i,
-                        format!("{s} 秒"),
-                        self.settings.silence_seconds == s,
-                    )
-                })
-                .collect()
-        };
+        let mut choices = vec![(
+            1000,
+            "系统默认".to_owned(),
+            self.settings.microphone.is_none(),
+        )];
+        choices.extend(self.microphones.iter().enumerate().map(|(i, (id, name))| {
+            (
+                1001 + i,
+                name.clone(),
+                self.settings.microphone.as_ref() == Some(id),
+            )
+        }));
         let mut rect = mem::zeroed();
-        GetWindowRect(
-            self.control(if microphone {
-                LABEL_MIC_VALUE
-            } else {
-                LABEL_SILENCE_VALUE
-            }),
-            &mut rect,
-        );
+        GetWindowRect(self.control(LABEL_MIC_VALUE), &mut rect);
         let selected = crate::menu::popup(
             self.hwnd,
             rect.left,
@@ -1478,18 +1459,83 @@ impl App {
             return;
         }
         let mut candidate = self.settings.clone();
-        if microphone {
-            candidate.microphone = if selected == 1000 {
-                None
-            } else {
-                self.microphones
-                    .get(selected as usize - 1001)
-                    .map(|(id, _)| id.clone())
-            };
-        } else if let Some(seconds) = [1, 2, 3, 5, 10].get(selected as usize - 1001) {
-            candidate.silence_seconds = *seconds;
-        }
+        candidate.microphone = if selected == 1000 {
+            None
+        } else {
+            self.microphones
+                .get(selected as usize - 1001)
+                .map(|(id, _)| id.clone())
+        };
         self.apply(candidate);
+    }
+
+    /// 语音指令：点一个指令弹小框改说法；点时间、翻译方向再弹一个菜单选；终端换行直接开关；恢复默认先问一句
+    unsafe fn commands_menu(&mut self) {
+        use crate::prefs::CommandPick;
+        let picked = self.popup_under(
+            LABEL_COMMANDS_VALUE,
+            &crate::prefs::command_choices(&self.settings),
+        );
+        let Some(pick) = crate::prefs::command_pick(picked) else {
+            return;
+        };
+        let candidate = match pick {
+            CommandPick::Words(command) => {
+                let snippets = match read_snippets() {
+                    Ok(file) => file,
+                    Err(error) => {
+                        self.command_error = error;
+                        self.refresh();
+                        return;
+                    }
+                };
+                let (effect, words) = crate::prefs::command_words_initial(&self.settings, command);
+                let settings = self.settings.clone();
+                let check_snippets = snippets.clone();
+                let Some((_, input)) = crate::pair_dialog::ask(
+                    self.hwnd,
+                    self.fonts[3],
+                    self.dpi,
+                    &crate::pair_dialog::COMMAND_WORDS,
+                    [&effect, &words],
+                    Box::new(move |_, input| {
+                        crate::prefs::set_command_words(&settings, command, input, &check_snippets)
+                            .map(drop)
+                    }),
+                ) else {
+                    return;
+                };
+                crate::prefs::set_command_words(&self.settings, command, &input, &snippets).ok()
+            }
+            CommandPick::Time(timing) => {
+                let choice = self.popup_under(
+                    LABEL_COMMANDS_VALUE,
+                    &crate::prefs::timing_choices(&self.settings, timing),
+                );
+                crate::prefs::pick_timing(&self.settings, timing, choice)
+            }
+            CommandPick::PlainTranslate => {
+                let choice = self.popup_under(
+                    LABEL_COMMANDS_VALUE,
+                    &crate::prefs::plain_translate_choices(&self.settings),
+                );
+                crate::prefs::pick_plain_translate(&self.settings, choice)
+            }
+            CommandPick::TerminalNewline => {
+                let mut next = self.settings.clone();
+                next.text.terminal_newline = !next.text.terminal_newline;
+                Some(next)
+            }
+            CommandPick::Reset => self
+                .confirm("语音指令的说法、四个时间和翻译方向都恢复默认？")
+                .then(|| crate::prefs::reset_commands(&self.settings)),
+        };
+        if let Some(candidate) = candidate
+            && candidate != self.settings
+        {
+            self.apply(candidate);
+            self.say("改好了，下一句开始生效");
+        }
     }
 
     /// 在某个按钮下面弹菜单，返回选中的命令号（没选是 0）
@@ -1552,6 +1598,7 @@ impl App {
                     self.dpi,
                     &crate::pair_dialog::HOTWORD,
                     ["", ""],
+                    Box::new(crate::pair_dialog::check_hotword),
                 ) else {
                     return;
                 };
@@ -1591,17 +1638,24 @@ impl App {
         let picked = self.popup_under(LABEL_SNIPPETS_VALUE, &crate::prefs::snippet_choices(&file));
         let result = match picked {
             crate::prefs::ADD_SNIPPET => {
+                let commands = self.settings.command_options();
+                let check_commands = commands.clone();
                 let Some((trigger, text)) = crate::pair_dialog::ask(
                     self.hwnd,
                     self.fonts[3],
                     self.dpi,
                     &crate::pair_dialog::SNIPPET,
                     ["", ""],
+                    Box::new(move |trigger, text| {
+                        crate::prefs::snippet_entry(trigger, text, &check_commands).map(drop)
+                    }),
                 ) else {
                     return;
                 };
-                crate::prefs::snippet_entry(&trigger, &text)
-                    .and_then(|(trigger, text)| save_snippet(&trigger, &text).map(|()| trigger))
+                crate::prefs::snippet_entry(&trigger, &text, &commands)
+                    .and_then(|(trigger, text)| {
+                        save_snippet(&trigger, &text, &commands).map(|()| trigger)
+                    })
                     .map(|trigger| self.say(&format!("已添加：整句说「{trigger}」就会换掉")))
             }
             crate::prefs::OPEN_SNIPPETS => open_data_file("snippets.txt"),
@@ -1693,6 +1747,7 @@ impl App {
             self.dpi,
             &crate::pair_dialog::CORRECTION,
             [sentence, sentence],
+            Box::new(crate::pair_dialog::check_correction),
         ) else {
             return;
         };
@@ -2144,7 +2199,7 @@ unsafe extern "system" fn procedure(
                     LABEL_STATUS,
                     LABEL_HOTKEY,
                     LABEL_MIC_TITLE,
-                    LABEL_SILENCE,
+                    LABEL_COMMANDS,
                     LABEL_HOTWORDS,
                     LABEL_SNIPPETS,
                     LABEL_HISTORY,
@@ -2576,6 +2631,14 @@ fn snapshot_theme(dir: &std::path::Path, dark: bool) -> Result<(), String> {
                 "correction-dialog.png",
                 ["我在用雪而写代码", "我在用雪耳写代码"],
             ),
+            (
+                &crate::pair_dialog::COMMAND_WORDS,
+                "command-words-dialog.png",
+                [
+                    "删除上一句：删掉雪耳打的上一句",
+                    "删除、删掉、删了、撤销、撤回、删掉上一句",
+                ],
+            ),
         ] {
             let dialog = crate::pair_dialog::offscreen(hwnd, app.fonts[3], app.dpi, form, initial);
             asked = asked.and(if dialog.is_null() {
@@ -2626,6 +2689,15 @@ fn snapshot_theme(dir: &std::path::Path, dark: bool) -> Result<(), String> {
             DeleteObject(bitmap);
             result
         };
+        // 「语音指令」菜单按默认设置画：最长的一个菜单，核对 150% 缩放时也放得下
+        let commands_menu = {
+            let choices =
+                crate::prefs::command_choices(&xueer_ear_backend::settings::Settings::default());
+            let (bitmap, _, _) = crate::menu::render(&choices, app.fonts[3], app.dpi, 1);
+            let result = save_bitmap(bitmap, &dir.join("commands-menu.png"));
+            DeleteObject(bitmap);
+            result
+        };
         // 快捷短语菜单用示例内容画，不带出本机的表
         let snippets = {
             let choices = crate::prefs::snippet_choices(
@@ -2673,6 +2745,7 @@ fn snapshot_theme(dir: &std::path::Path, dark: bool) -> Result<(), String> {
             .and(hotwords)
             .and(snippets)
             .and(settings_menu)
+            .and(commands_menu)
             .and(translated)
             .and(translate_menu)
             .and(offer)

@@ -7,8 +7,8 @@ use std::path::Path;
 use xueer_ear_history::{Entry, History, Settings as HistorySettings};
 use xueer_ear_protocol::transcript::SpeechEvent;
 use xueer_ear_textflow::{
-    CommandOptions, Hotwords, Options, Output, PunctOptions, Snippets, VoiceCommand, parse_command,
-    process, strip_fillers,
+    Hotwords, Options, Output, PunctOptions, Snippets, VoiceCommand, parse_command, process,
+    strip_fillers,
 };
 
 /// 热词文件上限，防止误放一个大文件拖慢每句话。
@@ -35,9 +35,7 @@ impl Postprocess {
                 cjk_latin_space: text.cjk_latin_space,
                 fullwidth_punct_in_cjk: text.fullwidth_punct_in_cjk,
             },
-            commands: CommandOptions {
-                allow_send: text.allow_send,
-            },
+            commands: settings.command_options(),
             strip_fillers: text.strip_fillers,
             normalize_numbers: text.normalize_numbers,
         };
@@ -331,10 +329,10 @@ mod tests {
         assert_eq!(p.command_only("全部删除"), Some(VoiceCommand::DeleteAll));
         assert_eq!(p.command_only("删除这个文件"), None);
         assert_eq!(p.command_only("这句不对，删掉上一句"), None);
-        // 「发送」只有开关打开时才算
+        // 「发送」默认关，给它说法才算
         assert_eq!(p.command_only("发送"), None);
         let mut on = Settings::default();
-        on.text.allow_send = true;
+        on.commands.words.insert("send".into(), vec!["发送".into()]);
         let (_dir, p) = setup(&on);
         assert_eq!(p.command_only("发送"), Some(VoiceCommand::Send));
     }
@@ -342,7 +340,7 @@ mod tests {
     #[test]
     fn a_trailing_command_is_found_while_the_sentence_is_still_open() {
         let mut on = Settings::default();
-        on.text.allow_send = true;
+        on.commands.words.insert("send".into(), vec!["发送".into()]);
         let (_dir, p) = setup(&on);
         assert_eq!(
             p.trailing_command("今天吃什么，发送"),
@@ -355,7 +353,7 @@ mod tests {
         // 句中的指令词、整句只有指令词，都不算「句尾指令」
         assert_eq!(p.trailing_command("发送的速度太慢了"), None);
         assert_eq!(p.trailing_command("发送"), None);
-        // 「发送」开关关着时不算
+        // 「发送」关着时不算
         let (_dir, off) = setup(&Settings::default());
         assert_eq!(off.trailing_command("今天吃什么，发送"), None);
     }
@@ -454,5 +452,34 @@ mod tests {
         assert_eq!(&all[..3], ["雪耳", "Claude Code", "甲骨文"]);
         assert!(all.len() > 3 && all.len() <= 100);
         assert_eq!(all.iter().filter(|w| *w == "Claude Code").count(), 1);
+    }
+}
+
+#[cfg(test)]
+mod command_word_tests {
+    use super::*;
+
+    #[test]
+    fn changed_command_words_are_used_for_finished_and_early_commands() {
+        let dir = std::env::temp_dir().join(format!("xueer-post-words-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut settings = Settings::default();
+        settings
+            .commands
+            .words
+            .insert("delete_last".into(), vec!["不要了".into()]);
+        settings.history_enabled = false;
+        let p = Postprocess::new(&settings, &dir);
+        assert_eq!(
+            p.finalize("不要了。", 1),
+            Output::Command(VoiceCommand::DeleteLastSentence)
+        );
+        assert_eq!(
+            p.command_only("不要了"),
+            Some(VoiceCommand::DeleteLastSentence)
+        );
+        // 自带的「删除」不用了：当普通文字
+        assert_eq!(p.command_only("删除"), None);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
