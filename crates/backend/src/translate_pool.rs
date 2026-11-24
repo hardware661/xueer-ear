@@ -218,7 +218,8 @@ pub fn run(
     let pieces: Vec<Arc<str>> = pieces.into_iter().map(Arc::from).collect();
     let (sender, replies) = mpsc::channel::<(usize, Service, Duration, Result<String, Failure>)>();
     let launch = |index: usize, service: Service| {
-        let (translator, text, sender) = (translator.clone(), pieces[index].clone(), sender.clone());
+        let (translator, text, sender) =
+            (translator.clone(), pieces[index].clone(), sender.clone());
         thread::spawn(move || {
             let started = Instant::now();
             let reply = translator.translate(service, &text, target);
@@ -356,10 +357,7 @@ mod tests {
 
     impl Translator for Fake {
         fn translate(&self, service: Service, text: &str, _: Target) -> Result<String, Failure> {
-            self.asked
-                .lock()
-                .unwrap()
-                .push((service, text.to_owned()));
+            self.asked.lock().unwrap().push((service, text.to_owned()));
             let (wait, answer) = self.answers[&service].clone();
             thread::sleep(wait);
             answer.map(|reply| format!("{reply}:{text}"))
@@ -380,10 +378,7 @@ mod tests {
                 .map(|(service, ms, reply)| {
                     (
                         *service,
-                        (
-                            Duration::from_millis(*ms),
-                            reply.clone().map(str::to_owned),
-                        ),
+                        (Duration::from_millis(*ms), reply.clone().map(str::to_owned)),
                     )
                 })
                 .collect(),
@@ -436,7 +431,10 @@ mod tests {
     fn a_slow_piece_is_also_given_to_the_next_service_and_the_first_answer_wins() {
         let f = fake(&[(VOLC, 1_000, Ok("v")), (MS, 30, Ok("m"))]);
         let (report, took) = go(f.clone(), &["一"], &[VOLC, MS]);
-        assert_eq!(report.results[0].as_ref().unwrap(), &("m:一".to_owned(), MS));
+        assert_eq!(
+            report.results[0].as_ref().unwrap(),
+            &("m:一".to_owned(), MS)
+        );
         assert_eq!(report.hedges, 1);
         assert!(took < Duration::from_millis(800), "{took:?}");
     }
@@ -461,7 +459,10 @@ mod tests {
         ]);
         let (report, _) = go(f, &["一"], &[VOLC, MS]);
         let reason = report.results[0].as_ref().unwrap_err();
-        assert!(reason.contains("火山") && reason.contains("微软"), "{reason}");
+        assert!(
+            reason.contains("火山") && reason.contains("微软"),
+            "{reason}"
+        );
     }
 
     #[test]

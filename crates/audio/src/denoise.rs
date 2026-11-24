@@ -225,7 +225,9 @@ mod tests {
         let _serial = serial();
         // 别的测试留下的底噪（嘶声、说话）会让「上一轮」学得慢：先清掉，只看接着学这一件事。
         // 2026-11-24 打包时排在别的降噪测试后面跑，「从头学 771，接着上一轮 736」没过
-        *CARRY.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+        *CARRY
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
         let input = noise(16_000, 2_000.);
         let first_second = |d: &mut Denoiser| rms(&d.process(&input));
         let fresh = first_second(&mut Denoiser::new());

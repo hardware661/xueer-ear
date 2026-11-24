@@ -1064,7 +1064,12 @@ mod live {
     }
 
     impl Translator for Live {
-        fn translate(&self, service: Service, text: &str, target: Target) -> Result<String, Failure> {
+        fn translate(
+            &self,
+            service: Service,
+            text: &str,
+            target: Target,
+        ) -> Result<String, Failure> {
             if service == Service::Wetype {
                 return self.ask_wetype(text);
             }
@@ -1190,10 +1195,7 @@ mod tests {
 
     impl<F: Fn(Service, &str) -> Result<String, Failure> + Send + Sync> Translator for Fake<F> {
         fn translate(&self, service: Service, text: &str, _: Target) -> Result<String, Failure> {
-            self.asked
-                .lock()
-                .unwrap()
-                .push((service, text.to_owned()));
+            self.asked.lock().unwrap().push((service, text.to_owned()));
             (self.answer)(service, text)
         }
     }
@@ -1241,7 +1243,10 @@ mod tests {
         );
         assert_eq!(
             asked,
-            [(Service::Volcengine, "然后我们再测一遍，没问题就发。".to_owned())]
+            [(
+                Service::Volcengine,
+                "然后我们再测一遍，没问题就发。".to_owned()
+            )]
         );
     }
 
@@ -1305,18 +1310,26 @@ mod tests {
 
     #[test]
     fn failed_pieces_keep_the_original_and_are_counted() {
-        let (out, _) = translate_with("第一段。\n\n第二段。", Target::English, |_, piece| {
-            if piece.contains("第二段") {
-                Err(Failure::Other("出错".into()))
-            } else {
-                Ok("Paragraph.".into())
-            }
-        });
+        let (out, _) = translate_with(
+            "第一段。\n\n第二段。",
+            Target::English,
+            |_, piece| {
+                if piece.contains("第二段") {
+                    Err(Failure::Other("出错".into()))
+                } else {
+                    Ok("Paragraph.".into())
+                }
+            },
+        );
         let outcome = out.unwrap();
         // 短段合成一段送：一起失败
         assert_eq!(outcome.total, 1);
         assert_eq!(outcome.failed, 1);
-        assert!(outcome.summary.contains("1 段没翻成"), "{}", outcome.summary);
+        assert!(
+            outcome.summary.contains("1 段没翻成"),
+            "{}",
+            outcome.summary
+        );
         assert_eq!(outcome.text, "第一段。\n\n第二段。");
     }
 
@@ -1388,7 +1401,12 @@ mod tests {
         let body: serde_json::Value = serde_json::from_str(&bili.body).unwrap();
         assert_eq!(body["model"], "Index-Translate-2B");
         assert_eq!(body["chat_template_kwargs"]["enable_thinking"], false);
-        assert!(body["messages"][0]["content"].as_str().unwrap().contains("翻译为中文"));
+        assert!(
+            body["messages"][0]["content"]
+                .as_str()
+                .unwrap()
+                .contains("翻译为中文")
+        );
         assert_eq!(
             parse_bilibili(
                 r#"{"choices":[{"message":{"content":"<think>\n</think>\n\n你好"}}]}"#.as_bytes()
