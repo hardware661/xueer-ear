@@ -410,7 +410,10 @@ mod tests {
         let _live = LIVE
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let _stream = silent_stream::Stream::start();
+        let Some(_stream) = silent_stream::Stream::start() else {
+            eprintln!("没有播放设备（比如 CI 的虚拟机），跳过");
+            return;
+        };
         let dir = std::env::temp_dir().join(format!("xueer-duck-{}", std::process::id()));
         let path = dir.join("ducking.txt");
         let own = std::process::id();
@@ -437,12 +440,16 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("xueer-duck-late-{}", std::process::id()));
         let path = dir.join("ducking.txt");
         let own = std::process::id();
+        if !silent_stream::available() {
+            eprintln!("没有播放设备（比如 CI 的虚拟机），跳过");
+            return;
+        }
         let ducking = Ducking::start_where(&path, Duration::from_millis(100), move |s| {
             s.active && s.pid == own
         })
         .unwrap();
         assert_eq!(ducking.count(), 0, "开始时测试进程还没出声");
-        let _stream = silent_stream::Stream::start();
+        let _stream = silent_stream::Stream::start().expect("刚才还有播放设备");
         let until = std::time::Instant::now() + Duration::from_secs(3);
         while ducking.count() == 0 && std::time::Instant::now() < until {
             std::thread::sleep(Duration::from_millis(50));
@@ -485,15 +492,24 @@ mod tests {
             client: IAudioClient,
         }
 
+        /// 有没有默认播放设备（GitHub 的 Windows 虚拟机上没有）
+        pub fn available() -> bool {
+            unsafe {
+                let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
+                CoCreateInstance::<_, IMMDeviceEnumerator>(&MMDeviceEnumerator, None, CLSCTX_ALL)
+                    .and_then(|enumerator| enumerator.GetDefaultAudioEndpoint(eRender, eConsole))
+                    .is_ok()
+            }
+        }
+
         impl Stream {
-            pub fn start() -> Self {
+            /// 没有默认播放设备时是 None
+            pub fn start() -> Option<Self> {
                 unsafe {
                     let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
                     let enumerator: IMMDeviceEnumerator =
-                        CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL).unwrap();
-                    let device = enumerator
-                        .GetDefaultAudioEndpoint(eRender, eConsole)
-                        .unwrap();
+                        CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL).ok()?;
+                    let device = enumerator.GetDefaultAudioEndpoint(eRender, eConsole).ok()?;
                     let client: IAudioClient = device.Activate(CLSCTX_ALL, None).unwrap();
                     let format = client.GetMixFormat().unwrap();
                     client
@@ -507,7 +523,7 @@ mod tests {
                         .unwrap();
                     client.Start().unwrap();
                     std::thread::sleep(std::time::Duration::from_millis(200));
-                    Self { client }
+                    Some(Self { client })
                 }
             }
         }
