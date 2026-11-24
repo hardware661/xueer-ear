@@ -134,7 +134,10 @@ impl OfferWindow {
     fn new() -> Result<Self, String> {
         static CLASS: OnceLock<Vec<u16>> = OnceLock::new();
         let class = CLASS.get_or_init(|| {
-            let name: Vec<u16> = "XueerEar.ClipboardOffer".encode_utf16().chain(Some(0)).collect();
+            let name: Vec<u16> = "XueerEar.ClipboardOffer"
+                .encode_utf16()
+                .chain(Some(0))
+                .collect();
             let class = WNDCLASSW {
                 lpfnWndProc: Some(offer_procedure),
                 hInstance: unsafe { GetModuleHandleW(ptr::null()) },

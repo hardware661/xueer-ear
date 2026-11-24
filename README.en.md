@@ -68,7 +68,7 @@ You need Windows 11, a network connection and a microphone. Administrator rights
 3. On first launch the background service starts automatically.
 4. Click into any text field, tap Right Alt and start talking. Tap it again, click the panel or press Esc to stop. Dictation also stops after 10 seconds without new text (adjustable under 更多设置).
 
-The hotkey can be changed to Right Ctrl, CapsLock, F8 or F9 in the control panel. Holding the key counts as a tap; text waits until you release it (up to 3 seconds), because typing while Alt is held would trigger menu shortcuts.
+The hotkey can be changed to Right Ctrl, CapsLock, F8 or F9 in the control panel. A tap counts when you release the key: holding it does nothing, and listening starts after you let go, so Alt never opens an app's menu bar. Pressing it together with another modifier is a chord, not a tap.
 
 ## Voice commands
 
@@ -85,7 +85,7 @@ The hotkey can be changed to Right Ctrl, CapsLock, F8 or F9 in the control panel
 - One phrase per command. Matching ignores case and punctuation, not pronunciation.
 - Without the pause before it, or said together with other words, a command is typed as plain text: "今天吃什么，发送" types exactly that. A command right after pressing the hotkey counts, since nothing came before it.
 - Commands act on everything in the focused input box: what you typed, what Xueer Ear typed, earlier rounds.
-- An empty box shows "输入框是空的"; no input box shows "没找到输入框", and nothing changes. Commands win over snippets.
+- An empty box shows "输入框是空的"; no input box shows "没找到输入框", and nothing changes. Notices stay for at least 4 seconds. Commands win over snippets.
 - The switches and the two timings (pause before: 0.5/1/1.5/2 s; wait after: 0.3/0.6/1/1.5 s) are under 语音指令 in the control panel. The three dictation timings are under 更多设置.
 
 How the input box is read:

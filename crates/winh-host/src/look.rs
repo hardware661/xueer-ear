@@ -74,10 +74,21 @@ impl Board {
         &self.text
     }
 
-    /// 换外观，返回有没有变。提示还没到点时「收起」不生效。
+    /// 换外观，返回有没有变。提示还没到点时：说完话后的提示不让「收起」；听写中的提示不让
+    /// 「在听」「说话中」「连接中」顶掉（记下最新的那个，到点再换回去），停止听写照样马上收起
     pub fn set(&mut self, look: Look, now: Instant) -> bool {
-        if look == self.after_notice && self.until.is_some_and(|until| now < until) {
-            return false;
+        if self.look == Look::Notice && self.until.is_some_and(|until| now < until) {
+            match (self.after_notice, look) {
+                (Look::Hidden, Look::Hidden) => return false,
+                (
+                    Look::Listening | Look::Speaking | Look::Connecting,
+                    Look::Listening | Look::Speaking | Look::Connecting,
+                ) => {
+                    self.after_notice = look;
+                    return false;
+                }
+                _ => {}
+            }
         }
         let changed = self.look != look;
         self.look = look;
@@ -91,7 +102,7 @@ impl Board {
         self.show_notice(text, now, Look::Hidden);
     }
 
-    /// 翻译失败并未停止听写，提示到期后仍显示麦克风。
+    /// 听写中的提示（输入框是空的、翻译失败……）：听写还在继续，提示到点后回到在听的样子
     pub fn listening_notice(&mut self, text: &str, now: Instant) {
         self.show_notice(text, now, Look::Listening);
     }
@@ -160,6 +171,22 @@ mod tests {
         assert!(board.set(Look::Hidden, start + Duration::from_secs(1)));
         assert_eq!(board.look(), Look::Hidden);
         assert!(!board.expire(start + NOTICE_HOLD));
+    }
+
+    // 主人 2026-11-24：框是空的时说「删除」看不到「输入框是空的」。说完一句雪耳马上去连下一句，
+    // 「连接中」「说话中」把提示顶掉了；听写中的提示要留够时间，到点再回到最新的样子
+    #[test]
+    fn a_listening_notice_outlasts_connecting_and_speaking_until_it_expires() {
+        let start = Instant::now();
+        let mut board = Board::default();
+        board.set(Look::Listening, start);
+        board.listening_notice("输入框是空的", start);
+        assert!(!board.set(Look::Connecting, start + Duration::from_millis(50)));
+        assert!(!board.set(Look::Speaking, start + Duration::from_millis(900)));
+        assert_eq!(board.look(), Look::Notice);
+        assert_eq!(board.text(), "输入框是空的");
+        assert!(board.expire(start + NOTICE_HOLD));
+        assert_eq!(board.look(), Look::Speaking);
     }
 
     #[test]

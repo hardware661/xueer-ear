@@ -136,18 +136,24 @@ fn poll_loop(vk: u32, stop: &AtomicBool, status: &Status) {
                 HOTKEY.store(vk, Ordering::Release);
             }
         }
+        // 按下热键什么都不做，松开那一下才算点了一下（主人 2026-11-24：按住整个砍掉）
         let held = pressed(vk);
-        if held && !was_held && is_alt(vk) {
-            mask_menu();
-        }
         if held && !was_held {
-            inputs.push(if other_modifier(vk) {
-                Input::Chord
-            } else {
-                Input::KeyDown
-            });
-        } else if !held && was_held {
-            inputs.push(Input::KeyUp);
+            if is_alt(vk) {
+                mask_menu();
+            }
+            inputs.push(Input::Press);
+        }
+        // 按着热键时还按着别的修饰键（不是雪耳自己发键时按下的）：这一下算组合键
+        if held
+            && !TYPING.load(Ordering::Acquire)
+            && !INJECTING.load(Ordering::Acquire)
+            && other_modifier(vk)
+        {
+            inputs.push(Input::Chord);
+        }
+        if !held && was_held {
+            inputs.push(Input::Release);
             // CapsLock 当热键：系统已经因为这一下切换了大小写锁定，再按一下把它切回去（审查 R15）
             if vk == i32::from(VK_CAPITAL) {
                 undo_caps_toggle();
@@ -1430,11 +1436,19 @@ mod tests {
             ("#32770", "RichEdit20W", Some(true)),
             ("Qt51514QWindowIcon", "Qt51514QWindowIcon", Some(false)),
             ("Chrome_WidgetWin_1", "Chrome_RenderWidgetHostHWND", None),
-            ("CASCADIA_HOSTING_WINDOW_CLASS", "Windows.UI.Input.InputSite.WindowClass", None),
+            (
+                "CASCADIA_HOSTING_WINDOW_CLASS",
+                "Windows.UI.Input.InputSite.WindowClass",
+                None,
+            ),
             // Windows 11 新记事本也是 RichEdit（Direct2D 版）
             ("Notepad", "RichEditD2DPT", Some(true)),
         ] {
-            assert_eq!(message_typing(window, focus), expected, "{window} / {focus}");
+            assert_eq!(
+                message_typing(window, focus),
+                expected,
+                "{window} / {focus}"
+            );
         }
     }
 
@@ -1465,7 +1479,11 @@ mod tests {
                 std::ptr::null(),
             );
             assert!(!edit.is_null());
-            for key in [Key::Text("Hi好啊".into()), Key::Backspace(2), Key::Text("!".into())] {
+            for key in [
+                Key::Text("Hi好啊".into()),
+                Key::Backspace(2),
+                Key::Text("!".into()),
+            ] {
                 for (message, wparam, lparam) in window_messages(&key, true) {
                     SendMessageW(edit, message, wparam, lparam);
                 }
